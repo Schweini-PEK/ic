@@ -1,0 +1,7 @@
+jobs/
+slurm*
+.vscode/
+archive/
+build/
+
+test/data/
