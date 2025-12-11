@@ -5,6 +5,7 @@
 
 #include "matrix_formats.hpp"
 #include "ictp.hpp"
+#include "symbolic.hpp"
 
 /**
  * Generate a diagonal matrix D to scale A: B = D^{-1} A D^{-1}.

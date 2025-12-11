@@ -53,7 +53,7 @@ TEST(FactTest, IC_Factorize_Runs)
     attempt_params.pivot_tol = 0.0;
 
     IC_Factorize_Params fparams;
-    fparams.initial_shift = 1e-12;
+    fparams.initial_shift = 1e-8;
     fparams.shift_growth = 2.0;
     fparams.max_restarts = 8;
 

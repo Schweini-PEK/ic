@@ -408,12 +408,14 @@ static bool ictp_rowwise_gpu_v3(
         {
             if (info)
             {
-                printf("ICTP breakdown at row %d, pivot value %f\n", *d_fail_row, (double)*d_fail_pivot);
-
                 int fr = -1;
                 T fp = T(0);
                 CUDA_CHECK(cudaMemcpy(&fr, d_fail_row, sizeof(int), cudaMemcpyDeviceToHost));
                 CUDA_CHECK(cudaMemcpy(&fp, d_fail_pivot, sizeof(T), cudaMemcpyDeviceToHost));
+
+                std::fprintf(stderr, "ICTP breakdown at row %d, pivot=%g, pivotTol=%g\n",
+                             fr, (double)fp, (double)pivotTol);
+
                 info->code = IC_Breakdown::B1_SmallOrNegativePivot;
                 info->step = fr;
                 info->pivot_value = (double)fp;

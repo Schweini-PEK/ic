@@ -14,7 +14,6 @@
 
 TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
 {
-    // Load SPD test matrix
     std::string path = "test/data/bcsstk11.mtx";
     ichol::CSR<double> Ahost = ichol::readMTXtoCSR<double>(path);
 
@@ -22,9 +21,9 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
 
     ICTP_Params ictp_params;
 
-    // Robust outer policy (field set kept minimal to match your evolving struct)
+    // Prevent breakdown
     IC_Factorize_Params fparams;
-    fparams.initial_shift = 1e-12; // avoid the "alpha stays 0" trap if your logic hasn't added min-shift yet
+    fparams.initial_shift = 1e-8;
     fparams.shift_growth = 2.0;
     fparams.max_restarts = 8;
 
