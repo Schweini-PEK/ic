@@ -7,6 +7,7 @@
 #include "ichol/matrix_formats.hpp"
 #include "ichol/ictp.hpp"
 #include "ichol/fact.hpp"
+#include "ichol/symbolic.hpp"
 
 namespace ichol
 {
@@ -14,6 +15,7 @@ namespace ichol
     CSR<T> IC_factorize(const CSR<T> &Ahost,
                         const ICTP_Params &ictp_params,
                         const IC_Factorize_Params &params,
+                        const core::IC_Symbolic &Sym,
                         IC_Factorize_Info *out_info)
     {
         IC_Factorize_Info info;
@@ -36,7 +38,7 @@ namespace ichol
         {
             // Apply shifting at the beginning of each attempt
             Atry = add_diagonal_shift(B, alpha);
-            L = ictp<T>(Atry, ictp_params, attempt_params, &finfo);
+            L = ictp<T>(Atry, ictp_params, attempt_params, Sym, &finfo);
 
             if (finfo.code == IC_Breakdown::None)
             {
@@ -53,7 +55,7 @@ namespace ichol
             alpha *= params.shift_growth;
         }
 
-        info.shift_used = alpha;
+        info.shift_used = alpha / params.shift_growth;
 
         if (out_info)
             *out_info = std::move(info);
@@ -64,11 +66,13 @@ namespace ichol
     template CSR<double> IC_factorize<double>(const CSR<double> &Ahost,
                                               const ICTP_Params &ictp_params,
                                               const IC_Factorize_Params &params,
+                                              const core::IC_Symbolic &Sym,
                                               IC_Factorize_Info *out_info);
 
     template CSR<float> IC_factorize<float>(const CSR<float> &Ahost,
                                             const ICTP_Params &ictp_params,
                                             const IC_Factorize_Params &params,
+                                            const core::IC_Symbolic &Sym,
                                             IC_Factorize_Info *out_info);
 
     // template CSR<half> IC_factorize<float>(const CSR<float> &Ahost,

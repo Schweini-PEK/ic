@@ -6,16 +6,6 @@
 
 TEST(ICPCG, Solves2x2_Double)
 {
-    // A = [4 1; 1 3]
-    // L = chol(A) = [2, 0; 0.5, sqrt(2.75)]
-    // For this tiny system the IC(0) equals exact Cholesky.
-    //
-    // Right-hand side:
-    // b = [1; 2]
-    //
-    // True solution = A^{-1} b:
-    // x = [0.090909..., 0.636363...]
-
     const int n = 2;
 
     // CSR for A (row-major, 0-based):
@@ -47,6 +37,8 @@ TEST(ICPCG, Solves2x2_Double)
     int iters = 0;
     double finalRes = 0.0;
 
+    std::vector<double> D = {1.0, 1.0}; // No scaling
+
     ichol::icPreconditionedCG_GPU<double>(
         rowPtrA,
         colIndA,
@@ -56,6 +48,7 @@ TEST(ICPCG, Solves2x2_Double)
         valL,
         b,
         x,
+        D,
         iters,
         finalRes);
 

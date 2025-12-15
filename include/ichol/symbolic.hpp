@@ -18,6 +18,9 @@ namespace ichol
             std::vector<int> col_ind_L; // length nnz_L
         };
 
+        /**
+         * Build IC symbolic factorization with either full pattern or IC(k)
+         */
         IC_Symbolic build_ic_symbolic(const ichol::CSR<double> &A,
                                       int k);
 

@@ -2,6 +2,7 @@
 #define ICHOL_ICTP_HPP
 
 #include <ichol/matrix_formats.hpp>
+#include <ichol/symbolic.hpp>
 
 struct ICTP_Params;
 struct IC_Attempt_Params;
@@ -19,6 +20,7 @@ namespace ichol
     CSR<T> ictp(const CSR<T> &Ahost,
                 const ICTP_Params &row_params,
                 const IC_Attempt_Params &fparams,
+                const core::IC_Symbolic &Sym,
                 ICTP_Factor_Info *info);
 
 } // namespace ichol

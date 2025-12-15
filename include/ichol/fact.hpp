@@ -8,9 +8,11 @@
 #include "symbolic.hpp"
 
 /**
- * Generate a diagonal matrix D to scale A: B = D^{-1} A D^{-1}.
+ * Generate a vector whose ith element is the norm of the ith column of A.
  *
- * The precision of D should be the same as the factorization.
+ * It is later used as a diagonal scaling matrix D.
+ * The vector is computed and stored in double precision.
+ * The input matrix @param A is supposed to be stored as lower tri + diag.
  */
 template <class T>
 inline std::vector<double> col_norm_scale(const ichol::CSR<T> &A)
@@ -22,9 +24,15 @@ inline std::vector<double> col_norm_scale(const ichol::CSR<T> &A)
     {
         for (int p = A.row_ptr[i]; p < A.row_ptr[i + 1]; ++p)
         {
-            int j = A.col_ind[p];
-            double v = static_cast<double>(A.values[p]);
-            col_sq[j] += v * v;
+            const int j = A.col_ind[p];
+            const double v = static_cast<double>(A.values[p]);
+            const double vv = v * v;
+
+            col_sq[j] += vv;
+            if (j != i) // Ad twice for off-diag
+            {
+                col_sq[j] += vv;
+            }
         }
     }
 
@@ -38,6 +46,11 @@ inline std::vector<double> col_norm_scale(const ichol::CSR<T> &A)
     return D;
 }
 
+/**
+ * Apply symmetric diagonal scaling to A: B = D^{-1} A D^{-1}
+ *
+ * D is given as a vector of its diagonal entries.
+ */
 template <class T>
 inline ichol::CSR<T> apply_symm_prescaling(const ichol::CSR<T> &A,
                                            const std::vector<double> &D)
@@ -74,13 +87,17 @@ inline ichol::CSR<T> add_diagonal_shift(const ichol::CSR<T> &A, T alpha)
 
     for (int i = 0; i < n; ++i)
     {
-        for (int p = S.row_ptr[i]; p < S.row_ptr[i + 1]; ++p)
+        const int rs = S.row_ptr[i];
+        const int re = S.row_ptr[i + 1];
+
+        if (re > rs && S.col_ind[re - 1] == i)
         {
-            if (S.col_ind[p] == i)
-            {
-                S.values[p] = S.values[p] + alpha;
-                break; // diagonal guaranteed to exist
-            }
+            S.values[re - 1] += alpha;
+            continue;
+        }
+        else
+        {
+            throw std::runtime_error("add_diagonal_shift: missing diagonal entry in row " + std::to_string(i));
         }
     }
 
@@ -159,6 +176,7 @@ namespace ichol
     CSR<T> IC_factorize(const CSR<T> &Ahost,
                         const ICTP_Params &ictp_params,
                         const IC_Factorize_Params &params,
+                        const core::IC_Symbolic &Sym,
                         IC_Factorize_Info *out_info);
 } // namespace ichol
 

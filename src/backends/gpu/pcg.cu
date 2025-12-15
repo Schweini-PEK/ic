@@ -7,26 +7,29 @@
 #include <type_traits>
 #include "ichol/half.hpp"
 
+__global__ void ew_mul(int n, const double *a, const double *b, double *out)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n)
+        out[i] = a[i] * b[i];
+}
+
+__global__ void diag_sub(int n,
+                         const int *__restrict__ rowPtr,
+                         const double *__restrict__ val,
+                         const double *__restrict__ p,
+                         double *__restrict__ q)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n)
+    {
+        double di = val[rowPtr[i + 1] - 1]; // last entry in row = diagonal
+        q[i] -= di * p[i];
+    }
+}
+
 namespace ichol
 {
-
-    /**
-     * @brief Solves a linear system using a GPU-based CG solver with IC preconditioning.
-     *
-     * Applies the preconditioner M^{-1} = L^{-T} L^{-1} and uses CG
-     * to solve A x = b.
-     *
-     * @param h_csrRowPtrA CSR row pointer for matrix A (host).
-     * @param h_csrColIndA CSR column indices for matrix A (host).
-     * @param h_valA       Nonzero values of matrix A (host).
-     * @param h_csrRowPtrL CSR row pointer for factor L (host).
-     * @param h_csrColIndL CSR column indices for factor L (host).
-     * @param h_valL       Nonzero values for factor L (host) in precision T_L.
-     * @param h_b          Right-hand side vector b (host).
-     * @param h_x          Solution vector x (host, output).
-     * @param iterations   Number of iterations performed (output).
-     * @param finalRes     Final residual norm (output).
-     */
     template <typename T_L>
     void icPreconditionedCG_GPU(
         const std::vector<int> &h_csrRowPtrA,
@@ -37,13 +40,13 @@ namespace ichol
         const std::vector<T_L> &h_valL,
         const std::vector<double> &h_b,
         std::vector<double> &h_x,
+        const std::vector<double> &h_D,
         int &iterations,
         double &finalRes)
     {
-
-        //======================================================
-        // PHASE 1: Allocate A, L on GPU, create cuSPARSE/cuBLAS
-        //======================================================
+        /*
+        I. Allocate A, L on GPU
+        */
         cusparseHandle_t cusparseHandle = nullptr;
         cusparseCreate(&cusparseHandle);
 
@@ -54,7 +57,19 @@ namespace ichol
         int nnzA = static_cast<int>(h_valA.size());
         int nnzL = static_cast<int>(h_valL.size());
 
-        // 1) Copy A to device
+        std::vector<double> h_diagA(n, 0.0);
+        for (int i = 0; i < n; ++i)
+        {
+            h_diagA[i] = h_valA[h_csrRowPtrA[i + 1] - 1];
+        }
+        double *d_diagA = nullptr;
+        cudaMalloc((void **)&d_diagA, n * sizeof(double));
+        cudaMemcpy(d_diagA, h_diagA.data(), n * sizeof(double), cudaMemcpyHostToDevice);
+
+        double *d_diagP = nullptr;
+        cudaMalloc((void **)&d_diagP, n * sizeof(double));
+
+        // Copy A to device
         int *d_csrRowPtrA = nullptr, *d_csrColIndA = nullptr;
         double *d_valA = nullptr;
         cudaMalloc((void **)&d_csrRowPtrA, (n + 1) * sizeof(int));
@@ -70,7 +85,7 @@ namespace ichol
                           CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
                           CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F);
 
-        // 2) Copy L to device
+        // Copy L to device
         int *d_csrRowPtrL = nullptr, *d_csrColIndL = nullptr;
         cudaMalloc((void **)&d_csrRowPtrL, (n + 1) * sizeof(int));
         cudaMalloc((void **)&d_csrColIndL, nnzL * sizeof(int));
@@ -115,6 +130,26 @@ namespace ichol
         cudaMalloc((void **)&d_b, n * sizeof(double));
         cudaMemset(d_x, 0, n * sizeof(double)); // x=0 initial
         cudaMemcpy(d_b, h_b.data(), n * sizeof(double), cudaMemcpyHostToDevice);
+
+        // new: set up D
+        double *d_D = nullptr;
+        cudaMalloc(&d_D, n * sizeof(double));
+        cudaMemcpy(d_D, h_D.data(), n * sizeof(double), cudaMemcpyHostToDevice);
+
+        double *d_Dr = nullptr;
+        cudaMalloc(&d_Dr, n * sizeof(double));
+
+        double *d_b_orig = nullptr;
+        cudaMalloc(&d_b_orig, n * sizeof(double));
+
+        int block = 256;
+        int grid = (n + block - 1) / block;
+        ew_mul<<<grid, block>>>(n, d_D, d_b, d_b_orig); // d_b_orig = D .* d_b
+
+        double bnorm = 0.0;
+        cublasDnrm2(cublasHandle, n, d_b_orig, 1, &bnorm);
+
+        cudaFree(d_b_orig);
 
         // 4) Setup Triangular Solve descriptors for L & L^T
         cusparseSpSVDescr_t spSVDescrFwd = nullptr, spSVDescrBwd = nullptr;
@@ -186,19 +221,43 @@ namespace ichol
         cusparseCreateDnVec(&vecP_dev, n, d_p, CUDA_R_64F);
         cusparseCreateDnVec(&vecQ_dev, n, d_q, CUDA_R_64F);
 
-        // Also need a spMV buffer for A
+        // A spMV buffer for A
         size_t spmvBufSize = 0;
         void *d_spmvBuf = nullptr;
         {
+            size_t spmvBufSizeNT = 0, spmvBufSizeT = 0;
+
+            double alpha1 = 1.0;
             double beta0 = 0.0;
+
+            // NON_TRANSPOSE buffer
             cusparseSpMV_bufferSize(
                 cusparseHandle,
                 CUSPARSE_OPERATION_NON_TRANSPOSE,
-                &alpha_one, spMatA, vecP_dev,
+                &alpha1, spMatA, vecP_dev,
                 &beta0, vecQ_dev,
                 CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT,
-                &spmvBufSize);
-            cudaMalloc(&d_spmvBuf, spmvBufSize);
+                &spmvBufSizeNT);
+
+            // TRANSPOSE buffer
+            cusparseSpMV_bufferSize(
+                cusparseHandle,
+                CUSPARSE_OPERATION_TRANSPOSE,
+                &alpha1, spMatA, vecP_dev,
+                &beta0, vecQ_dev,
+                CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT,
+                &spmvBufSizeT);
+
+            // assign to outer variable (no shadowing)
+            spmvBufSize = (spmvBufSizeNT > spmvBufSizeT) ? spmvBufSizeNT : spmvBufSizeT;
+            if (spmvBufSize > 0)
+            {
+                cudaMalloc(&d_spmvBuf, spmvBufSize);
+            }
+            else
+            {
+                d_spmvBuf = nullptr;
+            }
         }
 
         //======================================================
@@ -211,7 +270,7 @@ namespace ichol
         double nrmr0 = 0.0;
         cublasDnrm2(cublasHandle, n, d_r, 1, &nrmr0);
 
-        double tol = 1e-12;
+        double tol = 1e-6;
 
         //======================================================
         // PHASE 3: CG iteration
@@ -229,7 +288,6 @@ namespace ichol
                 // forward
                 cusparseDnVecDescr_t vecR = nullptr, vecW = nullptr;
                 cusparseCreateDnVec(&vecR, n, (void *)d_r, CUDA_R_64F);
-                // cusparseCreateDnVec(&vecW, n, (void *)d_z, CUDA_R_64F);
                 cusparseCreateDnVec(&vecW, n, (void *)d_w, CUDA_R_64F);
 
                 cusparseSpSV_solve(
@@ -246,8 +304,6 @@ namespace ichol
                 cusparseDestroyDnVec(vecW);
 
                 // backward
-                // cusparseCreateDnVec(&vecR, n, (void *)d_z, CUDA_R_64F);
-                // cusparseCreateDnVec(&vecW, n, (void *)d_z, CUDA_R_64F);
                 cusparseDnVecDescr_t vecR2 = nullptr, vecZ = nullptr;
                 cusparseCreateDnVec(&vecR2, n, (void *)d_w, CUDA_R_64F); // input = w from forward
                 cusparseCreateDnVec(&vecZ, n, (void *)d_z, CUDA_R_64F);  // output = z
@@ -282,12 +338,17 @@ namespace ichol
                 cublasDaxpy(cublasHandle, n, &alphaOne, d_z, 1, d_p, 1);
             }
 
-            // (4) q = A p
+            // (4) q = A p, where A is symmetric but stored as (L+D) only.
+            // q = (L+D)*p + (L^T)*p - diag(A).*p
             {
-                double alpha1 = 1.0, beta0 = 0.0;
                 cusparseDnVecSetValues(vecP_dev, d_p);
                 cusparseDnVecSetValues(vecQ_dev, d_q);
 
+                double alpha1 = 1.0;
+                double beta0 = 0.0;
+                double beta1 = 1.0;
+
+                // q = (L+D) * p
                 cusparseSpMV(
                     cusparseHandle,
                     CUSPARSE_OPERATION_NON_TRANSPOSE,
@@ -295,6 +356,18 @@ namespace ichol
                     &beta0, vecQ_dev,
                     CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT,
                     d_spmvBuf);
+
+                // q += (L+D)^T * p   (adds diag again too)
+                cusparseSpMV(
+                    cusparseHandle,
+                    CUSPARSE_OPERATION_TRANSPOSE,
+                    &alpha1, spMatA, vecP_dev,
+                    &beta1, vecQ_dev,
+                    CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT,
+                    d_spmvBuf);
+
+                // remove one diag
+                diag_sub<<<grid, block>>>(n, d_csrRowPtrA, d_valA, d_p, d_q);
             }
 
             // (5) alpha = rho / (p^T q)
@@ -311,20 +384,18 @@ namespace ichol
             cublasDaxpy(cublasHandle, n, &negAlpha, d_q, 1, d_r, 1);
 
             // (8) check convergence
-            double nrmr = 0.0;
-            cublasDnrm2(cublasHandle, n, d_r, 1, &nrmr);
-            iterations = k;
-            std::cout << "  CG Iteration " << k << ": Residual = " << nrmr << std::endl;
-            finalRes = nrmr;
-            if (nrmr / nrmr0 < tol)
-            {
+            ew_mul<<<grid, block>>>(n, d_D, d_r, d_Dr); // d_Dr = D .* r
+
+            double nrmDr = 0.0;
+            cublasDnrm2(cublasHandle, n, d_Dr, 1, &nrmDr);
+
+            if (nrmDr / bnorm < tol)
                 break;
-            }
 
             // Example 2: Check intermediate values during CG iterations
-            if (std::isnan(nrmr) || std::isinf(nrmr))
+            if (std::isnan(nrmDr) || std::isinf(nrmDr))
             {
-                std::cerr << "ERROR: nrmr is NaN or Inf in iteration " << k << ": " << nrmr << std::endl;
+                std::cerr << "ERROR: nrmDr is NaN or Inf in iteration " << k << ": " << nrmDr << std::endl;
                 break;
             }
         }
@@ -367,6 +438,9 @@ namespace ichol
         cudaFree(d_csrColIndL);
         cudaFree(d_valLptr);
 
+        cudaFree(d_diagP);
+        cudaFree(d_diagA);
+
         cusparseDestroySpMat(spMatA);
         cusparseDestroySpMat(spMatL);
 
@@ -384,6 +458,7 @@ namespace ichol
         const std::vector<double> &h_valL,
         const std::vector<double> &h_b,
         std::vector<double> &h_x,
+        const std::vector<double> &h_D,
         int &iterations,
         double &finalRes);
 
@@ -396,6 +471,7 @@ namespace ichol
         const std::vector<float> &h_valL,
         const std::vector<double> &h_b,
         std::vector<double> &h_x,
+        const std::vector<double> &h_D,
         int &iterations,
         double &finalRes);
 
@@ -408,6 +484,7 @@ namespace ichol
         const std::vector<half_float::half> &h_valL,
         const std::vector<double> &h_b,
         std::vector<double> &h_x,
+        const std::vector<double> &h_D,
         int &iterations,
         double &finalRes);
 

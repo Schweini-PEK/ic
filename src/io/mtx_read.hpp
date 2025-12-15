@@ -4,14 +4,13 @@
 #include <string>
 #include "../include/ichol/matrix_formats.hpp"
 
-namespace ichol {
-// Reads an MTX file and returns a CSR struct
-template <typename T>
-CSR<T> readMTXtoCSR(const std::string& path);
-
-// Reads an MTX file and returns a CSC struct
-template <typename T>
-CSC<T> readMTXtoCSC(const std::string& path);
+namespace ichol
+{
+    /**
+     * Read a mtx file and store it to a lower tri + diag in CSR format.
+     */
+    template <typename T>
+    CSR<T> readMTXtoCSR(const std::string &path, bool verify);
 } // namespace ichol
 
 #endif // INCHOL_MTX_READ_HPP
