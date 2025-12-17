@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iostream>
 #include <string>
+#include <cassert>
 
 #include "ichol/matrix_formats.hpp"
 #include "ichol/ictp.hpp"
@@ -12,9 +13,116 @@
 
 #include "../../src/io/mtx_read.hpp"
 
+#include <limits>
+#include <random>
+
+// ---------------------- HOST CHECKS (gtest) ----------------------
+namespace test_checks
+{
+
+    inline void assert_pos_finite_vec(const std::vector<double> &v, const char *name)
+    {
+        ASSERT_FALSE(v.empty()) << name;
+        for (size_t i = 0; i < v.size(); ++i)
+        {
+            ASSERT_TRUE(std::isfinite(v[i])) << name << "[" << i << "] not finite: " << v[i];
+            ASSERT_GT(v[i], 0.0) << name << "[" << i << "] not positive: " << v[i];
+        }
+    }
+
+    // Enforces the storage contract your CPU+GPU matvec assumes:
+    // - CSR contains only lower triangle + diagonal (j <= i)
+    // - columns strictly increasing within each row (=> sorted, no duplicates)
+    // - diagonal exists in every row
+    // - optionally: diagonal is the last entry (true if sorted and diag present)
+    template <typename T>
+    inline void assert_csr_lower_diag_only_sorted(const ichol::CSR<T> &M,
+                                                  const char *name,
+                                                  bool require_diag_last = true)
+    {
+        const int n = M.num_rows;
+        ASSERT_EQ(M.num_cols, n) << name << " not square";
+        ASSERT_EQ((int)M.row_ptr.size(), n + 1) << name << " row_ptr size";
+        ASSERT_EQ(M.col_ind.size(), M.values.size()) << name << " col/val size mismatch";
+
+        for (int i = 0; i < n; ++i)
+        {
+            const int rs = M.row_ptr[i];
+            const int re = M.row_ptr[i + 1];
+            ASSERT_LT(rs, re) << name << " row " << i << " empty / missing diagonal";
+            int prev = -1;
+            bool seen_diag = false;
+
+            for (int p = rs; p < re; ++p)
+            {
+                const int j = M.col_ind[p];
+                const auto a = (double)M.values[p];
+
+                ASSERT_GE(j, 0) << name << " row " << i << " col < 0";
+                ASSERT_LT(j, n) << name << " row " << i << " col out of range: " << j;
+                ASSERT_LE(j, i) << name << " row " << i << " has upper entry col=" << j;
+
+                ASSERT_GT(j, prev) << name << " row " << i
+                                   << " cols not strictly increasing (unsorted or duplicate)";
+                prev = j;
+
+                ASSERT_TRUE(std::isfinite(a)) << name << " has non-finite value at ("
+                                              << i << "," << j << "): " << a;
+
+                if (j == i)
+                    seen_diag = true;
+            }
+
+            ASSERT_TRUE(seen_diag) << name << " row " << i << " missing diagonal";
+            if (require_diag_last)
+            {
+                ASSERT_EQ(M.col_ind[re - 1], i) << name << " row " << i << " diag not last";
+            }
+        }
+    }
+
+    // Stronger L-specific check (needed for SpSV with NON_UNIT diagonal)
+    template <typename T>
+    inline void assert_L_lower_diag_pos_finite(const ichol::CSR<T> &L, const char *name)
+    {
+        assert_csr_lower_diag_only_sorted(L, name, /*require_diag_last=*/true);
+        const int n = L.num_rows;
+        for (int i = 0; i < n; ++i)
+        {
+            const int pdiag = L.row_ptr[i + 1] - 1; // diag must be last
+            const double di = (double)L.values[pdiag];
+            ASSERT_TRUE(std::isfinite(di)) << name << " diag not finite at row " << i;
+            ASSERT_GT(di, 0.0) << name << " diag not positive at row " << i << ": " << di;
+        }
+    }
+
+} // namespace test_checks
+
+template <typename T>
+void assert_diag_last(const ichol::CSR<T> &M)
+{
+    int n = M.num_rows;
+    for (int i = 0; i < n; ++i)
+    {
+        int row_start = M.row_ptr[i];
+        int row_end = M.row_ptr[i + 1];
+        assert(row_end > row_start && "Row has no entries / diagonal missing");
+        int last_col = M.col_ind[row_end - 1];
+        if (last_col != i)
+        {
+            std::cerr << "CSR diag-check failed: row " << i
+                      << " last column index " << last_col
+                      << " != expected diag index " << i << "\n";
+            assert(false);
+        }
+    }
+
+    std::cout << "Diag Check passed!" << std::endl;
+}
+
 TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
 {
-    std::string path = "test/data/HB/bcsstk11.mtx";
+    std::string path = "test/data/HB/bcsstk27.mtx";
     ichol::CSR<double> Ahost = ichol::readMTXtoCSR<double>(path, false);
 
     const int n = Ahost.num_rows;
@@ -49,6 +157,8 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
     for (int i = 0; i < n; ++i)
         b_tilde[i] = b[i] / D[i];
 
+    assert_diag_last(B);
+
     // Prepare L for PCG
     std::vector<int> rowPtrL = L.row_ptr;
     std::vector<int> colIndL = L.col_ind;
@@ -57,6 +167,11 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
     std::vector<double> y;
     int iters = 0;
     double finalRes = 0.0;
+
+    test_checks::assert_pos_finite_vec(D, "D");
+    test_checks::assert_csr_lower_diag_only_sorted(Ahost, "Ahost");
+    test_checks::assert_csr_lower_diag_only_sorted(B, "B");
+    test_checks::assert_L_lower_diag_pos_finite(L, "L");
 
     /*
     Solve B y = b_tilde with preconditioner from L,
@@ -119,6 +234,8 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
 
     std::cout << "Scaled-system relative residual (B y = b_tilde): "
               << relresB << "\n";
+    std::cout << "Iterations taken by PCG: "
+              << iters << "\n";
     std::cout << "Final residual from CG (reported ||r||_2): "
               << finalRes << "\n";
 
