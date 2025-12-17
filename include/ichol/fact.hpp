@@ -173,7 +173,7 @@ namespace ichol
      * The scaling matrix and pivot shifting are all in precision T
      */
     template <class T>
-    CSR<T> IC_factorize(const CSR<T> &Ahost,
+    CSR<T> IC_factorize(const CSR<double> &Ahost,
                         const ICTP_Params &ictp_params,
                         const IC_Factorize_Params &params,
                         const core::IC_Symbolic &Sym,

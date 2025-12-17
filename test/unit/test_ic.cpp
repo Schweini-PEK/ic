@@ -9,6 +9,7 @@
 #include "ichol/matrix_formats.hpp"
 #include "ichol/ictp.hpp"
 #include "ichol/pcg.hpp"
+#include "ichol/half.hpp"
 #include "ichol/fact.hpp"
 
 #include "../../src/io/mtx_read.hpp"
@@ -30,11 +31,6 @@ namespace test_checks
         }
     }
 
-    // Enforces the storage contract your CPU+GPU matvec assumes:
-    // - CSR contains only lower triangle + diagonal (j <= i)
-    // - columns strictly increasing within each row (=> sorted, no duplicates)
-    // - diagonal exists in every row
-    // - optionally: diagonal is the last entry (true if sorted and diag present)
     template <typename T>
     inline void assert_csr_lower_diag_only_sorted(const ichol::CSR<T> &M,
                                                   const char *name,
@@ -122,16 +118,17 @@ void assert_diag_last(const ichol::CSR<T> &M)
 
 TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
 {
-    std::string path = "test/data/HB/bcsstk27.mtx";
+    // std::string path = "test/data/HB/bcsstk27.mtx";
+    std::string path = "test/data/nasa2146.mtx";
     ichol::CSR<double> Ahost = ichol::readMTXtoCSR<double>(path, false);
 
     const int n = Ahost.num_rows;
 
     ICTP_Params ictp_params;
-    ictp_params.lfil_per_row = 100;
+    ictp_params.lfil_per_row = 40;
     ictp_params.drop_tol = 0.0;
     IC_Factorize_Params fparams;
-    fparams.initial_shift = 1e-8;
+    fparams.initial_shift = 1e-10;
     fparams.shift_growth = 2.0;
     fparams.max_restarts = 8;
     IC_Factorize_Info out_info;
@@ -139,7 +136,9 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
     ichol::core::IC_Symbolic Sym = ichol::core::build_ic_symbolic(Ahost, 4);
 
     // Factorize using the new driver
-    ichol::CSR<double> L = ichol::IC_factorize(Ahost, ictp_params, fparams, Sym, &out_info);
+    // ichol::CSR<double> L = ichol::IC_factorize<double>(Ahost, ictp_params, fparams, Sym, &out_info);
+    ichol::CSR<float> L = ichol::IC_factorize<float>(Ahost, ictp_params, fparams, Sym, &out_info);
+    // ichol::CSR<half_float::half> L = ichol::IC_factorize<half_float::half>(Ahost, ictp_params, fparams, Sym, &out_info);
     ASSERT_GT(L.values.size(), 0u);
 
     std::vector<double> D(n, 1.0);
@@ -162,7 +161,7 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
     // Prepare L for PCG
     std::vector<int> rowPtrL = L.row_ptr;
     std::vector<int> colIndL = L.col_ind;
-    std::vector<double> valL = L.values;
+    std::vector<double> valL = ichol::toDoubleVector(L.values);
 
     std::vector<double> y;
     int iters = 0;

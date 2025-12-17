@@ -11,6 +11,15 @@ namespace ichol
      */
     template <typename T>
     CSR<T> readMTXtoCSR(const std::string &path, bool verify);
+
+    template <typename T>
+    std::vector<double> toDoubleVector(const std::vector<T> &input)
+    {
+        std::vector<double> output;
+        output.reserve(input.size());
+        for (const auto &v : input) output.push_back(static_cast<double>(v));
+        return output;
+    }
 } // namespace ichol
 
 #endif // INCHOL_MTX_READ_HPP

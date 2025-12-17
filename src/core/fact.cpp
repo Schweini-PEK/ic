@@ -3,16 +3,35 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <iostream>
 
 #include "ichol/matrix_formats.hpp"
 #include "ichol/ictp.hpp"
 #include "ichol/fact.hpp"
 #include "ichol/symbolic.hpp"
+#include "ichol/half.hpp"
 
 namespace ichol
 {
+    // Add: convert CSR<double> to CSR<T> by casting values
     template <class T>
-    CSR<T> IC_factorize(const CSR<T> &Ahost,
+    CSR<T> convert_CSR_precision(const CSR<double> &src)
+    {
+        CSR<T> dst;
+        dst.num_rows = src.num_rows;
+        dst.num_cols = src.num_cols;
+        const int nnz = (int)src.values.size();
+        dst.nnz = nnz;
+        dst.row_ptr = src.row_ptr; // copy structure
+        dst.col_ind = src.col_ind; // copy structure
+        dst.values.resize(nnz);
+        for (int i = 0; i < nnz; ++i)
+            dst.values[i] = static_cast<T>(src.values[i]);
+        return dst;
+    }
+
+    template <class T>
+    CSR<T> IC_factorize(const CSR<double> &Ahost,
                         const ICTP_Params &ictp_params,
                         const IC_Factorize_Params &params,
                         const core::IC_Symbolic &Sym,
@@ -20,17 +39,17 @@ namespace ichol
     {
         IC_Factorize_Info info;
 
-        // (1) Prescaling once
+        // (1) Prescaling once in double precision and convert the precision to u_l
         info.D = col_norm_scale(Ahost);
-        CSR<T> B = apply_symm_prescaling(Ahost, info.D);
+        CSR<T> B = convert_CSR_precision<T>(apply_symm_prescaling(Ahost, info.D));
 
         // (2) Prepare attempt-level params (no scaling, no shift here)
         IC_Attempt_Params attempt_params;
         attempt_params.pivot_tol = params.pivot_tol;
         attempt_params.enable_safe_fp16_checks = params.enable_safe_fp16_checks;
 
-        // (3) Shift-restart loop
-        T alpha = params.initial_shift;
+        // (3) Shift-restart loop in u_l precision
+        T alpha = T(params.initial_shift);
 
         CSR<T> Atry, L;
         ICTP_Factor_Info finfo;
@@ -69,15 +88,16 @@ namespace ichol
                                               const core::IC_Symbolic &Sym,
                                               IC_Factorize_Info *out_info);
 
-    template CSR<float> IC_factorize<float>(const CSR<float> &Ahost,
+    template CSR<float> IC_factorize<float>(const CSR<double> &Ahost,
                                             const ICTP_Params &ictp_params,
                                             const IC_Factorize_Params &params,
                                             const core::IC_Symbolic &Sym,
                                             IC_Factorize_Info *out_info);
 
-    // template CSR<half> IC_factorize<float>(const CSR<float> &Ahost,
-    // const ICTP_Params &ictp_params,
-    // const IC_Factorize_Params &params,
-    // IC_Factorize_Info *out_info);
+    template CSR<half_float::half> IC_factorize<half_float::half>(const CSR<double> &Ahost,
+                                                                  const ICTP_Params &ictp_params,
+                                                                  const IC_Factorize_Params &params,
+                                                                  const core::IC_Symbolic &Sym,
+                                                                  IC_Factorize_Info *out_info);
 
 } // namespace ichol

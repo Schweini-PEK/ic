@@ -28,7 +28,7 @@ TEST(FactTest, IC_Factorize_Runs)
 
     ichol::core::IC_Symbolic Sym = ichol::core::build_ic_symbolic(csr, 4);
 
-    auto L = ichol::IC_factorize(csr, ictp_params, fparams, Sym, &info);
+    auto L = ichol::IC_factorize<double>(csr, ictp_params, fparams, Sym, &info);
 
     ASSERT_EQ(L.num_rows, csr.num_rows);
     ASSERT_EQ(L.num_cols, csr.num_cols);
