@@ -8,6 +8,7 @@
 #include "ichol/ictp.hpp"
 #include "ichol/fact.hpp"
 #include "ichol/pcg.hpp"
+#include "ichol/half.hpp"
 
 #include "../io/mtx_read.hpp"
 
@@ -69,9 +70,9 @@ int main(int argc, char **argv)
 {
     std::string mtx_path;
     std::string prec = "double";
-    int lfil = 100;
+    int lfil = 20;
     double drop = 0.0;
-    double shift = 1e-8;
+    double shift = 1e-10;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -113,13 +114,8 @@ int main(int argc, char **argv)
         return run<double>(mtx_path, lfil, drop, shift);
     if (prec == "float")
         return run<float>(mtx_path, lfil, drop, shift);
-
-    // stub for now
     if (prec == "half")
-    {
-        std::cerr << "half: stub (not wired yet)\n";
-        return 2;
-    }
+        return run<half_float::half>(mtx_path, lfil, drop, shift);
 
     std::cerr << "Unknown --prec: " << prec << "\n";
     return 2;

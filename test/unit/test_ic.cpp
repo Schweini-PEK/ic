@@ -17,7 +17,6 @@
 #include <limits>
 #include <random>
 
-// ---------------------- HOST CHECKS (gtest) ----------------------
 namespace test_checks
 {
 

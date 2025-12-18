@@ -1,5 +1,9 @@
 #include <cuda_runtime.h>
+
+#define __CUDA_NO_HALF_OPERATORS__
+#define __CUDA_NO_HALF2_OPERATORS__
 #include <cuda_fp16.h>
+
 #include <cuda_fp8.h>
 
 #include <cmath>
@@ -42,6 +46,7 @@ struct gpu_type<half_float::half>
 
 // -------------------------
 // Magnitude type (no double for fp16/fp32)
+//   NOTE: for __half, keep magnitude in __half to avoid explicit half<->float conversions.
 // -------------------------
 template <class G>
 struct mag_type
@@ -53,6 +58,11 @@ struct mag_type<double>
 {
     using type = double;
 };
+template <>
+struct mag_type<__half>
+{
+    using type = __half;
+};
 template <class G>
 using mag_t = typename mag_type<G>::type;
 
@@ -60,7 +70,73 @@ template <class G>
 __host__ __device__ __forceinline__ mag_t<G> to_mag(G x) { return (mag_t<G>)x; }
 
 template <>
-__host__ __device__ __forceinline__ float to_mag<__half>(__half x) { return __half2float(x); }
+__host__ __device__ __forceinline__ __half to_mag<__half>(__half x) { return x; }
+
+// -------------------------
+// Half helpers (bit-level abs/zero + explicit half intrinsics)
+// -------------------------
+__host__ __device__ __forceinline__ __half hzero()
+{
+    return CUDART_ZERO_FP16;
+}
+
+template <class M>
+__device__ __forceinline__ M mag_zero()
+{
+    return (M)0;
+}
+template <>
+__device__ __forceinline__ __half mag_zero<__half>()
+{
+    return hzero();
+}
+
+template <class M>
+__device__ __forceinline__ bool mag_lt(M a, M b) { return a < b; }
+template <class M>
+__device__ __forceinline__ bool mag_le(M a, M b) { return a <= b; }
+template <class M>
+__device__ __forceinline__ bool mag_gt(M a, M b) { return a > b; }
+
+template <>
+__device__ __forceinline__ bool mag_lt<__half>(__half a, __half b) { return __hlt(a, b); }
+template <>
+__device__ __forceinline__ bool mag_le<__half>(__half a, __half b) { return __hle(a, b); }
+template <>
+__device__ __forceinline__ bool mag_gt<__half>(__half a, __half b) { return __hgt(a, b); }
+
+template <class G>
+__device__ __forceinline__ G g_zero()
+{
+    return (G)0;
+}
+template <>
+__device__ __forceinline__ __half g_zero<__half>()
+{
+    return hzero();
+}
+
+template <class G>
+__device__ __forceinline__ G g_add(G a, G b) { return a + b; }
+template <class G>
+__device__ __forceinline__ G g_sub(G a, G b) { return a - b; }
+template <class G>
+__device__ __forceinline__ G g_mul(G a, G b) { return a * b; }
+template <class G>
+__device__ __forceinline__ G g_div(G a, G b) { return a / b; }
+template <class G>
+__device__ __forceinline__ G g_neg(G a) { return -a; }
+
+template <>
+__device__ __forceinline__ __half g_add<__half>(__half a, __half b) { return __hadd_rn(a, b); }
+template <>
+__device__ __forceinline__ __half g_sub<__half>(__half a, __half b) { return __hsub_rn(a, b); }
+template <>
+__device__ __forceinline__ __half g_mul<__half>(__half a, __half b) { return __hmul_rn(a, b); }
+template <>
+__device__ __forceinline__ __half g_div<__half>(__half a, __half b) { return __hdiv(a, b); }
+template <>
+__device__ __forceinline__ __half g_neg<__half>(__half a) { return __hneg(a); }
 
 template <class G>
 __device__ __forceinline__ mag_t<G> mag_abs(G x);
@@ -72,9 +148,15 @@ template <>
 __device__ __forceinline__ double mag_abs<double>(double x) { return fabs(x); }
 
 template <>
-__device__ __forceinline__ float mag_abs<__half>(__half x) { return fabsf(__half2float(x)); }
+__device__ __forceinline__ __half mag_abs<__half>(__half x)
+{
+    // abs(x) by clearing sign bit, no half<->float conversions
+    unsigned short bits = __half_as_ushort(x);
+    bits &= (unsigned short)0x7FFFu;
+    return __ushort_as_half(bits);
+}
 
-// sqrt in "same working precision" (double->double, float->float, half->float then round to half)
+// sqrt in "same working precision"
 template <class G>
 __device__ __forceinline__ G sqrt_g(G x);
 
@@ -87,7 +169,8 @@ __device__ __forceinline__ double sqrt_g<double>(double x) { return sqrt(x); }
 template <>
 __device__ __forceinline__ __half sqrt_g<__half>(__half x)
 {
-    return __float2half_rn(sqrtf(__half2float(x)));
+    // explicit half math function (may internally use wider precision, but API is half)
+    return hsqrt(x);
 }
 
 template <class G>
@@ -96,7 +179,9 @@ __host__ __device__ __forceinline__ bool is_zero(G x) { return x == G(0); }
 template <>
 __host__ __device__ __forceinline__ bool is_zero<__half>(__half x)
 {
-    return __half2float(x) == 0.0f;
+    // treat +0 and -0 as zero, no half<->float conversions
+    unsigned short bits = __half_as_ushort(x);
+    return (bits & (unsigned short)0x7FFFu) == (unsigned short)0;
 }
 
 template <typename U>
@@ -127,14 +212,14 @@ __device__ __forceinline__ void topk_insert_by_abs(
     for (int t = 1; t < sz; ++t)
     {
         mag_t<G> a = mag_abs(vs[t]);
-        if (a < minabs)
+        if (mag_lt(a, minabs))
         {
             minabs = a;
             minpos = t;
         }
     }
 
-    if (mag_abs(v) > minabs)
+    if (mag_gt(mag_abs(v), minabs))
     {
         js[minpos] = j;
         vs[minpos] = v;
@@ -189,13 +274,13 @@ __device__ __forceinline__ void w_add_bounded(
     {
         if (w_col[t] == col)
         {
-            w_val[t] = w_val[t] + delta;
+            w_val[t] = g_add<G>(w_val[t], delta);
             return;
         }
     }
 
     const mag_t<G> dropTolM = to_mag(dropTol);
-    if (dropTolM > (mag_t<G>)0 && mag_abs(delta) < dropTolM)
+    if (mag_gt(dropTolM, mag_zero<mag_t<G>>()) && mag_lt(mag_abs(delta), dropTolM))
         return;
 
     if (wSz < MAX_WORK)
@@ -211,14 +296,14 @@ __device__ __forceinline__ void w_add_bounded(
     for (int t = 1; t < wSz; ++t)
     {
         mag_t<G> a = mag_abs(w_val[t]);
-        if (a < minabs)
+        if (mag_lt(a, minabs))
         {
             minabs = a;
             minpos = t;
         }
     }
 
-    if (mag_abs(delta) <= minabs)
+    if (mag_le(mag_abs(delta), minabs))
         return;
 
     w_col[minpos] = col;
@@ -242,7 +327,7 @@ __device__ __forceinline__ G get_Ljk_rowwise(
         if (colq > k)
             break;
     }
-    return G(0);
+    return g_zero<G>();
 }
 
 // -------------------------
@@ -282,7 +367,7 @@ __global__ void ictp_row_kernel_dynamic(
     const int rowEndA = rowPtrA[i + 1];
 
     // robust diagonal extract
-    G a_ii = G(0);
+    G a_ii = g_zero<G>();
     if (rowEndA > rowStartA)
     {
         int last = rowEndA - 1;
@@ -359,12 +444,14 @@ __global__ void ictp_row_kernel_dynamic(
         if (is_zero(Lkk))
             continue;
 
-        G lik = wk / Lkk;
+        // lik = wk / Lkk (explicit half division when G=__half)
+        G lik = g_div<G>(wk, Lkk);
 
-        if (dropTolM > (mag_t<G>)0 && mag_abs(lik) < dropTolM)
+        if (mag_gt(dropTolM, mag_zero<mag_t<G>>()) && mag_lt(mag_abs(lik), dropTolM))
             continue;
 
-        w_ii = w_ii - lik * lik;
+        // w_ii = w_ii - lik*lik
+        w_ii = g_sub<G>(w_ii, g_mul<G>(lik, lik));
 
         for (int node = colHead[k]; node != -1; node = colNext[node])
         {
@@ -377,7 +464,9 @@ __global__ void ictp_row_kernel_dynamic(
             G Ljk = get_Ljk_rowwise<G>(j, k, cap, rowCountL, colIndL, valL);
             if (!is_zero(Ljk))
             {
-                w_add_bounded<G, MAX_WORK>(i, w_col, w_val, wSz, j, (G)(-lik * Ljk), dropTol);
+                // delta = -lik * Ljk
+                G delta = g_neg<G>(g_mul<G>(lik, Ljk));
+                w_add_bounded<G, MAX_WORK>(i, w_col, w_val, wSz, j, delta, dropTol);
             }
         }
 
@@ -385,7 +474,7 @@ __global__ void ictp_row_kernel_dynamic(
     }
 
     const mag_t<G> pivotM = to_mag(w_ii);
-    if (pivotM <= pivotTolM)
+    if (mag_le(pivotM, pivotTolM))
     {
         *status = 1;
         *fail_row = i;
@@ -411,17 +500,17 @@ __global__ void ictp_row_kernel_dynamic(
 
     for (int t = 0; t < selSz; ++t)
     {
-        int k = sel_j[t];
+        int kk = sel_j[t];
         int node = atomicAdd(nodeCounter, 1);
         if (node >= maxNodes)
         {
             *status = 3;
             *fail_row = i;
-            *fail_pivot = G(0);
+            *fail_pivot = g_zero<G>();
             return;
         }
         colRow[node] = i;
-        colNext[node] = atomicExch(&colHead[k], node);
+        colNext[node] = atomicExch(&colHead[kk], node);
     }
 }
 
@@ -624,7 +713,7 @@ static bool ictp_rowwise_gpu_dynamic(
             if (info)
             {
                 int fr = -1;
-                G fp = G(0);
+                G fp = (G)0;
                 CUDA_CHECK(cudaMemcpy(&fr, d_fail_row, sizeof(int), cudaMemcpyDeviceToHost));
                 CUDA_CHECK(cudaMemcpy(&fp, d_fail_pivot, sizeof(G), cudaMemcpyDeviceToHost));
 
@@ -713,9 +802,6 @@ static bool ictp_rowwise_gpu_dynamic(
     return true;
 }
 
-// -------------------------
-// Public API wrapper
-// -------------------------
 namespace ichol
 {
     template <class T>
