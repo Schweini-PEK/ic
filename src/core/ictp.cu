@@ -19,18 +19,19 @@
 #include "ichol/matrix_formats.hpp"
 #include "ichol/fact.hpp"
 #include "ichol/half.hpp"
+#include "ichol/cuda_utils.hpp"
 
-#define CUDA_CHECK(call)                                                 \
-    do                                                                   \
-    {                                                                    \
-        cudaError_t err = call;                                          \
-        if (err != cudaSuccess)                                          \
-        {                                                                \
-            std::cerr << "CUDA error in " << __FILE__ << ':' << __LINE__ \
-                      << " " << cudaGetErrorString(err) << std::endl;    \
-            std::exit(EXIT_FAILURE);                                     \
-        }                                                                \
-    } while (0)
+// #define CUDA_CHECK(call)                                                 \
+//     do                                                                   \
+//     {                                                                    \
+//         cudaError_t err = call;                                          \
+//         if (err != cudaSuccess)                                          \
+//         {                                                                \
+//             std::cerr << "CUDA error in " << __FILE__ << ':' << __LINE__ \
+//                       << " " << cudaGetErrorString(err) << std::endl;    \
+//             std::exit(EXIT_FAILURE);                                     \
+//         }                                                                \
+//     } while (0)
 
 template <class T>
 struct gpu_type
