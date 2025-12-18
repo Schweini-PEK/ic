@@ -2,11 +2,21 @@
 #include <cusparse.h>
 #include <cublas_v2.h>
 #include <cmath>
+#include <limits>
 #include <vector>
 #include <iostream>
 #include <random>
 #include <type_traits>
 #include "ichol/half.hpp"
+
+// ---------------------- mixed-precision helpers ----------------------
+template <typename To, typename From>
+__global__ void cast_vec(int n, const From *__restrict__ in, To *__restrict__ out)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n)
+        out[i] = static_cast<To>(in[i]);
+}
 
 /**
  * Element-Wise product
@@ -310,10 +320,10 @@ namespace ichol
         CUDA_CHECK(cudaMemcpy(d_valA, h_valA.data(), nnzA * sizeof(double), cudaMemcpyHostToDevice));
 
         cusparseSpMatDescr_t spMatA = nullptr;
-        cusparseCreateCsr(&spMatA, n, n, nnzA,
-                          d_csrRowPtrA, d_csrColIndA, d_valA,
-                          CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
-                          CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F);
+        CUSPARSE_CHECK(cusparseCreateCsr(&spMatA, n, n, nnzA,
+                                         d_csrRowPtrA, d_csrColIndA, d_valA,
+                                         CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
+                                         CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F));
 
         // Copy L to device
         int *d_csrRowPtrL = nullptr, *d_csrColIndL = nullptr;
@@ -322,55 +332,64 @@ namespace ichol
         CUDA_CHECK(cudaMemcpy(d_csrRowPtrL, h_csrRowPtrL.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_csrColIndL, h_csrColIndL.data(), nnzL * sizeof(int), cudaMemcpyHostToDevice));
 
-        // Determine L data type based on T_L
-        cudaDataType L_dataType;
-        if (std::is_same<T_L, double>::value)
+        // ---------------------- Preconditioner precision selection ----------------------
+        // Outer PCG stays FP64; only the preconditioner application (SpSV) uses the selected work precision.
+        constexpr bool L_is_fp64 = std::is_same<T_L, double>::value;
+        constexpr bool L_is_fp32 = std::is_same<T_L, float>::value;
+        constexpr bool L_is_fp16 = !L_is_fp64 && !L_is_fp32; // (half_float::half)
+
+        using PrecWork = typename std::conditional<L_is_fp64, double, float>::type;
+        const cudaDataType precWork_dataType = L_is_fp64 ? CUDA_R_64F : CUDA_R_32F;
+
+        // For FP16 storage, cuSPARSE SpSV does not support FP16. Convert L once at setup to FP32.
+        void *d_valL_storage = nullptr; // optional: original L values, if we keep them
+        void *d_valLptr = nullptr;      // L values used by SpSV (PrecWork)
+
+        if constexpr (L_is_fp64 || L_is_fp32)
         {
-            L_dataType = CUDA_R_64F;
-        }
-        else if (std::is_same<T_L, float>::value)
-        {
-            L_dataType = CUDA_R_32F;
+            CUDA_CHECK(cudaMalloc(&d_valLptr, nnzL * sizeof(T_L)));
+            CUDA_CHECK(cudaMemcpy(d_valLptr, h_valL.data(), nnzL * sizeof(T_L), cudaMemcpyHostToDevice));
+            d_valL_storage = d_valLptr;
         }
         else
         {
-            L_dataType = CUDA_R_16F; // Assuming half_float::half or __half
+            std::vector<float> h_valL32(nnzL);
+            for (int i = 0; i < nnzL; ++i)
+                h_valL32[i] = static_cast<float>(h_valL[i]);
+            CUDA_CHECK(cudaMalloc(&d_valLptr, nnzL * sizeof(float)));
+            CUDA_CHECK(cudaMemcpy(d_valLptr, h_valL32.data(), nnzL * sizeof(float), cudaMemcpyHostToDevice));
+            d_valL_storage = nullptr; // not needed on device for SpSV
         }
 
-        // Allocate memory for L values on device and copy data
-        void *d_valLptr = nullptr;
-        CUDA_CHECK(cudaMalloc(&d_valLptr, nnzL * sizeof(T_L)));
-        CUDA_CHECK(cudaMemcpy(d_valLptr, h_valL.data(), nnzL * sizeof(T_L), cudaMemcpyHostToDevice));
-
         cusparseSpMatDescr_t spMatL = nullptr;
-        cusparseCreateCsr(&spMatL, n, n, nnzL,
-                          d_csrRowPtrL, d_csrColIndL, d_valLptr,
-                          CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
-                          CUSPARSE_INDEX_BASE_ZERO, L_dataType);
+        CUSPARSE_CHECK(cusparseCreateCsr(&spMatL, n, n, nnzL,
+                                         d_csrRowPtrL, d_csrColIndL, d_valLptr,
+                                         CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
+                                         CUSPARSE_INDEX_BASE_ZERO, precWork_dataType));
 
         // Tell cuSPARSE that L is triangular, lower fill, with a non-unit diagonal
         cusparseFillMode_t fillMode = CUSPARSE_FILL_MODE_LOWER;
         cusparseDiagType_t diagType = CUSPARSE_DIAG_TYPE_NON_UNIT;
-        cusparseSpMatSetAttribute(spMatL, CUSPARSE_SPMAT_FILL_MODE, &fillMode, sizeof(fillMode));
-        cusparseSpMatSetAttribute(spMatL, CUSPARSE_SPMAT_DIAG_TYPE, &diagType, sizeof(diagType));
+        CUSPARSE_CHECK(cusparseSpMatSetAttribute(spMatL, CUSPARSE_SPMAT_FILL_MODE, &fillMode, sizeof(fillMode)));
+        CUSPARSE_CHECK(cusparseSpMatSetAttribute(spMatL, CUSPARSE_SPMAT_DIAG_TYPE, &diagType, sizeof(diagType)));
 
         // 3) Allocate vectors x, b, etc. in double
         double *d_x = nullptr, *d_b = nullptr;
-        cudaMalloc((void **)&d_x, n * sizeof(double));
-        cudaMalloc((void **)&d_b, n * sizeof(double));
-        cudaMemset(d_x, 0, n * sizeof(double)); // x=0 initial
-        cudaMemcpy(d_b, h_b.data(), n * sizeof(double), cudaMemcpyHostToDevice);
+        CUDA_CHECK(cudaMalloc((void **)&d_x, n * sizeof(double)));
+        CUDA_CHECK(cudaMalloc((void **)&d_b, n * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_x, 0, n * sizeof(double))); // x=0 initial
+        CUDA_CHECK(cudaMemcpy(d_b, h_b.data(), n * sizeof(double), cudaMemcpyHostToDevice));
 
         // new: set up D
         double *d_D = nullptr;
-        cudaMalloc(&d_D, n * sizeof(double));
-        cudaMemcpy(d_D, h_D.data(), n * sizeof(double), cudaMemcpyHostToDevice);
+        CUDA_CHECK(cudaMalloc(&d_D, n * sizeof(double)));
+        CUDA_CHECK(cudaMemcpy(d_D, h_D.data(), n * sizeof(double), cudaMemcpyHostToDevice));
 
         double *d_Dr = nullptr;
-        cudaMalloc(&d_Dr, n * sizeof(double));
+        CUDA_CHECK(cudaMalloc(&d_Dr, n * sizeof(double)));
 
         double *d_b_orig = nullptr;
-        cudaMalloc(&d_b_orig, n * sizeof(double));
+        CUDA_CHECK(cudaMalloc(&d_b_orig, n * sizeof(double)));
 
         int block = 256;
         int grid = (n + block - 1) / block;
@@ -381,79 +400,77 @@ namespace ichol
          * This computes the norm of original b for convergence check:
          */
         double bnorm = 0.0;
-        cublasDnrm2(cublasHandle, n, d_b_orig, 1, &bnorm);
+        CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_b_orig, 1, &bnorm));
 
         cudaFree(d_b_orig);
 
         // 4) Setup Triangular Solve descriptors for L & L^T
         cusparseSpSVDescr_t spSVDescrFwd = nullptr, spSVDescrBwd = nullptr;
-        cusparseSpSV_createDescr(&spSVDescrFwd);
-        cusparseSpSV_createDescr(&spSVDescrBwd);
+        CUSPARSE_CHECK(cusparseSpSV_createDescr(&spSVDescrFwd));
+        CUSPARSE_CHECK(cusparseSpSV_createDescr(&spSVDescrBwd));
 
-        // We need a dummy dense vector to measure buffer sizes
-        double *d_dummyVec = nullptr;
-        cudaMalloc(&d_dummyVec, n * sizeof(double));
+        // Dummy dense vectors to measure buffer sizes / run analysis in the same precision used by SpSV.
+        PrecWork *d_dummyVec_spsv = nullptr;
+        CUDA_CHECK(cudaMalloc(&d_dummyVec_spsv, n * sizeof(PrecWork)));
         cusparseDnVecDescr_t dummyVecR = nullptr, dummyVecSol = nullptr;
-        cusparseCreateDnVec(&dummyVecR, n, (void *)d_dummyVec, CUDA_R_64F);
-        cusparseCreateDnVec(&dummyVecSol, n, (void *)d_dummyVec, CUDA_R_64F);
+        CUSPARSE_CHECK(cusparseCreateDnVec(&dummyVecR, n, (void *)d_dummyVec_spsv, precWork_dataType));
+        CUSPARSE_CHECK(cusparseCreateDnVec(&dummyVecSol, n, (void *)d_dummyVec_spsv, precWork_dataType));
 
-        // Query buffer sizes
         size_t bufSizeFwd = 0, bufSizeBwd = 0;
         void *d_solveBufFwd = nullptr, *d_solveBufBwd = nullptr;
-        double alpha_one = 1.0;
+        const PrecWork alpha_one = static_cast<PrecWork>(1);
 
-        cusparseSpSV_bufferSize(
+        CUSPARSE_CHECK(cusparseSpSV_bufferSize(
             cusparseHandle,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha_one, spMatL,
             dummyVecR, dummyVecSol,
-            L_dataType,
+            precWork_dataType,
             CUSPARSE_SPSV_ALG_DEFAULT,
-            spSVDescrFwd, &bufSizeFwd);
-        cudaMalloc(&d_solveBufFwd, bufSizeFwd);
+            spSVDescrFwd, &bufSizeFwd));
+        CUDA_CHECK(cudaMalloc(&d_solveBufFwd, bufSizeFwd));
 
-        cusparseSpSV_analysis(
+        CUSPARSE_CHECK(cusparseSpSV_analysis(
             cusparseHandle,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha_one, spMatL,
             dummyVecR, dummyVecSol,
-            L_dataType, CUSPARSE_SPSV_ALG_DEFAULT,
-            spSVDescrFwd, d_solveBufFwd);
+            precWork_dataType, CUSPARSE_SPSV_ALG_DEFAULT,
+            spSVDescrFwd, d_solveBufFwd));
 
-        cusparseSpSV_bufferSize(
+        CUSPARSE_CHECK(cusparseSpSV_bufferSize(
             cusparseHandle,
             CUSPARSE_OPERATION_TRANSPOSE,
             &alpha_one, spMatL,
             dummyVecR, dummyVecSol,
-            L_dataType,
+            precWork_dataType,
             CUSPARSE_SPSV_ALG_DEFAULT,
-            spSVDescrBwd, &bufSizeBwd);
-        cudaMalloc(&d_solveBufBwd, bufSizeBwd);
+            spSVDescrBwd, &bufSizeBwd));
+        CUDA_CHECK(cudaMalloc(&d_solveBufBwd, bufSizeBwd));
 
-        cusparseSpSV_analysis(
+        CUSPARSE_CHECK(cusparseSpSV_analysis(
             cusparseHandle,
             CUSPARSE_OPERATION_TRANSPOSE,
             &alpha_one, spMatL,
             dummyVecR, dummyVecSol,
-            L_dataType, CUSPARSE_SPSV_ALG_DEFAULT,
-            spSVDescrBwd, d_solveBufBwd);
+            precWork_dataType, CUSPARSE_SPSV_ALG_DEFAULT,
+            spSVDescrBwd, d_solveBufBwd));
 
-        cusparseDestroyDnVec(dummyVecR);
-        cusparseDestroyDnVec(dummyVecSol);
-        cudaFree(d_dummyVec);
+        CUSPARSE_CHECK(cusparseDestroyDnVec(dummyVecR));
+        CUSPARSE_CHECK(cusparseDestroyDnVec(dummyVecSol));
+        CUDA_CHECK(cudaFree(d_dummyVec_spsv));
 
         // For A * p
         cusparseDnVecDescr_t vecP_dev = nullptr, vecQ_dev = nullptr;
-        cudaMalloc(&d_dummyVec, n * sizeof(double)); // reuse for spmv output if needed
-        double *d_p = nullptr, *d_q = nullptr, *d_r = nullptr, *d_z = nullptr, *d_w = nullptr;
-        cudaMalloc(&d_p, n * sizeof(double));
-        cudaMalloc(&d_q, n * sizeof(double));
-        cudaMalloc(&d_r, n * sizeof(double));
-        cudaMalloc(&d_w, n * sizeof(double)); // for L^-1*r
-        cudaMalloc(&d_z, n * sizeof(double)); // for M^-1*r
+        void *d_dummyVec = nullptr; // (kept for backward compatibility with existing cleanup)
+        double *d_p = nullptr, *d_q = nullptr, *d_r = nullptr, *d_z = nullptr;
+        CUDA_CHECK(cudaMalloc(&d_p, n * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_q, n * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_r, n * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_z, n * sizeof(double))); // outer z (FP64) used in dot products
 
-        cusparseCreateDnVec(&vecP_dev, n, d_p, CUDA_R_64F);
-        cusparseCreateDnVec(&vecQ_dev, n, d_q, CUDA_R_64F);
+        CUSPARSE_CHECK(cusparseCreateDnVec(&vecP_dev, n, d_p, CUDA_R_64F));
+        CUSPARSE_CHECK(cusparseCreateDnVec(&vecQ_dev, n, d_q, CUDA_R_64F));
 
         // A spMV buffer for A
         size_t spmvBufSize = 0;
@@ -465,28 +482,28 @@ namespace ichol
             double beta0 = 0.0;
 
             // NON_TRANSPOSE buffer
-            cusparseSpMV_bufferSize(
+            CUSPARSE_CHECK(cusparseSpMV_bufferSize(
                 cusparseHandle,
                 CUSPARSE_OPERATION_NON_TRANSPOSE,
                 &alpha1, spMatA, vecP_dev,
                 &beta0, vecQ_dev,
                 CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT,
-                &spmvBufSizeNT);
+                &spmvBufSizeNT));
 
             // TRANSPOSE buffer
-            cusparseSpMV_bufferSize(
+            CUSPARSE_CHECK(cusparseSpMV_bufferSize(
                 cusparseHandle,
                 CUSPARSE_OPERATION_TRANSPOSE,
                 &alpha1, spMatA, vecP_dev,
                 &beta0, vecQ_dev,
                 CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT,
-                &spmvBufSizeT);
+                &spmvBufSizeT));
 
             // assign to outer variable (no shadowing)
             spmvBufSize = (spmvBufSizeNT > spmvBufSizeT) ? spmvBufSizeNT : spmvBufSizeT;
             if (spmvBufSize > 0)
             {
-                cudaMalloc(&d_spmvBuf, spmvBufSize);
+                CUDA_CHECK(cudaMalloc(&d_spmvBuf, spmvBufSize));
             }
             else
             {
@@ -503,6 +520,23 @@ namespace ichol
                 d_p, d_q);
         }
 
+        // Preconditioner work vectors (PrecWork precision). No per-iteration allocations.
+        // r_work is the (possibly casted) copy of r for the triangular solves.
+        // w_work holds the intermediate solve, and z_work is the preconditioned result in PrecWork.
+        PrecWork *d_r_work = nullptr, *d_w_work = nullptr, *d_z_work = nullptr;
+        if constexpr (L_is_fp64)
+        {
+            d_r_work = reinterpret_cast<PrecWork *>(d_r); // alias (FP64)
+            d_z_work = reinterpret_cast<PrecWork *>(d_z); // alias (FP64)
+            CUDA_CHECK(cudaMalloc(&d_w_work, n * sizeof(PrecWork)));
+        }
+        else
+        {
+            CUDA_CHECK(cudaMalloc(&d_r_work, n * sizeof(PrecWork)));
+            CUDA_CHECK(cudaMalloc(&d_w_work, n * sizeof(PrecWork)));
+            CUDA_CHECK(cudaMalloc(&d_z_work, n * sizeof(PrecWork)));
+        }
+
         //======================================================
         // PHASE 2: CG Initialization
         //======================================================
@@ -511,7 +545,7 @@ namespace ichol
 
         // Norm of r
         double nrmr0 = 0.0;
-        cublasDnrm2(cublasHandle, n, d_r, 1, &nrmr0);
+        CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_r, 1, &nrmr0));
 
         // Stopping criteria
         double tol = 1e-6;
@@ -523,12 +557,12 @@ namespace ichol
         int maxIters = 1000; // or some big
         iterations = 0;
 
-        cusparseDnVecDescr_t vecR = nullptr, vecW = nullptr;
-        cusparseCreateDnVec(&vecR, n, (void *)d_r, CUDA_R_64F);
-        cusparseCreateDnVec(&vecW, n, (void *)d_w, CUDA_R_64F);
-        cusparseDnVecDescr_t vecR2 = nullptr, vecZ = nullptr;
-        cusparseCreateDnVec(&vecR2, n, (void *)d_w, CUDA_R_64F); // input = w from forward
-        cusparseCreateDnVec(&vecZ, n, (void *)d_z, CUDA_R_64F);  // output = z
+        cusparseDnVecDescr_t vecR_work = nullptr, vecW_work = nullptr;
+        cusparseDnVecDescr_t vecR2_work = nullptr, vecZ_work = nullptr;
+        CUSPARSE_CHECK(cusparseCreateDnVec(&vecR_work, n, (void *)d_r_work, precWork_dataType));
+        CUSPARSE_CHECK(cusparseCreateDnVec(&vecW_work, n, (void *)d_w_work, precWork_dataType));
+        CUSPARSE_CHECK(cusparseCreateDnVec(&vecR2_work, n, (void *)d_w_work, precWork_dataType));
+        CUSPARSE_CHECK(cusparseCreateDnVec(&vecZ_work, n, (void *)d_z_work, precWork_dataType));
 
         for (int k = 1; k <= maxIters; k++)
         {
@@ -536,27 +570,41 @@ namespace ichol
             //   L * w = r => w = L^-1 r
             //   L^T z = w => z = L^-T w
             {
-                // forward
-                cusparseSpSV_solve(
+                if constexpr (!L_is_fp64)
+                {
+                    // Cast r (FP64) -> r_work (PrecWork=FP32) once per iteration.
+                    cast_vec<PrecWork, double><<<grid, block>>>(n, d_r, d_r_work);
+                    CUDA_CHECK(cudaGetLastError());
+                }
+
+                // forward: L * w_work = r_work
+                CUSPARSE_CHECK(cusparseSpSV_solve(
                     cusparseHandle,
                     CUSPARSE_OPERATION_NON_TRANSPOSE,
                     &alpha_one,
                     spMatL,
-                    vecR, vecW,
-                    L_dataType,
+                    vecR_work, vecW_work,
+                    precWork_dataType,
                     CUSPARSE_SPSV_ALG_DEFAULT,
-                    spSVDescrFwd);
+                    spSVDescrFwd));
 
-                // backward
-                cusparseSpSV_solve(
+                // backward: L^T * z_work = w_work
+                CUSPARSE_CHECK(cusparseSpSV_solve(
                     cusparseHandle,
                     CUSPARSE_OPERATION_TRANSPOSE,
                     &alpha_one,
                     spMatL,
-                    vecR2, vecZ,
-                    L_dataType,
+                    vecR2_work, vecZ_work,
+                    precWork_dataType,
                     CUSPARSE_SPSV_ALG_DEFAULT,
-                    spSVDescrBwd);
+                    spSVDescrBwd));
+
+                if constexpr (!L_is_fp64)
+                {
+                    // Cast z_work (PrecWork=FP32) -> z (FP64) for outer FP64 dot products and updates.
+                    cast_vec<double, PrecWork><<<grid, block>>>(n, d_z_work, d_z);
+                    CUDA_CHECK(cudaGetLastError());
+                }
             }
 
             // (2) rho = r^T z
@@ -579,30 +627,30 @@ namespace ichol
             // (4) q = A p, where A is symmetric but stored as (L+D) only.
             // q = (L+D)*p + (L^T)*p - diag(A).*p
             {
-                cusparseDnVecSetValues(vecP_dev, d_p);
-                cusparseDnVecSetValues(vecQ_dev, d_q);
+                CUSPARSE_CHECK(cusparseDnVecSetValues(vecP_dev, d_p));
+                CUSPARSE_CHECK(cusparseDnVecSetValues(vecQ_dev, d_q));
 
                 double alpha1 = 1.0;
                 double beta0 = 0.0;
                 double beta1 = 1.0;
 
                 // q = (L+D) * p
-                cusparseSpMV(
+                CUSPARSE_CHECK(cusparseSpMV(
                     cusparseHandle,
                     CUSPARSE_OPERATION_NON_TRANSPOSE,
                     &alpha1, spMatA, vecP_dev,
                     &beta0, vecQ_dev,
                     CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT,
-                    d_spmvBuf);
+                    d_spmvBuf));
 
                 // q += (L+D)^T * p   (adds diag again too)
-                cusparseSpMV(
+                CUSPARSE_CHECK(cusparseSpMV(
                     cusparseHandle,
                     CUSPARSE_OPERATION_TRANSPOSE,
                     &alpha1, spMatA, vecP_dev,
                     &beta1, vecQ_dev,
                     CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT,
-                    d_spmvBuf);
+                    d_spmvBuf));
 
                 // remove one diag
                 // diag_sub<<<grid, block>>>(n, d_csrRowPtrA, d_valA, d_p, d_q);
@@ -662,20 +710,20 @@ namespace ichol
             iterations = maxIters;
         }
 
-        cusparseDestroyDnVec(vecR);
-        cusparseDestroyDnVec(vecW);
-        cusparseDestroyDnVec(vecR2);
-        cusparseDestroyDnVec(vecZ);
+        CUSPARSE_CHECK(cusparseDestroyDnVec(vecR_work));
+        CUSPARSE_CHECK(cusparseDestroyDnVec(vecW_work));
+        CUSPARSE_CHECK(cusparseDestroyDnVec(vecR2_work));
+        CUSPARSE_CHECK(cusparseDestroyDnVec(vecZ_work));
 
         // copy x back
         h_x.resize(n);
-        cudaMemcpy(h_x.data(), d_x, n * sizeof(double), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(h_x.data(), d_x, n * sizeof(double), cudaMemcpyDeviceToHost));
 
         // free
         if (vecP_dev)
-            cusparseDestroyDnVec(vecP_dev);
+            CUSPARSE_CHECK(cusparseDestroyDnVec(vecP_dev));
         if (vecQ_dev)
-            cusparseDestroyDnVec(vecQ_dev);
+            CUSPARSE_CHECK(cusparseDestroyDnVec(vecQ_dev));
         if (d_spmvBuf)
             cudaFree(d_spmvBuf);
 
@@ -685,35 +733,45 @@ namespace ichol
             cudaFree(d_solveBufBwd);
 
         if (spSVDescrFwd)
-            cusparseSpSV_destroyDescr(spSVDescrFwd);
+            CUSPARSE_CHECK(cusparseSpSV_destroyDescr(spSVDescrFwd));
         if (spSVDescrBwd)
-            cusparseSpSV_destroyDescr(spSVDescrBwd);
+            CUSPARSE_CHECK(cusparseSpSV_destroyDescr(spSVDescrBwd));
 
-        cudaFree(d_dummyVec);
-        cudaFree(d_p);
-        cudaFree(d_q);
-        cudaFree(d_r);
-        cudaFree(d_z);
-        cudaFree(d_w);
+        // Preconditioner work buffers
+        if constexpr (!L_is_fp64)
+        {
+            CUDA_CHECK(cudaFree(d_r_work));
+            CUDA_CHECK(cudaFree(d_z_work));
+        }
+        CUDA_CHECK(cudaFree(d_w_work));
 
-        cudaFree(d_x);
-        cudaFree(d_b);
-        cudaFree(d_csrRowPtrA);
-        cudaFree(d_csrColIndA);
-        cudaFree(d_valA);
-        cudaFree(d_csrRowPtrL);
-        cudaFree(d_csrColIndL);
-        cudaFree(d_valLptr);
+        if (d_dummyVec)
+            CUDA_CHECK(cudaFree(d_dummyVec));
+        CUDA_CHECK(cudaFree(d_p));
+        CUDA_CHECK(cudaFree(d_q));
+        CUDA_CHECK(cudaFree(d_r));
+        CUDA_CHECK(cudaFree(d_z));
 
-        cudaFree(d_diagA);
-        cudaFree(d_D);
-        cudaFree(d_Dr);
+        CUDA_CHECK(cudaFree(d_x));
+        CUDA_CHECK(cudaFree(d_b));
+        CUDA_CHECK(cudaFree(d_csrRowPtrA));
+        CUDA_CHECK(cudaFree(d_csrColIndA));
+        CUDA_CHECK(cudaFree(d_valA));
+        CUDA_CHECK(cudaFree(d_csrRowPtrL));
+        CUDA_CHECK(cudaFree(d_csrColIndL));
+        if (d_valL_storage && d_valL_storage != d_valLptr)
+            CUDA_CHECK(cudaFree(d_valL_storage));
+        CUDA_CHECK(cudaFree(d_valLptr));
 
-        cusparseDestroySpMat(spMatA);
-        cusparseDestroySpMat(spMatL);
+        CUDA_CHECK(cudaFree(d_diagA));
+        CUDA_CHECK(cudaFree(d_D));
+        CUDA_CHECK(cudaFree(d_Dr));
 
-        cublasDestroy(cublasHandle);
-        cusparseDestroy(cusparseHandle);
+        CUSPARSE_CHECK(cusparseDestroySpMat(spMatA));
+        CUSPARSE_CHECK(cusparseDestroySpMat(spMatL));
+
+        CUBLAS_CHECK(cublasDestroy(cublasHandle));
+        CUSPARSE_CHECK(cusparseDestroy(cusparseHandle));
     }
 
     // Explicit template instantiations for the types we support
