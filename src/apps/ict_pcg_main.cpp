@@ -3,9 +3,11 @@
 #include <string>
 #include <vector>
 #include <cstdlib>
+#include <chrono>
 
 #include "ichol/matrix_formats.hpp"
 #include "ichol/ictp.hpp"
+#include "ichol/ictp_par.hpp"
 #include "ichol/fact.hpp"
 #include "ichol/pcg.hpp"
 #include "ichol/half.hpp"
@@ -20,7 +22,7 @@ static void usage(const char *argv0)
 }
 
 template <typename T>
-int run(const std::string &path, int lfil_per_row, double drop_tol, double shift)
+int run(const std::string &path, const std::string &algo, int lfil_per_row, double drop_tol, double shift, int symbolic)
 {
     ichol::CSR<double> Ahost = ichol::readMTXtoCSR<double>(path, /*keep_upper=*/false);
     const int n = Ahost.num_rows;
@@ -36,9 +38,13 @@ int run(const std::string &path, int lfil_per_row, double drop_tol, double shift
 
     IC_Factorize_Info out_info;
 
-    ichol::core::IC_Symbolic Sym = ichol::core::build_ic_symbolic(Ahost, 4);
+    ichol::core::IC_Symbolic Sym = ichol::core::build_ic_symbolic(Ahost, symbolic);
 
-    ichol::CSR<T> L = ichol::IC_factorize<T>(Ahost, ictp_params, fparams, Sym, &out_info);
+    auto start = std::chrono::high_resolution_clock::now();
+    ichol::CSR<T> L = ichol::IC_factorize<T>(algo, Ahost, ictp_params, fparams, Sym, &out_info);
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = end - start;
+    std::cout << "Factorization time: " << elapsed.count() << " seconds\n";
 
     std::vector<double> D(n, 1.0);
     if (!out_info.D.empty())
@@ -62,6 +68,7 @@ int run(const std::string &path, int lfil_per_row, double drop_tol, double shift
         b_tilde, y, D,
         iters, finalRes);
 
+    std::cout << "nnzs of L: " << L.values.size() << "\n";
     std::cout << "CG iters: " << iters << "\n";
     return 0;
 }
@@ -70,9 +77,11 @@ int main(int argc, char **argv)
 {
     std::string mtx_path;
     std::string prec = "double";
+    std::string algo = "parict";
     int lfil = 20;
     double drop = 0.0;
     double shift = 1e-10;
+    int symbolic = -1;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -97,6 +106,10 @@ int main(int argc, char **argv)
             drop = std::stod(need("--drop"));
         else if (a == "--shift")
             shift = std::stod(need("--shift"));
+        else if (a == "--symbolic")
+            symbolic = std::stoi(need("--symbolic"));
+        else if (a == "--algo")
+            algo = std::string(need("--algo"));
         else
         {
             usage(argv[0]);
@@ -111,12 +124,11 @@ int main(int argc, char **argv)
     }
 
     if (prec == "double")
-        return run<double>(mtx_path, lfil, drop, shift);
+        return run<double>(mtx_path, algo, lfil, drop, shift, symbolic);
     if (prec == "float")
-        return run<float>(mtx_path, lfil, drop, shift);
+        return run<float>(mtx_path, algo, lfil, drop, shift, symbolic);
     if (prec == "half")
-        return run<half_float::half>(mtx_path, lfil, drop, shift);
-
+        return run<half_float::half>(mtx_path, algo, lfil, drop, shift, symbolic);
     std::cerr << "Unknown --prec: " << prec << "\n";
     return 2;
 }

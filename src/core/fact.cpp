@@ -7,6 +7,8 @@
 
 #include "ichol/matrix_formats.hpp"
 #include "ichol/ictp.hpp"
+#include "ichol/ictp_par.hpp"
+#include "ichol/parict.hpp"
 #include "ichol/fact.hpp"
 #include "ichol/symbolic.hpp"
 #include "ichol/half.hpp"
@@ -31,7 +33,8 @@ namespace ichol
     }
 
     template <class T>
-    CSR<T> IC_factorize(const CSR<double> &Ahost,
+    CSR<T> IC_factorize(const std::string &algo,
+                        const CSR<double> &Ahost,
                         const ICTP_Params &ictp_params,
                         const IC_Factorize_Params &params,
                         const core::IC_Symbolic &Sym,
@@ -57,7 +60,14 @@ namespace ichol
         {
             // Apply shifting at the beginning of each attempt
             Atry = add_diagonal_shift(B, alpha);
-            L = ictp<T>(Atry, ictp_params, attempt_params, Sym, &finfo);
+            if (algo == "ictp")
+                L = ictp<T>(Atry, ictp_params, attempt_params, Sym, &finfo);
+            else if (algo == "ictp_par")
+                L = ictp_par<T>(Atry, ictp_params, attempt_params, Sym, &finfo);
+            else if (algo == "parict")
+                L = parict<T>(Atry, ictp_params, attempt_params, Sym, &finfo);
+            else
+                throw std::runtime_error("Unknown algorithm: " + algo);
 
             if (finfo.code == IC_Breakdown::None)
             {
@@ -82,19 +92,22 @@ namespace ichol
         throw std::runtime_error("IC_factorize: failed to prevent breakdown within max_restarts.");
     }
 
-    template CSR<double> IC_factorize<double>(const CSR<double> &Ahost,
+    template CSR<double> IC_factorize<double>(const std::string &algo,
+                                              const CSR<double> &Ahost,
                                               const ICTP_Params &ictp_params,
                                               const IC_Factorize_Params &params,
                                               const core::IC_Symbolic &Sym,
                                               IC_Factorize_Info *out_info);
 
-    template CSR<float> IC_factorize<float>(const CSR<double> &Ahost,
+    template CSR<float> IC_factorize<float>(const std::string &algo,
+                                            const CSR<double> &Ahost,
                                             const ICTP_Params &ictp_params,
                                             const IC_Factorize_Params &params,
                                             const core::IC_Symbolic &Sym,
                                             IC_Factorize_Info *out_info);
 
-    template CSR<half_float::half> IC_factorize<half_float::half>(const CSR<double> &Ahost,
+    template CSR<half_float::half> IC_factorize<half_float::half>(const std::string &algo,
+                                                                  const CSR<double> &Ahost,
                                                                   const ICTP_Params &ictp_params,
                                                                   const IC_Factorize_Params &params,
                                                                   const core::IC_Symbolic &Sym,

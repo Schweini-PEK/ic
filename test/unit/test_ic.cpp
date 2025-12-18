@@ -134,10 +134,8 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
 
     ichol::core::IC_Symbolic Sym = ichol::core::build_ic_symbolic(Ahost, 4);
 
-    // Factorize using the new driver
-    // ichol::CSR<double> L = ichol::IC_factorize<double>(Ahost, ictp_params, fparams, Sym, &out_info);
-    ichol::CSR<float> L = ichol::IC_factorize<float>(Ahost, ictp_params, fparams, Sym, &out_info);
-    // ichol::CSR<half_float::half> L = ichol::IC_factorize<half_float::half>(Ahost, ictp_params, fparams, Sym, &out_info);
+    std::string algo = "parict";
+    ichol::CSR<float> L = ichol::IC_factorize<float>(algo, Ahost, ictp_params, fparams, Sym, &out_info);
     ASSERT_GT(L.values.size(), 0u);
 
     std::vector<double> D(n, 1.0);
