@@ -21,18 +21,9 @@
 #include "ichol/half.hpp"
 #include "ichol/cuda_utils.hpp"
 
-// #define CUDA_CHECK(call)                                                 \
-//     do                                                                   \
-//     {                                                                    \
-//         cudaError_t err = call;                                          \
-//         if (err != cudaSuccess)                                          \
-//         {                                                                \
-//             std::cerr << "CUDA error in " << __FILE__ << ':' << __LINE__ \
-//                       << " " << cudaGetErrorString(err) << std::endl;    \
-//             std::exit(EXIT_FAILURE);                                     \
-//         }                                                                \
-//     } while (0)
-
+// -------------------------
+// GPU scalar type mapping
+// -------------------------
 template <class T>
 struct gpu_type
 {
@@ -151,7 +142,6 @@ __device__ __forceinline__ double mag_abs<double>(double x) { return fabs(x); }
 template <>
 __device__ __forceinline__ __half mag_abs<__half>(__half x)
 {
-    // abs(x) by clearing sign bit, no half<->float conversions
     unsigned short bits = __half_as_ushort(x);
     bits &= (unsigned short)0x7FFFu;
     return __ushort_as_half(bits);
@@ -170,7 +160,6 @@ __device__ __forceinline__ double sqrt_g<double>(double x) { return sqrt(x); }
 template <>
 __device__ __forceinline__ __half sqrt_g<__half>(__half x)
 {
-    // explicit half math function (may internally use wider precision, but API is half)
     return hsqrt(x);
 }
 
@@ -180,7 +169,6 @@ __host__ __device__ __forceinline__ bool is_zero(G x) { return x == G(0); }
 template <>
 __host__ __device__ __forceinline__ bool is_zero<__half>(__half x)
 {
-    // treat +0 and -0 as zero, no half<->float conversions
     unsigned short bits = __half_as_ushort(x);
     return (bits & (unsigned short)0x7FFFu) == (unsigned short)0;
 }
@@ -270,7 +258,6 @@ __device__ __forceinline__ void w_add_bounded(
     if (is_zero(delta))
         return;
 
-    // accumulate if present
     for (int t = 0; t < wSz; ++t)
     {
         if (w_col[t] == col)
@@ -311,31 +298,23 @@ __device__ __forceinline__ void w_add_bounded(
     w_val[minpos] = delta;
 }
 
-template <typename G>
-__device__ __forceinline__ G get_Ljk_rowwise(
-    int j, int k, int cap,
-    const int *__restrict__ rowCountL,
-    const int *__restrict__ colIndL,
-    const G *__restrict__ valL)
+// -------------------------
+// Shared-memory layout helpers (alignment-safe)
+// -------------------------
+__device__ __forceinline__ size_t align_up_dev(size_t x, size_t a)
 {
-    const int jBase = j * cap;
-    const int jCount = rowCountL[j];
-    for (int q = 1; q < jCount; ++q)
-    {
-        int colq = colIndL[jBase + q];
-        if (colq == k)
-            return valL[jBase + q];
-        if (colq > k)
-            break;
-    }
-    return g_zero<G>();
+    return (x + (a - 1)) & ~(a - 1);
 }
 
 // -------------------------
-// Dynamic ICTP row kernel (GPU scalar = G)
+// One-row ICTP body (no kernel launch; expects shared work buffers)
+// Changes vs original:
+//   - w_* and sel_* live in shared memory (not local spill)
+//   - Ljk lookup is O(1) using (row,pos) stored in column lists
+//   - nodeCounter/head updates are non-atomic (single-thread execution)
 // -------------------------
 template <typename G, int MAX_CAP, int MAX_WORK>
-__global__ void ictp_row_kernel_dynamic(
+__device__ __forceinline__ void ictp_process_row(
     int n,
     const int *__restrict__ rowPtrA,
     const int *__restrict__ colIndA,
@@ -350,16 +329,16 @@ __global__ void ictp_row_kernel_dynamic(
     int *__restrict__ colHead,
     int *__restrict__ colNext,
     int *__restrict__ colRow,
-    int *__restrict__ nodeCounter,
+    int *__restrict__ colPos, // NEW: position within row (1..rowCount-1)
+    int &nodeCounterLocal,    // NEW: non-atomic local counter
     int maxNodes,
     int i,
     int *__restrict__ status,
     int *__restrict__ fail_row,
-    G *__restrict__ fail_pivot)
+    G *__restrict__ fail_pivot,
+    int *w_col, G *w_val, int *sel_j, G *sel_l)
 {
-    if (threadIdx.x != 0)
-        return;
-    if (cap < 1 || cap > MAX_CAP)
+    if (*status != 0)
         return;
 
     const int keep_max = cap - 1;
@@ -367,7 +346,6 @@ __global__ void ictp_row_kernel_dynamic(
     const int rowStartA = rowPtrA[i];
     const int rowEndA = rowPtrA[i + 1];
 
-    // robust diagonal extract
     G a_ii = g_zero<G>();
     if (rowEndA > rowStartA)
     {
@@ -387,8 +365,6 @@ __global__ void ictp_row_kernel_dynamic(
         }
     }
 
-    int w_col[MAX_WORK];
-    G w_val[MAX_WORK];
     int wSz = 0;
 
     for (int p = rowStartA; p < rowEndA; ++p)
@@ -403,8 +379,6 @@ __global__ void ictp_row_kernel_dynamic(
 
     G w_ii = a_ii;
 
-    int sel_j[MAX_CAP];
-    G sel_l[MAX_CAP];
     int selSz = 0;
 
     const mag_t<G> dropTolM = to_mag(dropTol);
@@ -445,15 +419,14 @@ __global__ void ictp_row_kernel_dynamic(
         if (is_zero(Lkk))
             continue;
 
-        // lik = wk / Lkk (explicit half division when G=__half)
         G lik = g_div<G>(wk, Lkk);
 
         if (mag_gt(dropTolM, mag_zero<mag_t<G>>()) && mag_lt(mag_abs(lik), dropTolM))
             continue;
 
-        // w_ii = w_ii - lik*lik
         w_ii = g_sub<G>(w_ii, g_mul<G>(lik, lik));
 
+        // Traverse existing rows j that have L(j,k) via colHead[k]
         for (int node = colHead[k]; node != -1; node = colNext[node])
         {
             int j = colRow[node];
@@ -462,10 +435,12 @@ __global__ void ictp_row_kernel_dynamic(
             if (j >= i)
                 continue;
 
-            G Ljk = get_Ljk_rowwise<G>(j, k, cap, rowCountL, colIndL, valL);
+            // O(1) Ljk load using stored position
+            int pos = colPos[node];
+            G Ljk = valL[j * cap + pos];
+
             if (!is_zero(Ljk))
             {
-                // delta = -lik * Ljk
                 G delta = g_neg<G>(g_mul<G>(lik, Ljk));
                 w_add_bounded<G, MAX_WORK>(i, w_col, w_val, wSz, j, delta, dropTol);
             }
@@ -499,10 +474,11 @@ __global__ void ictp_row_kernel_dynamic(
     }
     rowCountL[i] = 1 + selSz;
 
+    // Insert nodes into column lists (non-atomic: single-thread factorization)
     for (int t = 0; t < selSz; ++t)
     {
         int kk = sel_j[t];
-        int node = atomicAdd(nodeCounter, 1);
+        int node = nodeCounterLocal++;
         if (node >= maxNodes)
         {
             *status = 3;
@@ -511,7 +487,89 @@ __global__ void ictp_row_kernel_dynamic(
             return;
         }
         colRow[node] = i;
-        colNext[node] = atomicExch(&colHead[kk], node);
+        colPos[node] = 1 + t; // NEW: exact position in row i
+        colNext[node] = colHead[kk];
+        colHead[kk] = node;
+    }
+}
+
+// -------------------------
+// Persistent factor kernel (single launch; single thread)
+// -------------------------
+template <typename G, int MAX_CAP, int MAX_WORK>
+__global__ void ictp_factor_kernel_persistent(
+    int n,
+    const int *__restrict__ rowPtrA,
+    const int *__restrict__ colIndA,
+    const G *__restrict__ valA,
+    int cap,
+    G dropTol,
+    G pivotTol,
+    int *__restrict__ rowCountL,
+    int *__restrict__ colIndL,
+    G *__restrict__ valL,
+    G *__restrict__ diagL,
+    int *__restrict__ colHead,
+    int *__restrict__ colNext,
+    int *__restrict__ colRow,
+    int *__restrict__ colPos, // NEW
+    int *__restrict__ status,
+    int *__restrict__ fail_row,
+    G *__restrict__ fail_pivot)
+{
+    if (blockIdx.x != 0 || threadIdx.x != 0)
+        return;
+    if (cap < 1 || cap > MAX_CAP)
+        return;
+
+    extern __shared__ unsigned char smem_raw[];
+
+    size_t off = 0;
+    off = align_up_dev(off, alignof(int));
+    int *w_col = (int *)(smem_raw + off);
+    off += (size_t)MAX_WORK * sizeof(int);
+
+    off = align_up_dev(off, alignof(G));
+    G *w_val = (G *)(smem_raw + off);
+    off += (size_t)MAX_WORK * sizeof(G);
+
+    off = align_up_dev(off, alignof(int));
+    int *sel_j = (int *)(smem_raw + off);
+    off += (size_t)MAX_CAP * sizeof(int);
+
+    off = align_up_dev(off, alignof(G));
+    G *sel_l = (G *)(smem_raw + off);
+    off += (size_t)MAX_CAP * sizeof(G);
+
+    int nodeCounterLocal = 0;
+    const int maxNodes = n * (cap - 1);
+
+    for (int i = 0; i < n; ++i)
+    {
+        if (*status != 0)
+            return;
+
+        ictp_process_row<G, MAX_CAP, MAX_WORK>(
+            n,
+            rowPtrA, colIndA, valA,
+            cap,
+            dropTol,
+            pivotTol,
+            rowCountL,
+            colIndL,
+            valL,
+            diagL,
+            colHead,
+            colNext,
+            colRow,
+            colPos,
+            nodeCounterLocal,
+            maxNodes,
+            i,
+            status,
+            fail_row,
+            fail_pivot,
+            w_col, w_val, sel_j, sel_l);
     }
 }
 
@@ -549,6 +607,28 @@ static __host__ __forceinline__ double host_to_double(G x) { return (double)x; }
 
 template <>
 __host__ __forceinline__ double host_to_double<__half>(__half x) { return (double)__half2float(x); }
+
+template <typename G, int MAX_CAP, int MAX_WORK>
+static size_t shared_bytes_needed()
+{
+    auto align_up = [](size_t x, size_t a)
+    { return (x + (a - 1)) & ~(a - 1); };
+
+    size_t off = 0;
+    off = align_up(off, alignof(int));
+    off += (size_t)MAX_WORK * sizeof(int);
+
+    off = align_up(off, alignof(G));
+    off += (size_t)MAX_WORK * sizeof(G);
+
+    off = align_up(off, alignof(int));
+    off += (size_t)MAX_CAP * sizeof(int);
+
+    off = align_up(off, alignof(G));
+    off += (size_t)MAX_CAP * sizeof(G);
+
+    return off;
+}
 
 template <typename T>
 static bool ictp_rowwise_gpu_dynamic(
@@ -596,7 +676,7 @@ static bool ictp_rowwise_gpu_dynamic(
     int *d_colHead = nullptr;
     int *d_colNext = nullptr;
     int *d_colRow = nullptr;
-    int *d_nodeCounter = nullptr;
+    int *d_colPos = nullptr; // NEW
 
     int *d_status = nullptr;
     int *d_fail_row = nullptr;
@@ -616,7 +696,7 @@ static bool ictp_rowwise_gpu_dynamic(
         cudaFree(d_colHead);
         cudaFree(d_colNext);
         cudaFree(d_colRow);
-        cudaFree(d_nodeCounter);
+        cudaFree(d_colPos);
 
         cudaFree(d_status);
         cudaFree(d_fail_row);
@@ -655,19 +735,18 @@ static bool ictp_rowwise_gpu_dynamic(
     CUDA_CHECK(cudaMalloc(&d_colHead, n * sizeof(int)));
     CUDA_CHECK(cudaMemset(d_colHead, 0xFF, n * sizeof(int))); // -1
 
-    CUDA_CHECK(cudaMalloc(&d_nodeCounter, sizeof(int)));
-    CUDA_CHECK(cudaMemset(d_nodeCounter, 0, sizeof(int)));
-
     const int maxNodes = n * (cap - 1);
     if (maxNodes > 0)
     {
         CUDA_CHECK(cudaMalloc(&d_colNext, (size_t)maxNodes * sizeof(int)));
         CUDA_CHECK(cudaMalloc(&d_colRow, (size_t)maxNodes * sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&d_colPos, (size_t)maxNodes * sizeof(int)));
     }
     else
     {
         d_colNext = nullptr;
         d_colRow = nullptr;
+        d_colPos = nullptr;
     }
 
     CUDA_CHECK(cudaMalloc(&d_status, sizeof(int)));
@@ -680,60 +759,56 @@ static bool ictp_rowwise_gpu_dynamic(
     const G dropTol = host_cast<G>(row_params.drop_tol);
     const G pivotTol = host_cast<G>(attempt_params.pivot_tol);
 
+    // Single persistent kernel launch (no per-row sync/copy)
+    const size_t shmem = shared_bytes_needed<G, MAX_CAP, MAX_WORK>();
+    ictp_factor_kernel_persistent<G, MAX_CAP, MAX_WORK>
+        <<<1, 1, shmem>>>(
+            n,
+            d_rowPtrA, d_colIndA, d_valA,
+            cap,
+            dropTol,
+            pivotTol,
+            d_rowCountL,
+            d_colIndL,
+            d_valL,
+            d_diagL,
+            d_colHead,
+            d_colNext,
+            d_colRow,
+            d_colPos,
+            d_status,
+            d_fail_row,
+            d_fail_pivot);
+
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
     int host_status = 0;
-
-    for (int i = 0; i < n; ++i)
+    CUDA_CHECK(cudaMemcpy(&host_status, d_status, sizeof(int), cudaMemcpyDeviceToHost));
+    if (host_status != 0)
     {
-        ictp_row_kernel_dynamic<G, MAX_CAP, MAX_WORK>
-            <<<1, 1>>>(
-                n,
-                d_rowPtrA, d_colIndA, d_valA,
-                cap,
-                dropTol,
-                pivotTol,
-                d_rowCountL,
-                d_colIndL,
-                d_valL,
-                d_diagL,
-                d_colHead,
-                d_colNext,
-                d_colRow,
-                d_nodeCounter,
-                maxNodes,
-                i,
-                d_status,
-                d_fail_row,
-                d_fail_pivot);
-
-        CUDA_CHECK(cudaGetLastError());
-        CUDA_CHECK(cudaDeviceSynchronize());
-
-        CUDA_CHECK(cudaMemcpy(&host_status, d_status, sizeof(int), cudaMemcpyDeviceToHost));
-        if (host_status != 0)
+        if (info)
         {
-            if (info)
-            {
-                int fr = -1;
-                G fp = (G)0;
-                CUDA_CHECK(cudaMemcpy(&fr, d_fail_row, sizeof(int), cudaMemcpyDeviceToHost));
-                CUDA_CHECK(cudaMemcpy(&fp, d_fail_pivot, sizeof(G), cudaMemcpyDeviceToHost));
+            int fr = -1;
+            G fp = (G)0;
+            CUDA_CHECK(cudaMemcpy(&fr, d_fail_row, sizeof(int), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(&fp, d_fail_pivot, sizeof(G), cudaMemcpyDeviceToHost));
 
-                std::fprintf(stderr,
-                             "ICTP failure at row %d, pivot=%g, pivotTol=%g, status=%d\n",
-                             fr, host_to_double(fp), host_to_double(pivotTol), host_status);
+            std::fprintf(stderr,
+                         "ICTP failure at row %d, pivot=%g, pivotTol=%g, status=%d\n",
+                         fr, host_to_double(fp), host_to_double(pivotTol), host_status);
 
-                if (host_status == 1)
-                    info->code = IC_Breakdown::B1_SmallOrNegativePivot;
-                else
-                    info->code = IC_Breakdown::OtherNumericalIssue;
+            if (host_status == 1)
+                info->code = IC_Breakdown::B1_SmallOrNegativePivot;
+            else
+                info->code = IC_Breakdown::OtherNumericalIssue;
 
-                info->step = fr;
-                info->pivot_value = host_to_double(fp);
-            }
-
-            cleanup();
-            return false;
+            info->step = fr;
+            info->pivot_value = host_to_double(fp);
         }
+
+        cleanup();
+        return false;
     }
 
     std::vector<int> rowCountL(n);
@@ -777,24 +852,11 @@ static bool ictp_rowwise_gpu_dynamic(
         const int cnt = rowCountL[i];
         const int dst = L.row_ptr[i];
 
+        // Already sorted in-kernel; no host re-sort
         for (int t = 0; t < cnt; ++t)
         {
             L.col_ind[dst + t] = colIndL[base + t];
             L.values[dst + t] = valL[base + t];
-        }
-
-        for (int a = 0; a < cnt; ++a)
-        {
-            int best = a;
-            for (int b = a + 1; b < cnt; ++b)
-                if (L.col_ind[dst + b] < L.col_ind[dst + best])
-                    best = b;
-
-            if (best != a)
-            {
-                std::swap(L.col_ind[dst + a], L.col_ind[dst + best]);
-                std::swap(L.values[dst + a], L.values[dst + best]);
-            }
         }
     }
 
