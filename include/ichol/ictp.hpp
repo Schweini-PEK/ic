@@ -17,7 +17,7 @@ namespace ichol
      */
 
     template <class T>
-    CSR<T> ictp(const CSR<T> &Ahost,
+    CsrMatrix<T> ictp(const CsrMatrix<T> &Ahost,
                 const ICTP_Params &row_params,
                 const IC_Attempt_Params &fparams,
                 const core::IC_Symbolic &Sym,

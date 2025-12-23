@@ -1,4 +1,4 @@
-#include "../../src/io/mtx_read.hpp"
+#include "ichol/mtx_read.hpp"
 #include <iostream>
 #include <cassert>
 #include <string>
@@ -9,7 +9,7 @@ int main()
 
     try
     {
-        ichol::CSR<double> csr = ichol::readMTXtoCSR<double>(path, true);
+        ichol::CsrMatrix<double> csr = ichol::io::mtx_to_csr<double>(path, true);
         std::cout << "CSR loaded: rows=" << csr.num_rows << ", cols=" << csr.num_cols << ", nnz=" << csr.nnz << std::endl;
         std::cout << "nnz in csr matrix: " << csr.nnz << std::endl;
     }

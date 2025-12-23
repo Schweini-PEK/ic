@@ -21,7 +21,7 @@ namespace ichol
         /**
          * Build IC symbolic factorization with either full pattern or IC(k)
          */
-        IC_Symbolic build_ic_symbolic(const ichol::CSR<double> &A,
+        IC_Symbolic build_ic_symbolic(const ichol::CsrMatrix<double> &A,
                                       int k);
 
     }

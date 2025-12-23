@@ -577,7 +577,7 @@ __global__ void ictp_factor_kernel_persistent(
 // Host utilities
 // -------------------------
 template <class T>
-static void validate_csr(const ichol::CSR<T> &A)
+static void validate_csr(const ichol::CsrMatrix<T> &A)
 {
     int n = A.num_rows;
     if (n < 0)
@@ -632,10 +632,10 @@ static size_t shared_bytes_needed()
 
 template <typename T>
 static bool ictp_rowwise_gpu_dynamic(
-    const ichol::CSR<T> &Ahost,
+    const ichol::CsrMatrix<T> &Ahost,
     const ICTP_Params &row_params,
     const IC_Attempt_Params &attempt_params,
-    ichol::CSR<T> &Lhost_out,
+    ichol::CsrMatrix<T> &Lhost_out,
     ICTP_Factor_Info *info)
 {
     using G = typename gpu_type<T>::type;
@@ -830,7 +830,7 @@ static bool ictp_rowwise_gpu_dynamic(
             valL[p] = (T)host_to_double(h_valL[p]);
     }
 
-    ichol::CSR<T> L;
+    ichol::CsrMatrix<T> L;
     L.num_rows = n;
     L.num_cols = n;
     L.row_ptr.assign(n + 1, 0);
@@ -868,7 +868,7 @@ static bool ictp_rowwise_gpu_dynamic(
 namespace ichol
 {
     template <class T>
-    CSR<T> ictp(const CSR<T> &Ahost,
+    CsrMatrix<T> ictp(const CsrMatrix<T> &Ahost,
                 const ICTP_Params &row_params,
                 const IC_Attempt_Params &fparams,
                 const core::IC_Symbolic &Sym,
@@ -876,7 +876,7 @@ namespace ichol
     {
         (void)Sym; // dynamic path ignores symbolic
 
-        CSR<T> L;
+        CsrMatrix<T> L;
         L.num_rows = Ahost.num_rows;
         L.num_cols = Ahost.num_cols;
         L.row_ptr.assign(Ahost.num_rows + 1, 0);
@@ -893,19 +893,19 @@ namespace ichol
         return L;
     }
 
-    template CSR<double> ictp<double>(const CSR<double> &,
+    template CsrMatrix<double> ictp<double>(const CsrMatrix<double> &,
                                       const ICTP_Params &,
                                       const IC_Attempt_Params &,
                                       const core::IC_Symbolic &,
                                       ICTP_Factor_Info *);
 
-    template CSR<float> ictp<float>(const CSR<float> &,
+    template CsrMatrix<float> ictp<float>(const CsrMatrix<float> &,
                                     const ICTP_Params &,
                                     const IC_Attempt_Params &,
                                     const core::IC_Symbolic &,
                                     ICTP_Factor_Info *);
 
-    template CSR<half_float::half> ictp<half_float::half>(const CSR<half_float::half> &,
+    template CsrMatrix<half_float::half> ictp<half_float::half>(const CsrMatrix<half_float::half> &,
                                                           const ICTP_Params &,
                                                           const IC_Attempt_Params &,
                                                           const core::IC_Symbolic &,

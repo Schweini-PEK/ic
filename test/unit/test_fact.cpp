@@ -7,13 +7,13 @@
 #include "ichol/ictp.hpp"
 #include "ichol/fact.hpp"
 #include "ichol/symbolic.hpp"
-#include "../../src/io/mtx_read.hpp"
+#include "ichol/mtx_read.hpp"
 #include "../../include/ichol/matrix_norm.hpp"
 
 TEST(FactTest, IC_Factorize_Runs)
 {
     std::string path = "test/data/HB/bcsstk11.mtx";
-    ichol::CSR<double> csr = ichol::readMTXtoCSR<double>(path, false);
+    ichol::CsrMatrix<double> csr = ichol::io::mtx_to_csr<double>(path, false);
 
     ICTP_Params ictp_params;
     ictp_params.lfil_per_row = 64;

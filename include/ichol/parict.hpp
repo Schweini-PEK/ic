@@ -17,7 +17,7 @@ namespace ichol
     };
 
     template <class T>
-    CSR<T> parict(const CSR<T> &Ahost,
+    CsrMatrix<T> parict(const CsrMatrix<T> &Ahost,
                   const ICTP_Params &row_params,
                   const IC_Attempt_Params &fparams,
                   const core::IC_Symbolic &Sym,

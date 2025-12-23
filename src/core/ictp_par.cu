@@ -1,7 +1,7 @@
 // ictp_symbolic_parallel.cu
 //
 // Parallel (level-scheduled) ICTP/IC with Saad-style dual dropping on a FIXED symbolic pattern Sym.
-// - Uses CSR pattern for rows (Sym.row_ptr_L / Sym.col_ind_L), diagonal must be LAST entry in each row.
+// - Uses CsrMatrix pattern for rows (Sym.row_ptr_L / Sym.col_ind_L), diagonal must be LAST entry in each row.
 // - Builds a CSC "view" of the same pattern to fetch Ljk in O(1) (no row scans).
 // - Factors rows in parallel by symbolic level scheduling.
 // - Applies dropping twice (during elimination + end-of-row) and keep-top-(lfil-1) on the L part.
@@ -171,7 +171,7 @@ namespace ichol
                 int c = col_ind[p];
                 int dst = next[c]++;
                 col_row[dst] = i;
-                col_csr_pos[dst] = p; // CSR position of (i,c)
+                col_csr_pos[dst] = p; // CsrMatrix position of (i,c)
             }
         }
     }
@@ -603,7 +603,7 @@ namespace ichol
 
     template <class T, class G>
     static void ictp_symbolic_parallel_gpu_fixedpattern(
-        const CSR<T> &Ahost,
+        const CsrMatrix<T> &Ahost,
         const ICTP_Params &row_params,
         const IC_Attempt_Params &fparams,
         const core::IC_Symbolic &Sym,
@@ -777,16 +777,16 @@ namespace ichol
     }
 
     // ------------------------
-    // Host: compress fixed-pattern L (remove zeros) into CSR<T>, keep diag last
+    // Host: compress fixed-pattern L (remove zeros) into CsrMatrix<T>, keep diag last
     // ------------------------
     template <class T, class G>
-    static CSR<T> compress_fixed_pattern_L(
+    static CsrMatrix<T> compress_fixed_pattern_L(
         int n,
         const std::vector<int> &row_ptr,
         const std::vector<int> &col_ind,
         const std::vector<G> &val_fixed)
     {
-        CSR<T> L;
+        CsrMatrix<T> L;
         L.num_rows = n;
         L.num_cols = n;
         L.row_ptr.assign(n + 1, 0);
@@ -837,7 +837,7 @@ namespace ichol
     // Top-level
     // ------------------------
     template <class T>
-    CSR<T> ictp_par(const CSR<T> &Ahost,
+    CsrMatrix<T> ictp_par(const CsrMatrix<T> &Ahost,
                     const ICTP_Params &row_params,
                     const IC_Attempt_Params &fparams,
                     const core::IC_Symbolic &Sym,
@@ -866,10 +866,10 @@ namespace ichol
                     info->code = IC_Breakdown::B1_SmallOrNegativePivot;
                     info->step = fail_row;
                 }
-                return CSR<T>{};
+                return CsrMatrix<T>{};
             }
 
-            CSR<T> Lhost = compress_fixed_pattern_L<T, G>(
+            CsrMatrix<T> Lhost = compress_fixed_pattern_L<T, G>(
                 Ahost.num_rows, L_row_ptr_fixed, L_col_ind_fixed, L_val_fixed);
 
             if (info)
@@ -890,19 +890,19 @@ namespace ichol
         }
     }
 
-    template CSR<double> ictp_par(const CSR<double> &Ahost,
+    template CsrMatrix<double> ictp_par(const CsrMatrix<double> &Ahost,
                                   const ICTP_Params &row_params,
                                   const IC_Attempt_Params &fparams,
                                   const core::IC_Symbolic &Sym,
                                   ICTP_Factor_Info *info);
 
-    template CSR<float> ictp_par(const CSR<float> &Ahost,
+    template CsrMatrix<float> ictp_par(const CsrMatrix<float> &Ahost,
                                  const ICTP_Params &row_params,
                                  const IC_Attempt_Params &fparams,
                                  const core::IC_Symbolic &Sym,
                                  ICTP_Factor_Info *info);
 
-    template CSR<half_float::half> ictp_par(const CSR<half_float::half> &Ahost,
+    template CsrMatrix<half_float::half> ictp_par(const CsrMatrix<half_float::half> &Ahost,
                                             const ICTP_Params &row_params,
                                             const IC_Attempt_Params &fparams,
                                             const core::IC_Symbolic &Sym,
