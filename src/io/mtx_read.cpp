@@ -214,9 +214,13 @@ namespace
                     return false; // keep only lower+diag
                 return true;
             }
-            // symmetric: map to lower (robust if file stores upper)
-            if (r < c)
-                std::swap(r, c);
+            else
+            {
+                // symmetric: map to lower (robust if file stores upper)
+                if (r < c)
+                    std::swap(r, c);
+            }
+
             return true;
         };
 

@@ -1,23 +1,72 @@
+// test/unit/test_io.cpp
+#include <gtest/gtest.h>
+
 #include "ichol/mtx_read.hpp"
-#include <iostream>
-#include <cassert>
-#include <string>
 
-int main()
+namespace
 {
-    std::string path = "test/data/HB/bcsstk06.mtx";
-
-    try
+    template <typename T>
+    bool csr_diag_positive(const ichol::CsrMatrix<T> &csr)
     {
-        ichol::CsrMatrix<double> csr = ichol::io::mtx_to_csr<double>(path, true);
-        std::cout << "CSR loaded: rows=" << csr.num_rows << ", cols=" << csr.num_cols << ", nnz=" << csr.nnz << std::endl;
-        std::cout << "nnz in csr matrix: " << csr.nnz << std::endl;
-    }
-    catch (const std::exception &e)
-    {
-        std::cerr << "Test failed: " << e.what() << std::endl;
-        return 1;
+        int n = csr.num_rows;
+        for (int i = 0; i < n; i++)
+        {
+            int row_end = csr.row_ptr[i + 1];
+            if (csr.col_ind[row_end - 1] != i)
+                {
+                    return false; // diagonal missing
+                }
+            T diag_val = csr.values[row_end - 1];
+            if (diag_val <= T(0))
+            {
+                return false; // diagonal not positive
+            }
+        }
+        return true;
     }
 
-    return 0;
+    template <typename T>
+    bool csc_diag_positive(const ichol::CscMatrix<T> &csc)
+    {
+        int n = csc.num_cols;
+        for (int j = 0; j < n; j++)
+        {
+            int col_start = csc.col_ptr[j];
+            if (csc.row_ind[col_start] != j)
+                {
+                    std::cout << "Diag missing at col " << j << "\n";
+                    return false; // diagonal missing
+                }
+            T diag_val = csc.values[col_start];
+            if (diag_val <= T(0))
+            {
+                std::cout << "Diag not positive at col " << j << ": " << diag_val << "\n";
+                return false; // diagonal not positive
+            }
+        }
+        return true;
+    }
+}
+
+TEST(io, ProducesUsablePreconditionerOnMTX)
+{
+    std::string path = "test/data/nasa2146.mtx";
+    ichol::CsrMatrix<double> Acsr = ichol::io::mtx_to_csr<double>(path, false);
+    ichol::CscMatrix<double> Acsc = ichol::io::mtx_to_csc<double>(path, false);
+
+    ASSERT_EQ(Acsr.num_rows, Acsc.num_rows);
+    ASSERT_EQ(Acsr.num_cols, Acsc.num_cols);
+    ASSERT_EQ(Acsr.num_rows, Acsc.num_rows);
+    ASSERT_EQ(Acsr.row_ptr.size(), static_cast<size_t>(Acsr.num_rows + 1));
+    ASSERT_EQ(Acsc.col_ptr.size(), static_cast<size_t>(Acsc.num_cols + 1));
+
+    ASSERT_EQ(Acsr.nnz, Acsc.nnz);
+    ASSERT_EQ(Acsr.row_ptr[Acsr.num_rows], Acsr.nnz);
+    ASSERT_EQ(Acsr.row_ptr[0], 0);
+    ASSERT_EQ(Acsc.col_ptr[Acsc.num_cols], Acsc.nnz);
+    ASSERT_EQ(Acsc.col_ptr[0], 0);
+
+    // Diag check
+    ASSERT_TRUE(csr_diag_positive(Acsr));
+    ASSERT_TRUE(csc_diag_positive(Acsc));
 }
