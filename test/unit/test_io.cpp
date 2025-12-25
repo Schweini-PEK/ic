@@ -14,12 +14,14 @@ namespace
             int row_end = csr.row_ptr[i + 1];
             if (csr.col_ind[row_end - 1] != i)
                 {
-                    return false; // diagonal missing
+                    ADD_FAILURE() << "CSR diag missing at row " << i;
+                    return false;
                 }
             T diag_val = csr.values[row_end - 1];
             if (diag_val <= T(0))
             {
-                return false; // diagonal not positive
+                ADD_FAILURE() << "CSR diag not positive at row " << i << ": " << diag_val;
+                return false;
             }
         }
         return true;
@@ -34,14 +36,14 @@ namespace
             int col_start = csc.col_ptr[j];
             if (csc.row_ind[col_start] != j)
                 {
-                    std::cout << "Diag missing at col " << j << "\n";
-                    return false; // diagonal missing
+                    ADD_FAILURE() << "CSC diag missing at col " << j;
+                    return false;
                 }
             T diag_val = csc.values[col_start];
             if (diag_val <= T(0))
             {
-                std::cout << "Diag not positive at col " << j << ": " << diag_val << "\n";
-                return false; // diagonal not positive
+                ADD_FAILURE() << "CSC diag not positive at col " << j << ": " << diag_val;
+                return false;
             }
         }
         return true;
