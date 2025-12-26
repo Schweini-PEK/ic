@@ -1,3 +1,4 @@
+#pragma once
 #ifndef ICHOL_ICTP_HPP
 #define ICHOL_ICTP_HPP
 
@@ -17,7 +18,7 @@ namespace ichol
      */
 
     template <class T>
-    CsrMatrix<T> ictp(const CsrMatrix<T> &Ahost,
+    ichol::matrix::CsrMatrix<T> ictp(const ichol::matrix::CsrMatrix<T> &Ahost,
                 const ICTP_Params &row_params,
                 const IC_Attempt_Params &fparams,
                 const core::IC_Symbolic &Sym,
@@ -25,4 +26,4 @@ namespace ichol
 
 } // namespace ichol
 
-#endif // INCHOL_ICTP_HPP
+#endif // ICHOL_ICTP_HPP

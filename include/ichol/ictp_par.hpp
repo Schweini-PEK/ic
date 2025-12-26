@@ -11,7 +11,7 @@ struct ICTP_Factor_Info;
 namespace ichol
 {
     template <class T>
-    CsrMatrix<T> ictp_par(const CsrMatrix<T> &Ahost,
+    matrix::CsrMatrix<T> ictp_par(const matrix::CsrMatrix<T> &Ahost,
                     const ICTP_Params &row_params,
                     const IC_Attempt_Params &fparams,
                     const core::IC_Symbolic &Sym,

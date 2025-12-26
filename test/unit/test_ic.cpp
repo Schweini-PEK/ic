@@ -31,7 +31,7 @@ namespace test_checks
     }
 
     template <typename T>
-    inline void assert_csr_lower_diag_only_sorted(const ichol::CsrMatrix<T> &M,
+    inline void assert_csr_lower_diag_only_sorted(const ichol::matrix::CsrMatrix<T> &M,
                                                   const char *name,
                                                   bool require_diag_last = true)
     {
@@ -117,9 +117,9 @@ void assert_diag_last(const ichol::CsrMatrix<T> &M)
 
 TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
 {
-    std::string path = "F:/new/ic/test/data/nasa2146.mtx";
+    std::string path = "test/data/nasa2146.mtx";
     ichol::CsrMatrix<double> Ahost = ichol::io::mtx_to_csr<double>(path, false);
-    std::cout <<  "Matrix loaded from " << path << std::endl;
+
     const int n = Ahost.num_rows;
 
     ICTP_Params ictp_params;
@@ -133,7 +133,7 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
 
     ichol::core::IC_Symbolic Sym = ichol::core::build_ic_symbolic(Ahost, 4);
 
-    std::string algo = "ictp_par";
+    std::string algo = "parict";
     ichol::CsrMatrix<float> L = ichol::IC_factorize<float>(algo, Ahost, ictp_params, fparams, Sym, &out_info);
     ASSERT_GT(L.values.size(), 0u);
 
@@ -167,20 +167,6 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
     test_checks::assert_csr_lower_diag_only_sorted(Ahost, "Ahost");
     test_checks::assert_csr_lower_diag_only_sorted(B, "B");
     test_checks::assert_L_lower_diag_pos_finite(L, "L");
-
-
-ichol::icPreconditionedCG_GPU<double>(
-    B.row_ptr,
-    B.col_ind,
-    B.values,
-    rowPtrL,
-    colIndL,
-    valL,
-    b_tilde,
-    y,
-    D,
-    iters,
-    finalRes);
 
     /*
     Solve B y = b_tilde with preconditioner from L,

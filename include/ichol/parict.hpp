@@ -17,11 +17,11 @@ namespace ichol
     };
 
     template <class T>
-    CsrMatrix<T> parict(const CsrMatrix<T> &Ahost,
-                  const ICTP_Params &row_params,
-                  const IC_Attempt_Params &fparams,
-                  const core::IC_Symbolic &Sym,
-                  ICTP_Factor_Info *info);
+    matrix::CsrMatrix<T> parict(const matrix::CsrMatrix<T> &Ahost,
+                                const ICTP_Params &row_params,
+                                const IC_Attempt_Params &fparams,
+                                const core::IC_Symbolic &Sym,
+                                ICTP_Factor_Info *info);
 
 } // namespace ichol
 

@@ -1,3 +1,6 @@
+// ichol/symbolic.hpp
+
+#pragma once
 #ifndef ICHOL_SYMBOLIC_HPP
 #define ICHOL_SYMBOLIC_HPP
 
@@ -21,7 +24,7 @@ namespace ichol
         /**
          * Build IC symbolic factorization with either full pattern or IC(k)
          */
-        IC_Symbolic build_ic_symbolic(const ichol::CsrMatrix<double> &A,
+        IC_Symbolic build_ic_symbolic(const ichol::matrix::CsrMatrix<double> &A,
                                       int k);
 
     }

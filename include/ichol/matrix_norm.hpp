@@ -12,7 +12,7 @@ namespace ichol
 
     using DenseMatrix = std::vector<std::vector<double>>;
 
-    DenseMatrix csr_to_dense(const CsrMatrix<double> &csr)
+    DenseMatrix csr_to_dense(const matrix::CsrMatrix<double> &csr)
     {
         for (int i = 0; i < csr.num_rows; i++)
         {
@@ -97,9 +97,9 @@ namespace ichol
         return std::sqrt(sum_sq);
     }
 
-    double residual_l2_norm(const CsrMatrix<double> &A, const CsrMatrix<double> &L)
+    double residual_l2_norm(const matrix::CsrMatrix<double> &A, const matrix::CsrMatrix<double> &L)
     {
-        auto has_bad = [](const ichol::CsrMatrix<double> &M)
+        auto has_bad = [](const ichol::matrix::CsrMatrix<double> &M)
         {
             for (double v : M.values)
                 if (!std::isfinite(v))
@@ -124,7 +124,7 @@ namespace ichol
         return num / denom;
     }
 
-    double l2_norm(const CsrMatrix<double> &mat)
+    double l2_norm(const matrix::CsrMatrix<double> &mat)
     {
         double sum_sq = 0.0;
         for (const auto &val : mat.values)

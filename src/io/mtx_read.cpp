@@ -140,7 +140,7 @@ namespace
      * Expect at least the lower triangular is stored in mtx.
      */
     template <typename T>
-    ichol::CooMatrix<T> mtx_to_coo(const std::string &path, bool verify)
+    ichol::matrix::CooMatrix<T> mtx_to_coo(const std::string &path, bool verify)
     {
         std::ifstream in(path);
         if (!in)
@@ -196,7 +196,7 @@ namespace
         if (hdr.symmetry == Symmetry::General)
             reserve_nnz = static_cast<std::size_t>(nnz_file / 2 + n);
 
-        ichol::CooMatrix<T> out;
+        ichol::matrix::CooMatrix<T> out;
         out.num_cols = n;
         out.num_rows = n;
         out.col_ind.reserve(reserve_nnz);
@@ -214,9 +214,13 @@ namespace
                     return false; // keep only lower+diag
                 return true;
             }
-            // symmetric: map to lower (robust if file stores upper)
-            if (r < c)
-                std::swap(r, c);
+            else
+            {
+                // symmetric: map to lower (robust if file stores upper)
+                if (r < c)
+                    std::swap(r, c);
+            }
+
             return true;
         };
 
@@ -324,9 +328,9 @@ namespace
     }
 
     template <typename T>
-    ichol::CsrMatrix<T> coo_to_csr(ichol::CooMatrix<T> coo_in)
+    ichol::matrix::CsrMatrix<T> coo_to_csr(ichol::matrix::CooMatrix<T> coo_in)
     {
-        ichol::CsrMatrix<T> csr_out;
+        ichol::matrix::CsrMatrix<T> csr_out;
         csr_out.num_cols = coo_in.num_cols;
         csr_out.num_rows = coo_in.num_rows;
         csr_out.nnz = coo_in.nnz;
@@ -348,9 +352,9 @@ namespace
     }
 
     template <typename T>
-    ichol::CscMatrix<T> coo_to_csc(ichol::CooMatrix<T> coo_in)
+    ichol::matrix::CscMatrix<T> coo_to_csc(ichol::matrix::CooMatrix<T> coo_in)
     {
-        ichol::CscMatrix<T> csc_out;
+        ichol::matrix::CscMatrix<T> csc_out;
         csc_out.num_cols = coo_in.num_cols;
         csc_out.num_rows = coo_in.num_rows;
         csc_out.nnz = coo_in.nnz;
@@ -423,31 +427,28 @@ namespace
     }
 }
 
-namespace ichol
+namespace ichol::io
 {
-    namespace io
+    template <typename T>
+    matrix::CsrMatrix<T> mtx_to_csr(const std::string &path, bool verify)
     {
-        template <typename T>
-        CsrMatrix<T> mtx_to_csr(const std::string &path, bool verify)
-        {
-            auto coo = mtx_to_coo<T>(path, verify);
-            return coo_to_csr(std::move(coo));
-        }
-
-        template <typename T>
-        CscMatrix<T> mtx_to_csc(const std::string &path, bool verify)
-        {
-            auto coo = mtx_to_coo<T>(path, verify);
-            return coo_to_csc(std::move(coo));
-        }
-
-        template CsrMatrix<double> mtx_to_csr<double>(const std::string &path, bool verify);
-        template CsrMatrix<float> mtx_to_csr<float>(const std::string &path, bool verify);
-        template CsrMatrix<half_float::half> mtx_to_csr<half_float::half>(const std::string &path, bool verify);
-
-        template CscMatrix<double> mtx_to_csc<double>(const std::string &path, bool verify);
-        template CscMatrix<float> mtx_to_csc<float>(const std::string &path, bool verify);
-        template CscMatrix<half_float::half> mtx_to_csc<half_float::half>(const std::string &path, bool verify);
+        auto coo = mtx_to_coo<T>(path, verify);
+        return coo_to_csr(std::move(coo));
     }
 
-} // namespace ichol
+    template <typename T>
+    matrix::CscMatrix<T> mtx_to_csc(const std::string &path, bool verify)
+    {
+        auto coo = mtx_to_coo<T>(path, verify);
+        return coo_to_csc(std::move(coo));
+    }
+
+    template matrix::CsrMatrix<double> mtx_to_csr<double>(const std::string &path, bool verify);
+    template matrix::CsrMatrix<float> mtx_to_csr<float>(const std::string &path, bool verify);
+    template matrix::CsrMatrix<half_float::half> mtx_to_csr<half_float::half>(const std::string &path, bool verify);
+
+    template matrix::CscMatrix<double> mtx_to_csc<double>(const std::string &path, bool verify);
+    template matrix::CscMatrix<float> mtx_to_csc<float>(const std::string &path, bool verify);
+    template matrix::CscMatrix<half_float::half> mtx_to_csc<half_float::half>(const std::string &path, bool verify);
+
+} // namespace ichol::io
