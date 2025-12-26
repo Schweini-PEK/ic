@@ -13,10 +13,10 @@ namespace
         {
             int row_end = csr.row_ptr[i + 1];
             if (csr.col_ind[row_end - 1] != i)
-                {
-                    ADD_FAILURE() << "CSR diag missing at row " << i;
-                    return false;
-                }
+            {
+                ADD_FAILURE() << "CSR diag missing at row " << i;
+                return false;
+            }
             T diag_val = csr.values[row_end - 1];
             if (diag_val <= T(0))
             {
@@ -35,10 +35,10 @@ namespace
         {
             int col_start = csc.col_ptr[j];
             if (csc.row_ind[col_start] != j)
-                {
-                    ADD_FAILURE() << "CSC diag missing at col " << j;
-                    return false;
-                }
+            {
+                ADD_FAILURE() << "CSC diag missing at col " << j;
+                return false;
+            }
             T diag_val = csc.values[col_start];
             if (diag_val <= T(0))
             {
@@ -48,6 +48,46 @@ namespace
         }
         return true;
     }
+
+    template <typename T>
+    bool csr_sorted_check(const ichol::CsrMatrix<T> &csr)
+    {
+        int n = csr.num_rows;
+        for (int i = 0; i < n; i++)
+        {
+            int row_start = csr.row_ptr[i];
+            int row_end = csr.row_ptr[i + 1];
+            for (int p = row_start + 1; p < row_end; p++)
+            {
+                if (csr.col_ind[p] <= csr.col_ind[p - 1])
+                {
+                    ADD_FAILURE() << "CSR row " << i << " not sorted at position " << p;
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+}
+
+template <typename T>
+bool csc_sorted_check(const ichol::CscMatrix<T> &csc)
+{
+    int n = csc.num_cols;
+    for (int j = 0; j < n; j++)
+    {
+        int col_start = csc.col_ptr[j];
+        int col_end = csc.col_ptr[j + 1];
+        for (int p = col_start + 1; p < col_end; p++)
+        {
+            if (csc.row_ind[p] <= csc.row_ind[p - 1])
+            {
+                ADD_FAILURE() << "CSC col " << j << " not sorted at position " << p;
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 TEST(io, ProducesUsablePreconditionerOnMTX)
@@ -71,4 +111,8 @@ TEST(io, ProducesUsablePreconditionerOnMTX)
     // Diag check
     ASSERT_TRUE(csr_diag_positive(Acsr));
     ASSERT_TRUE(csc_diag_positive(Acsc));
+
+    // Sorted check
+    ASSERT_TRUE(csr_sorted_check(Acsr));
+    ASSERT_TRUE(csc_sorted_check(Acsc));
 }

@@ -133,7 +133,7 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
 
     ichol::core::IC_Symbolic Sym = ichol::core::build_ic_symbolic(Ahost, 4);
 
-    std::string algo = "parict";
+    std::string algo = "ictp_par";
     ichol::CsrMatrix<float> L = ichol::IC_factorize<float>(algo, Ahost, ictp_params, fparams, Sym, &out_info);
     ASSERT_GT(L.values.size(), 0u);
 

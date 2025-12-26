@@ -1,9 +1,7 @@
 file(GLOB_RECURSE ICHOL_SRC
-     "${CMAKE_CURRENT_SOURCE_DIR}/backends/*.cu"
-     "${CMAKE_CURRENT_SOURCE_DIR}/backends/*.cpp"
-     "${CMAKE_CURRENT_SOURCE_DIR}/core/*.cpp"
-     "${CMAKE_CURRENT_SOURCE_DIR}/core/*.cu"
-     "${CMAKE_CURRENT_SOURCE_DIR}/io/*.cpp")
+     "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/*.hpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/*.cu")
 
 add_library(ichol STATIC ${ICHOL_SRC})
 
