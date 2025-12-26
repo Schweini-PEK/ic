@@ -1,12 +1,16 @@
 file(GLOB_RECURSE ICHOL_SRC
      "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
      "${CMAKE_CURRENT_SOURCE_DIR}/*.hpp"
-     "${CMAKE_CURRENT_SOURCE_DIR}/*.cu")
+     "${CMAKE_CURRENT_SOURCE_DIR}/*.cu"
+     "${CMAKE_CURRENT_SOURCE_DIR}/*.cuh")
+
+list(FILTER ICHOL_SRC EXCLUDE REGEX ".*/apps/.*")
 
 add_library(ichol STATIC ${ICHOL_SRC})
 
 target_include_directories(ichol PUBLIC
-    ${PROJECT_SOURCE_DIR}/include)
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src)
 
 target_compile_options(ichol PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
