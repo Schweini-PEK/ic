@@ -3,7 +3,7 @@
 
 #include <cmath>
 #include <iostream>
-
+#include <string>
 #include "matrix_formats.hpp"
 #include "ictp.hpp"
 #include "symbolic.hpp"

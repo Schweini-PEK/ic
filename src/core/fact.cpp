@@ -4,7 +4,6 @@
 #include <limits>
 #include <stdexcept>
 #include <iostream>
-
 #include "ichol/matrix_formats.hpp"
 #include "ichol/ictp.hpp"
 #include "ichol/ictp_par.hpp"

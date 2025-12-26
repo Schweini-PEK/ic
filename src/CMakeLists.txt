@@ -5,7 +5,8 @@ file(GLOB_RECURSE ICHOL_SRC
      "${CMAKE_CURRENT_SOURCE_DIR}/core/*.cu"
      "${CMAKE_CURRENT_SOURCE_DIR}/io/*.cpp")
 
-add_library(ichol STATIC ${ICHOL_SRC})
+add_library(ichol STATIC ${ICHOL_SRC}
+        ../include/ichol/supernode.hpp)
 
 target_include_directories(ichol PUBLIC
     ${PROJECT_SOURCE_DIR}/include)
