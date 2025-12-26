@@ -6,13 +6,6 @@
 // - Factors rows in parallel by symbolic level scheduling.
 // - Applies dropping twice (during elimination + end-of-row) and keep-top-(lfil-1) on the L part.
 //
-// This revision fixes:
-//   (1) misaligned shared-memory layout for double (absbuf/idxbuf alignment), by aligning offsets in-kernel
-//       AND computing host shmem size with the same padding.
-//   (2) launch "invalid argument" due to empty levels (blocks==0) and/or shmem exceeding device limit,
-//       by skipping empty levels and checking/opt-in shared mem.
-//   (3) non-uniform early-abort that could deadlock at __syncthreads, by making it block-uniform.
-//
 // Assumptions:
 //   - A is stored as lower-triangular + diagonal only.
 //   - Sym rows are strictly increasing in off-diagonals, all < i, and diag==i is last.
@@ -30,110 +23,15 @@
 #include "ichol/half.hpp"
 #include "ichol/fact.hpp"
 #include "ichol/cuda_utils.hpp"
+#include "backends/CUDA/gmath.cuh"
+#include "backends/CUDA/host_cast.hpp"
 
 namespace ichol
 {
-    // ------------------------
-    // Minimal host<->gpu casts
-    // ------------------------
-    template <class G>
-    static __host__ __forceinline__ G host_cast(double x) { return (G)x; }
-
-    template <>
-    __host__ __forceinline__ __half host_cast<__half>(double x) { return __float2half_rn((float)x); }
-
-    template <class G>
-    static __host__ __forceinline__ double host_to_double(G x) { return (double)x; }
-
-    template <>
-    __host__ __forceinline__ double host_to_double<__half>(__half x) { return (double)__half2float(x); }
-
     __host__ __device__ __forceinline__ size_t align_up(size_t x, size_t a)
     {
         return (x + a - 1) & ~(a - 1);
     }
-
-    // ------------------------
-    // Device math
-    // ------------------------
-    template <class G>
-    struct GMath;
-
-    template <>
-    struct GMath<float>
-    {
-        __device__ __forceinline__ static float zero() { return 0.0f; }
-        __device__ __forceinline__ static float add(float a, float b) { return a + b; }
-        __device__ __forceinline__ static float sub(float a, float b) { return a - b; }
-        __device__ __forceinline__ static float mul(float a, float b) { return a * b; }
-        __device__ __forceinline__ static float div(float a, float b) { return a / b; }
-        __device__ __forceinline__ static float fma(float a, float b, float c) { return fmaf(a, b, c); }
-        __device__ __forceinline__ static float sqrt(float a) { return sqrtf(a); }
-        __device__ __forceinline__ static float abs(float a) { return fabsf(a); }
-        __device__ __forceinline__ static bool lt(float a, float b) { return a < b; }
-        __device__ __forceinline__ static bool gt(float a, float b) { return a > b; }
-        __device__ __forceinline__ static bool le(float a, float b) { return a <= b; }
-        __device__ __forceinline__ static bool ge(float a, float b) { return a >= b; }
-        __device__ __forceinline__ static bool eq0(float a) { return a == 0.0f; }
-    };
-
-    template <>
-    struct GMath<double>
-    {
-        __device__ __forceinline__ static double zero() { return 0.0; }
-        __device__ __forceinline__ static double add(double a, double b) { return a + b; }
-        __device__ __forceinline__ static double sub(double a, double b) { return a - b; }
-        __device__ __forceinline__ static double mul(double a, double b) { return a * b; }
-        __device__ __forceinline__ static double div(double a, double b) { return a / b; }
-        __device__ __forceinline__ static double fma(double a, double b, double c) { return ::fma(a, b, c); }
-        __device__ __forceinline__ static double sqrt(double a) { return ::sqrt(a); }
-        __device__ __forceinline__ static double abs(double a) { return ::fabs(a); }
-        __device__ __forceinline__ static bool lt(double a, double b) { return a < b; }
-        __device__ __forceinline__ static bool gt(double a, double b) { return a > b; }
-        __device__ __forceinline__ static bool le(double a, double b) { return a <= b; }
-        __device__ __forceinline__ static bool ge(double a, double b) { return a >= b; }
-        __device__ __forceinline__ static bool eq0(double a) { return a == 0.0; }
-    };
-
-    template <>
-    struct GMath<__half>
-    {
-        __device__ __forceinline__ static __half zero() { return __float2half_rn(0.0f); }
-        __device__ __forceinline__ static __half add(__half a, __half b) { return __hadd(a, b); }
-        __device__ __forceinline__ static __half sub(__half a, __half b) { return __hsub(a, b); }
-        __device__ __forceinline__ static __half mul(__half a, __half b) { return __hmul(a, b); }
-        __device__ __forceinline__ static __half div(__half a, __half b) { return __hdiv(a, b); }
-        __device__ __forceinline__ static __half fma(__half a, __half b, __half c) { return __hadd(__hmul(a, b), c); }
-        __device__ __forceinline__ static __half sqrt(__half a) { return hsqrt(a); }
-
-        __device__ __forceinline__ static __half abs(__half a)
-        {
-            union
-            {
-                __half h;
-                unsigned short u;
-            } x;
-            x.h = a;
-            x.u &= 0x7FFFu;
-            return x.h;
-        }
-
-        __device__ __forceinline__ static bool lt(__half a, __half b) { return __hlt(a, b); }
-        __device__ __forceinline__ static bool gt(__half a, __half b) { return __hgt(a, b); }
-        __device__ __forceinline__ static bool le(__half a, __half b) { return __hle(a, b); }
-        __device__ __forceinline__ static bool ge(__half a, __half b) { return __hge(a, b); }
-
-        __device__ __forceinline__ static bool eq0(__half a)
-        {
-            union
-            {
-                __half h;
-                unsigned short u;
-            } x;
-            x.h = a;
-            return (x.u & 0x7FFFu) == 0;
-        }
-    };
 
     // ------------------------
     // host helpers: CSC + levels + Sym validation
@@ -307,8 +205,8 @@ namespace ichol
                     if (ixj > i)
                     {
                         bool up = ((i & k) == 0);
-                        bool swap_needed = up ? GMath<G>::lt(absv[i], absv[ixj])
-                                              : GMath<G>::gt(absv[i], absv[ixj]);
+                        bool swap_needed = up ? cuda::GMath<G>::lt(absv[i], absv[ixj])
+                                              : cuda::GMath<G>::gt(absv[i], absv[ixj]);
                         if (swap_needed)
                         {
                             G ta = absv[i];
@@ -400,13 +298,13 @@ namespace ichol
         hash_init(hash_keys, hash_vals, H_level);
         for (int t = threadIdx.x; t < max_off_level; t += blockDim.x)
         {
-            w_val[t] = GMath<G>::zero();
-            lik_val[t] = GMath<G>::zero();
+            w_val[t] = cuda::GMath<G>::zero();
+            lik_val[t] = cuda::GMath<G>::zero();
             keep[t] = 0;
         }
         if (threadIdx.x == 0)
         {
-            sh_wii = GMath<G>::zero();
+            sh_wii = cuda::GMath<G>::zero();
             sh_fail = 0;
         }
         __syncthreads();
@@ -422,7 +320,7 @@ namespace ichol
 
         if (threadIdx.x == 0)
         {
-            G diag = GMath<G>::zero();
+            G diag = cuda::GMath<G>::zero();
             int a0 = rowPtrA[i], a1 = rowPtrA[i + 1];
             for (int p = a0; p < a1; ++p)
             {
@@ -456,9 +354,9 @@ namespace ichol
             int k = colIndL[r0 + t];
 
             G wk = w_val[t];
-            if (GMath<G>::eq0(wk))
+            if (cuda::GMath<G>::eq0(wk))
             {
-                lik_val[t] = GMath<G>::zero();
+                lik_val[t] = cuda::GMath<G>::zero();
                 __syncthreads();
                 continue;
             }
@@ -466,11 +364,11 @@ namespace ichol
             int k_diag_pos = rowPtrL[k + 1] - 1;
             G Lkk = valL[k_diag_pos];
 
-            G lik = GMath<G>::div(wk, Lkk);
+            G lik = cuda::GMath<G>::div(wk, Lkk);
 
-            if (GMath<G>::lt(GMath<G>::abs(lik), tau_i))
+            if (cuda::GMath<G>::lt(cuda::GMath<G>::abs(lik), tau_i))
             {
-                lik = GMath<G>::zero();
+                lik = cuda::GMath<G>::zero();
                 lik_val[t] = lik;
                 __syncthreads();
                 continue;
@@ -479,7 +377,7 @@ namespace ichol
             lik_val[t] = lik;
 
             if (threadIdx.x == 0)
-                sh_wii = GMath<G>::sub(sh_wii, GMath<G>::mul(lik, lik));
+                sh_wii = cuda::GMath<G>::sub(sh_wii, cuda::GMath<G>::mul(lik, lik));
             __syncthreads();
 
             int c0 = colPtrL[k];
@@ -497,15 +395,15 @@ namespace ichol
                     continue;
 
                 G Ljk = valL[colCsrPosL[p]];
-                if (!GMath<G>::eq0(Ljk))
-                    w_val[slot] = GMath<G>::sub(w_val[slot], GMath<G>::mul(lik, Ljk));
+                if (!cuda::GMath<G>::eq0(Ljk))
+                    w_val[slot] = cuda::GMath<G>::sub(w_val[slot], cuda::GMath<G>::mul(lik, Ljk));
             }
             __syncthreads();
         }
 
         if (threadIdx.x == 0)
         {
-            if (GMath<G>::le(sh_wii, pivot_tol))
+            if (cuda::GMath<G>::le(sh_wii, pivot_tol))
             {
                 sh_fail = 1;
                 if (atomicCAS(d_status, 0, 1) == 0)
@@ -513,7 +411,7 @@ namespace ichol
             }
             else
             {
-                valL[diag_pos] = GMath<G>::sqrt(sh_wii);
+                valL[diag_pos] = cuda::GMath<G>::sqrt(sh_wii);
             }
         }
         __syncthreads();
@@ -523,8 +421,8 @@ namespace ichol
         for (int t = threadIdx.x; t < m_off; t += blockDim.x)
         {
             G v = lik_val[t];
-            if (GMath<G>::lt(GMath<G>::abs(v), tau_i))
-                v = GMath<G>::zero();
+            if (cuda::GMath<G>::lt(cuda::GMath<G>::abs(v), tau_i))
+                v = cuda::GMath<G>::zero();
             lik_val[t] = v;
         }
         __syncthreads();
@@ -533,12 +431,12 @@ namespace ichol
         {
             if (t < m_off)
             {
-                absbuf[t] = GMath<G>::abs(lik_val[t]);
+                absbuf[t] = cuda::GMath<G>::abs(lik_val[t]);
                 idxbuf[t] = t;
             }
             else
             {
-                absbuf[t] = GMath<G>::zero();
+                absbuf[t] = cuda::GMath<G>::zero();
                 idxbuf[t] = -1;
             }
         }
@@ -554,7 +452,7 @@ namespace ichol
         for (int t = threadIdx.x; t < pkeep; t += blockDim.x)
         {
             int s = idxbuf[t];
-            if (s >= 0 && !GMath<G>::eq0(absbuf[t]))
+            if (s >= 0 && !cuda::GMath<G>::eq0(absbuf[t]))
                 keep[s] = 1;
         }
         __syncthreads();
@@ -562,7 +460,7 @@ namespace ichol
         for (int t = threadIdx.x; t < m_off; t += blockDim.x)
         {
             if (keep[t] == 0)
-                lik_val[t] = GMath<G>::zero();
+                lik_val[t] = cuda::GMath<G>::zero();
         }
         __syncthreads();
 
@@ -603,10 +501,10 @@ namespace ichol
 
     template <class T, class G>
     static void ictp_symbolic_parallel_gpu_fixedpattern(
-        const CsrMatrix<T> &Ahost,
+        const ichol::matrix::CsrMatrix<T> &Ahost,
         const ICTP_Params &row_params,
         const IC_Attempt_Params &fparams,
-        const core::IC_Symbolic &Sym,
+        const ichol::core::IC_Symbolic &Sym,
         std::vector<int> &L_row_ptr_out,
         std::vector<int> &L_col_ind_out,
         std::vector<G> &L_val_fixed_out,
@@ -620,7 +518,8 @@ namespace ichol
         validate_sym_lower_diag_last(n, Sym.row_ptr_L, Sym.col_ind_L);
 
         std::vector<int> col_ptr, col_row, col_csr_pos;
-        build_csc_from_sym(n, Sym.row_ptr_L, Sym.col_ind_L, col_ptr, col_row, col_csr_pos);
+        // build_csc_from_sym(n, Sym.row_ptr_L, Sym.col_ind_L, col_ptr, col_row, col_csr_pos);
+        ichol::matrix::csr_to_csc_pattern_only(n, Sym.row_ptr_L, Sym.col_ind_L, col_ptr, col_row, col_csr_pos);
 
         std::vector<int> level_ptr, level_rows;
         build_level_schedule_from_sym(n, Sym.row_ptr_L, Sym.col_ind_L, level_ptr, level_rows);
@@ -649,7 +548,7 @@ namespace ichol
         {
             std::vector<G> tmp(nnzA);
             for (int p = 0; p < nnzA; ++p)
-                tmp[p] = host_cast<G>((double)Ahost.values[p]);
+                tmp[p] = cuda::host_cast<G>((double)Ahost.values[p]);
             CUDA_CHECK(cudaMemcpy(d_valA, tmp.data(), nnzA * sizeof(G), cudaMemcpyHostToDevice));
         }
 
@@ -743,8 +642,8 @@ namespace ichol
                 d_rowPtrL, d_colIndL, d_valL,
                 d_colPtrL, d_colRowL, d_colCsrPosL,
                 cap,
-                host_cast<G>(row_params.drop_tol),
-                host_cast<G>(fparams.pivot_tol),
+                cuda::host_cast<G>(row_params.drop_tol),
+                cuda::host_cast<G>(fparams.pivot_tol),
                 max_off_level, H_level, N_level,
                 d_status, d_fail_row);
 
@@ -780,13 +679,13 @@ namespace ichol
     // Host: compress fixed-pattern L (remove zeros) into CsrMatrix<T>, keep diag last
     // ------------------------
     template <class T, class G>
-    static CsrMatrix<T> compress_fixed_pattern_L(
+    static ichol::matrix::CsrMatrix<T> compress_fixed_pattern_L(
         int n,
         const std::vector<int> &row_ptr,
         const std::vector<int> &col_ind,
         const std::vector<G> &val_fixed)
     {
-        CsrMatrix<T> L;
+        ichol::matrix::CsrMatrix<T> L;
         L.num_rows = n;
         L.num_cols = n;
         L.row_ptr.assign(n + 1, 0);
@@ -799,7 +698,7 @@ namespace ichol
             int cnt = 0;
             for (int p = r0; p < diagp; ++p)
             {
-                if (host_to_double(val_fixed[p]) != 0.0)
+                if (cuda::host_to_double(val_fixed[p]) != 0.0)
                     cnt++;
             }
             cnt += 1;
@@ -819,15 +718,15 @@ namespace ichol
             for (int p = r0; p < diagp; ++p)
             {
                 G v = val_fixed[p];
-                if (host_to_double(v) != 0.0)
+                if (cuda::host_to_double(v) != 0.0)
                 {
                     L.col_ind[outp] = col_ind[p];
-                    L.values[outp] = (T)host_to_double(v);
+                    L.values[outp] = (T)cuda::host_to_double(v);
                     outp++;
                 }
             }
             L.col_ind[outp] = i;
-            L.values[outp] = (T)host_to_double(val_fixed[diagp]);
+            L.values[outp] = (T)cuda::host_to_double(val_fixed[diagp]);
         }
 
         return L;
@@ -837,11 +736,11 @@ namespace ichol
     // Top-level
     // ------------------------
     template <class T>
-    CsrMatrix<T> ictp_par(const CsrMatrix<T> &Ahost,
-                    const ICTP_Params &row_params,
-                    const IC_Attempt_Params &fparams,
-                    const core::IC_Symbolic &Sym,
-                    ICTP_Factor_Info *info)
+    ichol::matrix::CsrMatrix<T> ictp_par(const ichol::matrix::CsrMatrix<T> &Ahost,
+                                         const ICTP_Params &row_params,
+                                         const IC_Attempt_Params &fparams,
+                                         const core::IC_Symbolic &Sym,
+                                         ICTP_Factor_Info *info)
     {
         using G =
             std::conditional_t<std::is_same<T, double>::value, double,
@@ -866,10 +765,10 @@ namespace ichol
                     info->code = IC_Breakdown::B1_SmallOrNegativePivot;
                     info->step = fail_row;
                 }
-                return CsrMatrix<T>{};
+                return ichol::matrix::CsrMatrix<T>{};
             }
 
-            CsrMatrix<T> Lhost = compress_fixed_pattern_L<T, G>(
+            ichol::matrix::CsrMatrix<T> Lhost = compress_fixed_pattern_L<T, G>(
                 Ahost.num_rows, L_row_ptr_fixed, L_col_ind_fixed, L_val_fixed);
 
             if (info)
@@ -890,22 +789,22 @@ namespace ichol
         }
     }
 
-    template CsrMatrix<double> ictp_par(const CsrMatrix<double> &Ahost,
-                                  const ICTP_Params &row_params,
-                                  const IC_Attempt_Params &fparams,
-                                  const core::IC_Symbolic &Sym,
-                                  ICTP_Factor_Info *info);
+    template ichol::matrix::CsrMatrix<double> ictp_par(const ichol::matrix::CsrMatrix<double> &Ahost,
+                                                       const ICTP_Params &row_params,
+                                                       const IC_Attempt_Params &fparams,
+                                                       const core::IC_Symbolic &Sym,
+                                                       ICTP_Factor_Info *info);
 
-    template CsrMatrix<float> ictp_par(const CsrMatrix<float> &Ahost,
-                                 const ICTP_Params &row_params,
-                                 const IC_Attempt_Params &fparams,
-                                 const core::IC_Symbolic &Sym,
-                                 ICTP_Factor_Info *info);
+    template ichol::matrix::CsrMatrix<float> ictp_par(const ichol::matrix::CsrMatrix<float> &Ahost,
+                                                      const ICTP_Params &row_params,
+                                                      const IC_Attempt_Params &fparams,
+                                                      const core::IC_Symbolic &Sym,
+                                                      ICTP_Factor_Info *info);
 
-    template CsrMatrix<half_float::half> ictp_par(const CsrMatrix<half_float::half> &Ahost,
-                                            const ICTP_Params &row_params,
-                                            const IC_Attempt_Params &fparams,
-                                            const core::IC_Symbolic &Sym,
-                                            ICTP_Factor_Info *info);
+    template ichol::matrix::CsrMatrix<half_float::half> ictp_par(const ichol::matrix::CsrMatrix<half_float::half> &Ahost,
+                                                                 const ICTP_Params &row_params,
+                                                                 const IC_Attempt_Params &fparams,
+                                                                 const core::IC_Symbolic &Sym,
+                                                                 ICTP_Factor_Info *info);
 
 } // namespace ichol

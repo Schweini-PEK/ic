@@ -16,9 +16,9 @@
 namespace ichol
 {
     template <class T>
-    CsrMatrix<T> convert_CSR_precision(const CsrMatrix<double> &src)
+    matrix::CsrMatrix<T> convert_CSR_precision(const matrix::CsrMatrix<double> &src)
     {
-        CsrMatrix<T> dst;
+        matrix::CsrMatrix<T> dst;
         dst.num_rows = src.num_rows;
         dst.num_cols = src.num_cols;
         const int nnz = (int)src.values.size();
@@ -32,12 +32,12 @@ namespace ichol
     }
 
     template <class T>
-    CsrMatrix<T> IC_factorize(const std::string &algo,
-                              const CsrMatrix<double> &Ahost,
-                              const ICTP_Params &ictp_params,
-                              const IC_Factorize_Params &params,
-                              const core::IC_Symbolic &Sym,
-                              IC_Factorize_Info *out_info)
+    matrix::CsrMatrix<T> IC_factorize(const std::string &algo,
+                                      const matrix::CsrMatrix<double> &Ahost,
+                                      const ICTP_Params &ictp_params,
+                                      const IC_Factorize_Params &params,
+                                      const core::IC_Symbolic &Sym,
+                                      IC_Factorize_Info *out_info)
     {
         IC_Factorize_Info info;
 
@@ -59,7 +59,7 @@ namespace ichol
         {
             throw std::runtime_error("IC_factorize: unknown scaling option: " + params.scaling);
         }
-        CsrMatrix<T> B = convert_CSR_precision<T>(apply_symm_prescaling(Ahost, info.D));
+        ichol::matrix::CsrMatrix<T> B = convert_CSR_precision<T>(apply_symm_prescaling(Ahost, info.D));
 
         // (2) Prepare attempt-level params (no scaling, no shift here)
         IC_Attempt_Params attempt_params;
@@ -69,7 +69,7 @@ namespace ichol
         // (3) Shift-restart loop in u_l precision
         T alpha = T(params.initial_shift);
 
-        CsrMatrix<T> Atry, L;
+        ichol::matrix::CsrMatrix<T> Atry, L;
         ICTP_Factor_Info finfo;
         for (int attempt = 0; attempt < params.max_restarts; ++attempt)
         {
@@ -107,25 +107,25 @@ namespace ichol
         throw std::runtime_error("IC_factorize: failed to prevent breakdown within max_restarts.");
     }
 
-    template CsrMatrix<double> IC_factorize<double>(const std::string &algo,
-                                                    const CsrMatrix<double> &Ahost,
-                                                    const ICTP_Params &ictp_params,
-                                                    const IC_Factorize_Params &params,
-                                                    const core::IC_Symbolic &Sym,
-                                                    IC_Factorize_Info *out_info);
+    template matrix::CsrMatrix<double> IC_factorize<double>(const std::string &algo,
+                                                            const matrix::CsrMatrix<double> &Ahost,
+                                                            const ICTP_Params &ictp_params,
+                                                            const IC_Factorize_Params &params,
+                                                            const core::IC_Symbolic &Sym,
+                                                            IC_Factorize_Info *out_info);
 
-    template CsrMatrix<float> IC_factorize<float>(const std::string &algo,
-                                                  const CsrMatrix<double> &Ahost,
-                                                  const ICTP_Params &ictp_params,
-                                                  const IC_Factorize_Params &params,
-                                                  const core::IC_Symbolic &Sym,
-                                                  IC_Factorize_Info *out_info);
+    template matrix::CsrMatrix<float> IC_factorize<float>(const std::string &algo,
+                                                          const matrix::CsrMatrix<double> &Ahost,
+                                                          const ICTP_Params &ictp_params,
+                                                          const IC_Factorize_Params &params,
+                                                          const core::IC_Symbolic &Sym,
+                                                          IC_Factorize_Info *out_info);
 
-    template CsrMatrix<half_float::half> IC_factorize<half_float::half>(const std::string &algo,
-                                                                        const CsrMatrix<double> &Ahost,
-                                                                        const ICTP_Params &ictp_params,
-                                                                        const IC_Factorize_Params &params,
-                                                                        const core::IC_Symbolic &Sym,
-                                                                        IC_Factorize_Info *out_info);
+    template matrix::CsrMatrix<half_float::half> IC_factorize<half_float::half>(const std::string &algo,
+                                                                                const matrix::CsrMatrix<double> &Ahost,
+                                                                                const ICTP_Params &ictp_params,
+                                                                                const IC_Factorize_Params &params,
+                                                                                const core::IC_Symbolic &Sym,
+                                                                                IC_Factorize_Info *out_info);
 
 } // namespace ichol

@@ -4,7 +4,7 @@
 namespace ichol::symbolic
 {
     template <typename T>
-    SymbolicPlan ic_analyze(const ichol::CsrMatrix<T> &A,
+    SymbolicPlan ic_analyze(const ichol::matrix::CsrMatrix<T> &A,
                             const SymbolicOptions &options)
     {
         SymbolicPlan plan;
@@ -25,7 +25,7 @@ namespace ichol::symbolic
     }
 
     template <typename T>
-    SymbolicPlan supernodal_analyze(const ichol::CscMatrix<T> &A,
+    SymbolicPlan supernodal_analyze(const ichol::matrix::CscMatrix<T> &A,
                                     const SuperNodeOptions &sn_options)
     {
         SymbolicPlan plan;
@@ -36,10 +36,10 @@ namespace ichol::symbolic
         return plan;
     }
 
-    template SymbolicPlan ic_analyze<double>(const ichol::CsrMatrix<double> &A,
+    template SymbolicPlan ic_analyze<double>(const ichol::matrix::CsrMatrix<double> &A,
                                              const SymbolicOptions &options);
-    template SymbolicPlan ic_analyze<float>(const ichol::CsrMatrix<float> &A,
+    template SymbolicPlan ic_analyze<float>(const ichol::matrix::CsrMatrix<float> &A,
                                             const SymbolicOptions &options);
-    template SymbolicPlan ic_analyze<half_float::half>(const ichol::CsrMatrix<half_float::half> &A,
+    template SymbolicPlan ic_analyze<half_float::half>(const ichol::matrix::CsrMatrix<half_float::half> &A,
                                                        const SymbolicOptions &options);
 }

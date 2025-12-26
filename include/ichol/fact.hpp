@@ -1,3 +1,4 @@
+#pragma once
 #ifndef ICHOL_FACT_HPP
 #define ICHOL_FACT_HPP
 
@@ -16,7 +17,7 @@
  * The input matrix @param A is supposed to be stored as lower tri + diag.
  */
 template <class T>
-inline std::vector<double> col_norm_scale(const ichol::CsrMatrix<T> &A)
+inline std::vector<double> col_norm_scale(const ichol::matrix::CsrMatrix<T> &A)
 {
     const int n = A.num_rows;
     std::vector<double> col_sq(n, 0.0);
@@ -48,7 +49,7 @@ inline std::vector<double> col_norm_scale(const ichol::CsrMatrix<T> &A)
 }
 
 template <class T>
-inline std::vector<double> pivot_scale(const ichol::CsrMatrix<T> &A)
+inline std::vector<double> pivot_scale(const ichol::matrix::CsrMatrix<T> &A)
 {
     const int n = A.num_rows;
     std::vector<double> D(n, 1.0);
@@ -78,10 +79,10 @@ inline std::vector<double> pivot_scale(const ichol::CsrMatrix<T> &A)
  * D is given as a vector of its diagonal entries.
  */
 template <class T>
-inline ichol::CsrMatrix<T> apply_symm_prescaling(const ichol::CsrMatrix<T> &A,
+inline ichol::matrix::CsrMatrix<T> apply_symm_prescaling(const ichol::matrix::CsrMatrix<T> &A,
                                            const std::vector<double> &D)
 {
-    ichol::CsrMatrix<T> B;
+    ichol::matrix::CsrMatrix<T> B;
     B.num_rows = A.num_rows;
     B.num_cols = A.num_cols;
     B.row_ptr = A.row_ptr;
@@ -103,13 +104,13 @@ inline ichol::CsrMatrix<T> apply_symm_prescaling(const ichol::CsrMatrix<T> &A,
 }
 
 template <class T>
-inline ichol::CsrMatrix<T> add_diagonal_shift(const ichol::CsrMatrix<T> &A, T alpha)
+inline ichol::matrix::CsrMatrix<T> add_diagonal_shift(const ichol::matrix::CsrMatrix<T> &A, T alpha)
 {
     if (alpha == T(0))
         return A;
 
     const int n = A.num_rows;
-    ichol::CsrMatrix<T> S = A;
+    ichol::matrix::CsrMatrix<T> S = A;
 
     for (int i = 0; i < n; ++i)
     {
@@ -204,8 +205,8 @@ namespace ichol
      * The scaling matrix and pivot shifting are all in precision T
      */
     template <class T>
-    CsrMatrix<T> IC_factorize(const std::string &algo,
-                        const CsrMatrix<double> &Ahost,
+    ichol::matrix::CsrMatrix<T> IC_factorize(const std::string &algo,
+                        const ichol::matrix::CsrMatrix<double> &Ahost,
                         const ICTP_Params &ictp_params,
                         const IC_Factorize_Params &params,
                         const core::IC_Symbolic &Sym,

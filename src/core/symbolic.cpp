@@ -31,7 +31,7 @@ inline void update_etree(int i, int j,
     }
 }
 
-inline std::vector<int> build_etree(const ichol::CsrMatrix<double> &A)
+inline std::vector<int> build_etree(const ichol::matrix::CsrMatrix<double> &A)
 {
     const int n = A.num_rows;
 
@@ -57,7 +57,7 @@ inline std::vector<int> build_etree(const ichol::CsrMatrix<double> &A)
 }
 
 static inline std::vector<std::vector<int>>
-build_col_neighbors_from_lower(const ichol::CsrMatrix<double> &A)
+build_col_neighbors_from_lower(const ichol::matrix::CsrMatrix<double> &A)
 {
     const int n = A.num_rows;
     std::vector<std::vector<int>> col_neighbors(n);
@@ -77,7 +77,7 @@ build_col_neighbors_from_lower(const ichol::CsrMatrix<double> &A)
     return col_neighbors;
 }
 
-ichol::core::IC_Symbolic build_ic_symbolic_full(const ichol::CsrMatrix<double> &A,
+ichol::core::IC_Symbolic build_ic_symbolic_full(const ichol::matrix::CsrMatrix<double> &A,
                                                 const std::vector<int> &parent)
 {
     const int n = A.num_rows;
@@ -141,7 +141,7 @@ ichol::core::IC_Symbolic build_ic_symbolic_full(const ichol::CsrMatrix<double> &
     return sym;
 }
 
-ichol::core::IC_Symbolic build_ic_symbolic_levelk(const ichol::CsrMatrix<double> &A, int k)
+ichol::core::IC_Symbolic build_ic_symbolic_levelk(const ichol::matrix::CsrMatrix<double> &A, int k)
 {
     const int n = A.num_rows;
     assert(n == A.num_cols);
@@ -272,7 +272,7 @@ namespace ichol
 {
     namespace core
     {
-        IC_Symbolic build_ic_symbolic(const ichol::CsrMatrix<double> &A,
+        IC_Symbolic build_ic_symbolic(const ichol::matrix::CsrMatrix<double> &A,
                                       int k)
         {
             if (k < 0)

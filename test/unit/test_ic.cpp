@@ -31,7 +31,7 @@ namespace test_checks
     }
 
     template <typename T>
-    inline void assert_csr_lower_diag_only_sorted(const ichol::CsrMatrix<T> &M,
+    inline void assert_csr_lower_diag_only_sorted(const ichol::matrix::CsrMatrix<T> &M,
                                                   const char *name,
                                                   bool require_diag_last = true)
     {
@@ -78,7 +78,7 @@ namespace test_checks
 
     // Stronger L-specific check (needed for SpSV with NON_UNIT diagonal)
     template <typename T>
-    inline void assert_L_lower_diag_pos_finite(const ichol::CsrMatrix<T> &L, const char *name)
+    inline void assert_L_lower_diag_pos_finite(const ichol::matrix::CsrMatrix<T> &L, const char *name)
     {
         assert_csr_lower_diag_only_sorted(L, name, /*require_diag_last=*/true);
         const int n = L.num_rows;
@@ -94,7 +94,7 @@ namespace test_checks
 } // namespace test_checks
 
 template <typename T>
-void assert_diag_last(const ichol::CsrMatrix<T> &M)
+void assert_diag_last(const ichol::matrix::CsrMatrix<T> &M)
 {
     int n = M.num_rows;
     for (int i = 0; i < n; ++i)
@@ -118,7 +118,7 @@ void assert_diag_last(const ichol::CsrMatrix<T> &M)
 TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
 {
     std::string path = "test/data/nasa2146.mtx";
-    ichol::CsrMatrix<double> Ahost = ichol::io::mtx_to_csr<double>(path, false);
+    ichol::matrix::CsrMatrix<double> Ahost = ichol::io::mtx_to_csr<double>(path, false);
 
     const int n = Ahost.num_rows;
 
@@ -134,7 +134,7 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
     ichol::core::IC_Symbolic Sym = ichol::core::build_ic_symbolic(Ahost, 4);
 
     std::string algo = "ictp_par";
-    ichol::CsrMatrix<float> L = ichol::IC_factorize<float>(algo, Ahost, ictp_params, fparams, Sym, &out_info);
+    ichol::matrix::CsrMatrix<float> L = ichol::IC_factorize<float>(algo, Ahost, ictp_params, fparams, Sym, &out_info);
     ASSERT_GT(L.values.size(), 0u);
 
     std::vector<double> D(n, 1.0);
@@ -146,7 +146,7 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
     B = D^{-1} A D^{-1},
     and b_tilde = D^{-1} b
     */
-    ichol::CsrMatrix<double> B = apply_symm_prescaling(Ahost, D);
+    ichol::matrix::CsrMatrix<double> B = apply_symm_prescaling(Ahost, D);
     std::vector<double> b(n, 1.0);
     std::vector<double> b_tilde(n);
     for (int i = 0; i < n; ++i)
@@ -197,7 +197,7 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
 
     // Symmetric matvec for CSR storing lower-triangular + diagonal only.
     // Assumes diagonal entry exists in every row.
-    auto symm_lower_csr_matvec = [&](const ichol::CsrMatrix<double> &M,
+    auto symm_lower_csr_matvec = [&](const ichol::matrix::CsrMatrix<double> &M,
                                      const std::vector<double> &x,
                                      std::vector<double> &y)
     {

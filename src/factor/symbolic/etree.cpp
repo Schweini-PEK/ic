@@ -31,7 +31,7 @@ namespace
     }
 
     template <typename T>
-    ichol::symbolic::ETree build_etree(const ichol::CsrMatrix<T> &A)
+    ichol::symbolic::ETree build_etree(const ichol::matrix::CsrMatrix<T> &A)
     {
         const int n = A.num_rows;
 
@@ -57,7 +57,7 @@ namespace
         return tree;
     }
 
-    template ichol::symbolic::ETree build_etree<double>(const ichol::CsrMatrix<double> &A);
-    template ichol::symbolic::ETree build_etree<float>(const ichol::CsrMatrix<float> &A);
-    template ichol::symbolic::ETree build_etree<half_float::half>(const ichol::CsrMatrix<half_float::half> &A);
+    template ichol::symbolic::ETree build_etree<double>(const ichol::matrix::CsrMatrix<double> &A);
+    template ichol::symbolic::ETree build_etree<float>(const ichol::matrix::CsrMatrix<float> &A);
+    template ichol::symbolic::ETree build_etree<half_float::half>(const ichol::matrix::CsrMatrix<half_float::half> &A);
 }

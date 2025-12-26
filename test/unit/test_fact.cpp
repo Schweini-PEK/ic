@@ -13,7 +13,7 @@
 TEST(FactTest, IC_Factorize_Runs)
 {
     std::string path = "test/data/HB/bcsstk11.mtx";
-    ichol::CsrMatrix<double> csr = ichol::io::mtx_to_csr<double>(path, false);
+    ichol::matrix::CsrMatrix<double> csr = ichol::io::mtx_to_csr<double>(path, false);
 
     ICTP_Params ictp_params;
     ictp_params.lfil_per_row = 64;

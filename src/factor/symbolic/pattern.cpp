@@ -5,7 +5,7 @@
 namespace ichol::symbolic
 {
     template <typename T>
-    ichol::symbolic::FactorPattern compute_complete_cholesky_pattern(const ichol::CsrMatrix<T> &A,
+    ichol::symbolic::FactorPattern compute_complete_cholesky_pattern(const ichol::matrix::CsrMatrix<T> &A,
                                                                      const ichol::symbolic::ETree &etree)
     {
         const int n = A.num_rows;
@@ -15,7 +15,7 @@ namespace ichol::symbolic
     }
 
     template <typename T>
-    ichol::symbolic::FactorPattern compute_ic_factor_pattern(const ichol::CsrMatrix<T> &A,
+    ichol::symbolic::FactorPattern compute_ic_factor_pattern(const ichol::matrix::CsrMatrix<T> &A,
                                                              int level_k)
     {
         const int n = A.num_rows;
@@ -199,16 +199,16 @@ namespace ichol::symbolic
         return factor_pattern;
     }
 
-    template ichol::symbolic::FactorPattern compute_complete_cholesky_pattern<double>(const ichol::CsrMatrix<double> &A,
+    template ichol::symbolic::FactorPattern compute_complete_cholesky_pattern<double>(const ichol::matrix::CsrMatrix<double> &A,
                                                                                       const ichol::symbolic::ETree &etree);
-    template ichol::symbolic::FactorPattern compute_ic_factor_pattern<double>(const ichol::CsrMatrix<double> &A,
+    template ichol::symbolic::FactorPattern compute_ic_factor_pattern<double>(const ichol::matrix::CsrMatrix<double> &A,
                                                                               int level_k);
-    template ichol::symbolic::FactorPattern compute_complete_cholesky_pattern<float>(const ichol::CsrMatrix<float> &A,
+    template ichol::symbolic::FactorPattern compute_complete_cholesky_pattern<float>(const ichol::matrix::CsrMatrix<float> &A,
                                                                                      const ichol::symbolic::ETree &etree);
-    template ichol::symbolic::FactorPattern compute_ic_factor_pattern<float>(const ichol::CsrMatrix<float> &A,
+    template ichol::symbolic::FactorPattern compute_ic_factor_pattern<float>(const ichol::matrix::CsrMatrix<float> &A,
                                                                              int level_k);
-    template ichol::symbolic::FactorPattern compute_complete_cholesky_pattern<half_float::half>(const ichol::CsrMatrix<half_float::half> &A,
+    template ichol::symbolic::FactorPattern compute_complete_cholesky_pattern<half_float::half>(const ichol::matrix::CsrMatrix<half_float::half> &A,
                                                                                                 const ichol::symbolic::ETree &etree);
-    template ichol::symbolic::FactorPattern compute_ic_factor_pattern<half_float::half>(const ichol::CsrMatrix<half_float::half> &A,
+    template ichol::symbolic::FactorPattern compute_ic_factor_pattern<half_float::half>(const ichol::matrix::CsrMatrix<half_float::half> &A,
                                                                                         int level_k);
 } // namespace ichol::symbolic

@@ -5,7 +5,7 @@
 #include "factor/symbolic/detail/symbolic_plan.hpp"
 
 template <typename T>
-static ichol::CsrMatrix<T> vector_to_csr(
+static ichol::matrix::CsrMatrix<T> vector_to_csr(
     int n,
     std::initializer_list<std::tuple<int, int, T>> undirected_edges,
     T diag_val = T(10))
@@ -41,7 +41,7 @@ static ichol::CsrMatrix<T> vector_to_csr(
                 r.end());
     }
 
-    ichol::CsrMatrix<T> A;
+    ichol::matrix::CsrMatrix<T> A;
     A.num_rows = n;
     A.num_cols = n;
 

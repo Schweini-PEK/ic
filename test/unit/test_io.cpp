@@ -6,7 +6,7 @@
 namespace
 {
     template <typename T>
-    bool csr_diag_positive(const ichol::CsrMatrix<T> &csr)
+    bool csr_diag_positive(const ichol::matrix::CsrMatrix<T> &csr)
     {
         int n = csr.num_rows;
         for (int i = 0; i < n; i++)
@@ -28,7 +28,7 @@ namespace
     }
 
     template <typename T>
-    bool csc_diag_positive(const ichol::CscMatrix<T> &csc)
+    bool csc_diag_positive(const ichol::matrix::CscMatrix<T> &csc)
     {
         int n = csc.num_cols;
         for (int j = 0; j < n; j++)
@@ -50,7 +50,7 @@ namespace
     }
 
     template <typename T>
-    bool csr_sorted_check(const ichol::CsrMatrix<T> &csr)
+    bool csr_sorted_check(const ichol::matrix::CsrMatrix<T> &csr)
     {
         int n = csr.num_rows;
         for (int i = 0; i < n; i++)
@@ -71,7 +71,7 @@ namespace
 }
 
 template <typename T>
-bool csc_sorted_check(const ichol::CscMatrix<T> &csc)
+bool csc_sorted_check(const ichol::matrix::CscMatrix<T> &csc)
 {
     int n = csc.num_cols;
     for (int j = 0; j < n; j++)
@@ -93,8 +93,8 @@ bool csc_sorted_check(const ichol::CscMatrix<T> &csc)
 TEST(io, ProducesUsablePreconditionerOnMTX)
 {
     std::string path = "test/data/nasa2146.mtx";
-    ichol::CsrMatrix<double> Acsr = ichol::io::mtx_to_csr<double>(path, false);
-    ichol::CscMatrix<double> Acsc = ichol::io::mtx_to_csc<double>(path, false);
+    ichol::matrix::CsrMatrix<double> Acsr = ichol::io::mtx_to_csr<double>(path, false);
+    ichol::matrix::CscMatrix<double> Acsc = ichol::io::mtx_to_csc<double>(path, false);
 
     ASSERT_EQ(Acsr.num_rows, Acsc.num_rows);
     ASSERT_EQ(Acsr.num_cols, Acsc.num_cols);

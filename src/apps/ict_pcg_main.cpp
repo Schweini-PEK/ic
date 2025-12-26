@@ -24,7 +24,7 @@ static void usage(const char *argv0)
 template <typename T>
 int run(const std::string &path, const std::string &algo, int lfil_per_row, double drop_tol, double shift, int symbolic, double pivot_floortol)
 {
-    ichol::CsrMatrix<double> Ahost = ichol::io::mtx_to_csr<double>(path, /*keep_upper=*/false);
+    ichol::matrix::CsrMatrix<double> Ahost = ichol::io::mtx_to_csr<double>(path, /*keep_upper=*/false);
     const int n = Ahost.num_rows;
 
     ICTP_Params ictp_params;
@@ -46,7 +46,7 @@ int run(const std::string &path, const std::string &algo, int lfil_per_row, doub
     std::cout << "number of nnzs from Symbolic prediction: " << Sym.col_ind_L.size() << "\n";
 
     auto start = std::chrono::high_resolution_clock::now();
-    ichol::CsrMatrix<T> L = ichol::IC_factorize<T>(algo, Ahost, ictp_params, fparams, Sym, &out_info);
+    ichol::matrix::CsrMatrix<T> L = ichol::IC_factorize<T>(algo, Ahost, ictp_params, fparams, Sym, &out_info);
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = end - start;
     std::cout << "Factorization time: " << elapsed.count() << " seconds\n";
@@ -57,7 +57,7 @@ int run(const std::string &path, const std::string &algo, int lfil_per_row, doub
         D = out_info.D;
     }
 
-    ichol::CsrMatrix<double> B = apply_symm_prescaling(Ahost, D);
+    ichol::matrix::CsrMatrix<double> B = apply_symm_prescaling(Ahost, D);
 
     std::vector<double> b_tilde(n, 1);
     for (int i = 0; i < n; ++i)

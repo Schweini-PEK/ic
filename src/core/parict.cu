@@ -794,7 +794,7 @@ namespace ichol
     // Host CSR get (A rows assumed sorted by col)
     // ------------------------
     template <class T>
-    static inline double host_csr_get(const CsrMatrix<T> &A, int i, int j)
+    static inline double host_csr_get(const ichol::matrix::CsrMatrix<T> &A, int i, int j)
     {
         int lo = A.row_ptr[i];
         int hi = A.row_ptr[i + 1];
@@ -817,7 +817,7 @@ namespace ichol
     // diag = sqrt(Aii), offdiag = Aij / max(sqrt(Ajj), tiny)
     // ------------------------
     template <class T>
-    static CsrMatrix<T> init_L_from_Sym_lower(const CsrMatrix<T> &A, const core::IC_Symbolic &Sym)
+    static ichol::matrix::CsrMatrix<T> init_L_from_Sym_lower(const ichol::matrix::CsrMatrix<T> &A, const core::IC_Symbolic &Sym)
     {
         const int n = A.num_rows;
 
@@ -838,7 +838,7 @@ namespace ichol
             rp[i + 1] += rp[i];
         int nnz = rp[n];
 
-        CsrMatrix<T> L;
+        ichol::matrix::CsrMatrix<T> L;
         L.num_rows = n;
         L.num_cols = n;
         L.nnz = nnz;
@@ -905,9 +905,9 @@ namespace ichol
     // Download device CSR to host CSR<T>
     // ------------------------
     template <class T, class G>
-    static CsrMatrix<T> download_L(int n, int nnz, const int *d_rp, const int *d_ci, const G *d_v)
+    static ichol::matrix::CsrMatrix<T> download_L(int n, int nnz, const int *d_rp, const int *d_ci, const G *d_v)
     {
-        CsrMatrix<T> L;
+        ichol::matrix::CsrMatrix<T> L;
         L.num_rows = n;
         L.num_cols = n;
         L.nnz = nnz;
@@ -931,11 +931,11 @@ namespace ichol
     // Top-level ParICT wrapper
     // ------------------------
     template <class T>
-    CsrMatrix<T> parict(const CsrMatrix<T> &Ahost,
-                  const ICTP_Params &row_params,
-                  const IC_Attempt_Params &fparams,
-                  const core::IC_Symbolic &Sym,
-                  ICTP_Factor_Info *info)
+    ichol::matrix::CsrMatrix<T> parict(const ichol::matrix::CsrMatrix<T> &Ahost,
+                                       const ICTP_Params &row_params,
+                                       const IC_Attempt_Params &fparams,
+                                       const core::IC_Symbolic &Sym,
+                                       ICTP_Factor_Info *info)
     {
         using G = typename gpu_type<T>::type;
         using Acc = typename accum_type<G>::type;
@@ -949,7 +949,7 @@ namespace ichol
         const int steps = get_num_steps(row_params);
 
         // Initial L from Sym, pruned to lower+diag, A-based guess
-        CsrMatrix<T> L0 = init_L_from_Sym_lower<T>(Ahost, Sym);
+        ichol::matrix::CsrMatrix<T> L0 = init_L_from_Sym_lower<T>(Ahost, Sym);
         const int nnz_target = L0.nnz;
         const int off_target = std::max(0, nnz_target - n);
 
@@ -1349,11 +1349,11 @@ namespace ichol
             cudaFree(dL_v1);
             cudaFree(dL_row_ids);
             cudaFree(d_fail);
-            return CsrMatrix<T>{};
+            return ichol::matrix::CsrMatrix<T>{};
         }
 
         // ---------- Download final L ----------
-        CsrMatrix<T> L = download_L<T, G>(n, nnzL, dL_rp, dL_ci, dL_v0);
+        ichol::matrix::CsrMatrix<T> L = download_L<T, G>(n, nnzL, dL_rp, dL_ci, dL_v0);
 
         if (info)
         {
@@ -1376,22 +1376,22 @@ namespace ichol
     }
 
     // explicit instantiations
-    template CsrMatrix<double> parict(const CsrMatrix<double> &Ahost,
-                                const ICTP_Params &row_params,
-                                const IC_Attempt_Params &fparams,
-                                const core::IC_Symbolic &Sym,
-                                ICTP_Factor_Info *info);
+    template ichol::matrix::CsrMatrix<double> parict(const ichol::matrix::CsrMatrix<double> &Ahost,
+                                                     const ICTP_Params &row_params,
+                                                     const IC_Attempt_Params &fparams,
+                                                     const core::IC_Symbolic &Sym,
+                                                     ICTP_Factor_Info *info);
 
-    template CsrMatrix<float> parict(const CsrMatrix<float> &Ahost,
-                               const ICTP_Params &row_params,
-                               const IC_Attempt_Params &fparams,
-                               const core::IC_Symbolic &Sym,
-                               ICTP_Factor_Info *info);
+    template ichol::matrix::CsrMatrix<float> parict(const ichol::matrix::CsrMatrix<float> &Ahost,
+                                                    const ICTP_Params &row_params,
+                                                    const IC_Attempt_Params &fparams,
+                                                    const core::IC_Symbolic &Sym,
+                                                    ICTP_Factor_Info *info);
 
-    template CsrMatrix<half_float::half> parict(const CsrMatrix<half_float::half> &Ahost,
-                                          const ICTP_Params &row_params,
-                                          const IC_Attempt_Params &fparams,
-                                          const core::IC_Symbolic &Sym,
-                                          ICTP_Factor_Info *info);
+    template ichol::matrix::CsrMatrix<half_float::half> parict(const ichol::matrix::CsrMatrix<half_float::half> &Ahost,
+                                                               const ICTP_Params &row_params,
+                                                               const IC_Attempt_Params &fparams,
+                                                               const core::IC_Symbolic &Sym,
+                                                               ICTP_Factor_Info *info);
 
 } // namespace ichol
