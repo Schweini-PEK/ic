@@ -117,8 +117,8 @@ void assert_diag_last(const ichol::CsrMatrix<T> &M)
 
 TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
 {
-    std::string path = "test/data/nasa2146.mtx";
-    ichol::CsrMatrix<double> Ahost = ichol::io::mtx_to_csr<double>(path, false);
+    std::string path = "F:\\new\\ic\\test\\data\\nasa2146.mtx";
+    ichol::matrix::CsrMatrix<double> Ahost = ichol::io::mtx_to_csr<double>(path, false);
 
     const int n = Ahost.num_rows;
 
