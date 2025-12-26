@@ -21,6 +21,7 @@ static ichol::matrix::CsrMatrix<T> vector_to_csr(
         std::tie(a, b, v) = e;
         if (a < 0 || a >= n || b < 0 || b >= n)
             continue;
+
         // store in lower-triangular convention: row = max(a,b), col = min(a,b)
         if (a <= b)
             rows[b].push_back({a, v});
@@ -63,6 +64,13 @@ static ichol::matrix::CsrMatrix<T> vector_to_csr(
     }
 
     return A;
+}
+
+static bool RowHasCol(const ichol::symbolic::FactorPattern &fp, int i, int c)
+{
+    int b = fp.row_ptr_L[i];
+    int e = fp.row_ptr_L[i + 1];
+    return std::binary_search(fp.col_ind_L.begin() + b, fp.col_ind_L.begin() + e, c);
 }
 
 static void ExpectValidPattern(const ichol::symbolic::FactorPattern &fp, int n)
@@ -127,12 +135,25 @@ static void ExpectSubsetPerRow(const ichol::symbolic::FactorPattern &a,
     }
 }
 
-TEST(ICSymbolic, InvariantsAndMonotonicity)
+TEST(ICSymbolic, LevelFill_IC0_IC1_IC2_On5x5)
 {
     using T = double;
-    const int n = 4;
+    const int n = 5;
 
-    auto A = vector_to_csr<T>(n, {{0, 1, T(-1)}, {0, 2, T(-1)}, {1, 3, T(-1)}, {2, 3, T(-1)}});
+    // Graph (undirected):
+    // 0-1, 0-2, 1-3, 3-4
+    //
+    // Natural elimination order 0,1,2,3,4 yields:
+    // - fill level 1: (1,2)  => L(2,1) appears in IC(1)+
+    // - fill level 2: (2,3)  => L(3,2) appears in IC(2)+
+    auto A = vector_to_csr<T>(
+        n,
+        {
+            {0, 1, T(-1)},
+            {0, 2, T(-1)},
+            {1, 3, T(-1)},
+            {3, 4, T(-1)},
+        });
 
     auto fp0 = ichol::symbolic::compute_ic_factor_pattern(A, 0);
     auto fp1 = ichol::symbolic::compute_ic_factor_pattern(A, 1);
@@ -142,6 +163,22 @@ TEST(ICSymbolic, InvariantsAndMonotonicity)
     ExpectValidPattern(fp1, n);
     ExpectValidPattern(fp2, n);
 
+    // Monotonicity: IC(0) ⊆ IC(1) ⊆ IC(2) per row.
     ExpectSubsetPerRow(fp0, fp1, n);
     ExpectSubsetPerRow(fp1, fp2, n);
+
+    // Level-1 fill-in (1,2) shows up as L(2,1).
+    EXPECT_FALSE(RowHasCol(fp0, 2, 1));
+    EXPECT_TRUE(RowHasCol(fp1, 2, 1));
+    EXPECT_TRUE(RowHasCol(fp2, 2, 1));
+
+    // Level-2 fill-in (2,3) shows up as L(3,2).
+    EXPECT_FALSE(RowHasCol(fp0, 3, 2));
+    EXPECT_FALSE(RowHasCol(fp1, 3, 2));
+    EXPECT_TRUE(RowHasCol(fp2, 3, 2));
+
+    // Spot-check: nothing should introduce L(4,2) for this graph at these levels.
+    EXPECT_FALSE(RowHasCol(fp0, 4, 2));
+    EXPECT_FALSE(RowHasCol(fp1, 4, 2));
+    EXPECT_FALSE(RowHasCol(fp2, 4, 2));
 }
