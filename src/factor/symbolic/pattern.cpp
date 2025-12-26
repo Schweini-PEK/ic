@@ -1,6 +1,8 @@
+#include <deque>
+
 #include "symbolic.hpp"
 
-namespace
+namespace ichol::symbolic
 {
     template <typename T>
     ichol::symbolic::FactorPattern compute_complete_cholesky_pattern(const ichol::CsrMatrix<T> &A,
@@ -19,79 +21,179 @@ namespace
         const int n = A.num_rows;
         ichol::symbolic::FactorPattern factor_pattern;
 
-        std::vector<std::vector<int>> L_row(n);   // columns present in row r
-        std::vector<std::vector<int>> L_level(n); // the level-of-fill attached to each entry
-        std::vector<int> marker(n, -1);           // marker[c] == i means column c is present in row i
-        std::vector<int> work_col(n);             // temporary storage for columns in current row
-        std::vector<int> work_level(n);           // temporary storage for levels in current row, keyed by column index
+        if (level_k == 0) // IC(0)
+        {
+            factor_pattern.row_ptr_L = A.row_ptr;
+            factor_pattern.col_ind_L = A.col_ind;
+
+            return factor_pattern;
+        }
+
+        // Store final per-row pattern+levels while constructing later rows.
+        std::vector<std::vector<int>> L_cols(n);
+        std::vector<std::vector<int>> L_lvls(n);
+
+        // Workspace reused across rows:
+        // mark[col] == current_row means col is in the active set for this row.
+        std::vector<int> mark(n, -1);
+        std::vector<int> lvl(n, std::numeric_limits<int>::max() / 4);
+
+        // touched columns for fast reset (no O(n) clears).
+        std::vector<int> touched;
+        touched.reserve(256);
+
+        // Queue membership flag (only needed up to current row index; keep full size for simplicity).
+        std::vector<unsigned char> in_queue(n, 0);
+
+        const int INF = std::numeric_limits<int>::max() / 4;
 
         for (int i = 0; i < n; ++i)
         {
-            int used = 0;
-            const int row_start = A.row_ptr[i];
-            const int row_end = A.row_ptr[i + 1];
+            // Active set starts empty.
+            touched.clear();
+            std::deque<int> Q;
 
-            // Initial pattern from A
-            for (int p = row_start; p < row_end; ++p)
+            auto activate_or_decrease = [&](int j, int newlvl)
             {
-                int j = A.col_ind[p];
+                // Keep only if within level_k; diagonal handled separately by caller.
+                if (j != i && newlvl > level_k)
+                    return;
 
-                if (marker[j] != i)
+                if (mark[j] != i)
                 {
-                    marker[j] = i;
-                    work_col[used++] = j;
-                    work_level[j] = 0;
-                }
-                else if (0 < work_level[j])
-                {
-                    work_level[j] = 0;
-                }
-            }
+                    // First time we see column j in row i
+                    mark[j] = i;
+                    lvl[j] = newlvl;
+                    touched.push_back(j);
 
-            for (int pos = 0; pos < used; ++pos)
-            {
-                int j = work_col[pos];
-                if (j >= i)
-                    continue;
-
-                int level_ij = work_level[j];
-                if (level_ij > level_k)
-                    continue;
-
-                // Propagate fill from row j
-                const std::vector<int> &Lj_row = L_row[j];
-                const std::vector<int> &Lj_level = L_level[j];
-                const int Lj_size = static_cast<int>(Lj_row.size());
-
-                for (int idx = 0; idx < Lj_size; ++idx)
-                {
-                    int col = Lj_row[idx];
-                    int lev_jc = Lj_level[idx];
-                    int new_level = level_ij + lev_jc + 1;
-                    if (new_level > level_k)
-                        continue;
-
-                    if (marker[col] != i)
+                    // Any off-diagonal entry (i,j) with j<i can act as a pivot p=j for propagation.
+                    if (j < i && !in_queue[j])
                     {
-                        marker[col] = i;
-                        work_col[used++] = col;
-                        work_level[col] = new_level;
-                    }
-                    else if (new_level < work_level[col])
-                    {
-                        work_level[col] = new_level;
+                        in_queue[j] = 1;
+                        Q.push_back(j);
                     }
                 }
+                else
+                {
+                    // Already present: keep the minimum level (core of Saad/PETSc rule).
+                    if (newlvl < lvl[j])
+                    {
+                        lvl[j] = newlvl;
+                        // If this column can act as a pivot and is not queued, queue it.
+                        if (j < i && !in_queue[j])
+                        {
+                            in_queue[j] = 1;
+                            Q.push_back(j);
+                        }
+                    }
+                }
+            };
+
+            // 1) Initialize from A's stored lower row i: all those edges are level 0.
+            for (int idx = A.row_ptr[i]; idx < A.row_ptr[i + 1]; ++idx)
+            {
+                const int j = A.col_ind[idx];
+                if (j <= i)
+                {
+                    activate_or_decrease(j, 0);
+                }
+                // If input accidentally contains upper entries (j>i), ignore for lower pattern.
             }
 
-            std::sort(work_col.begin(), work_col.begin() + used);
-            L_row[i].assign(work_col.begin(), work_col.begin() + used);
-            L_level[i].resize(used);
-            for (int idx = 0; idx < used; ++idx)
+            // Ensure diagonal exists (always keep).
+            if (mark[i] != i)
             {
-                int col = work_col[idx];
-                L_level[i][idx] = work_level[col];
+                mark[i] = i;
+                lvl[i] = 0;
+                touched.push_back(i);
             }
+            else
+            {
+                lvl[i] = 0; // diag is level 0
+            }
+
+            // 2) Propagate fill via pivots p in the current row i.
+            //
+            // Intuition:
+            //   If (i,p) is in the pattern, then eliminating through p allows coupling i with
+            //   everything that p is coupled with (entries (p,j) in L row p), producing candidates (i,j).
+            //
+            // For each pivot p popped from the queue:
+            //   for each (p,j) with j<p in row p:
+            //       propose (i,j) with level = lvl(i,p) + lvl(p,j) + 1
+            while (!Q.empty())
+            {
+                const int p = Q.front();
+                Q.pop_front();
+                in_queue[p] = 0;
+
+                const int lvl_ip = (mark[p] == i) ? lvl[p] : INF;
+                if (lvl_ip == INF)
+                    continue;
+
+                // Row p is already finalized (since p < i). Merge its strictly-lower entries j<p.
+                const auto &rowp_cols = L_cols[p];
+                const auto &rowp_lvls = L_lvls[p];
+
+                for (size_t t = 0; t < rowp_cols.size(); ++t)
+                {
+                    const int j = rowp_cols[t];
+                    if (j >= p)
+                        continue; // skip diagonal (j==p) and anything above (shouldn't exist)
+                    const int lvl_pj = rowp_lvls[t];
+
+                    const int newlvl = lvl_ip + lvl_pj + 1; // PETSc/Saad ICC level recurrence (mirrored)
+                    activate_or_decrease(j, newlvl);
+                }
+            }
+
+            // 3) Finalize row i: collect active columns, sort, and store levels aligned.
+            //
+            // touched contains each active column exactly once (because mark prevents duplicates),
+            // but in arbitrary order.
+            std::vector<int> cols_i = touched;
+            std::sort(cols_i.begin(), cols_i.end());
+            cols_i.erase(std::unique(cols_i.begin(), cols_i.end()), cols_i.end());
+
+            // Enforce lower-triangular constraint and diagonal presence.
+            // (Triangular constraint should already hold; this is just structural hygiene.)
+            cols_i.erase(std::remove_if(cols_i.begin(), cols_i.end(),
+                                        [&](int c)
+                                        { return c > i; }),
+                         cols_i.end());
+            if (cols_i.empty() || cols_i.back() != i)
+            {
+                cols_i.insert(std::upper_bound(cols_i.begin(), cols_i.end(), i), i);
+                mark[i] = i;
+                lvl[i] = 0;
+            }
+
+            std::vector<int> lvls_i;
+            lvls_i.reserve(cols_i.size());
+            for (int c : cols_i)
+            {
+                // All retained entries satisfy lvl<=level_k (except diag which is 0).
+                lvls_i.push_back((mark[c] == i) ? lvl[c] : INF);
+            }
+
+            L_cols[i] = std::move(cols_i);
+            L_lvls[i] = std::move(lvls_i);
+        }
+
+        // 4) Pack into CSR FactorPattern
+        factor_pattern.row_ptr_L.resize(n + 1);
+        factor_pattern.row_ptr_L[0] = 0;
+        for (int i = 0; i < n; ++i)
+        {
+            factor_pattern.row_ptr_L[i + 1] = factor_pattern.row_ptr_L[i] + (int)L_cols[i].size();
+        }
+
+        factor_pattern.col_ind_L.resize(factor_pattern.row_ptr_L[n]);
+        for (int i = 0; i < n; ++i)
+        {
+            int out = factor_pattern.row_ptr_L[i];
+            for (int c : L_cols[i])
+                factor_pattern.col_ind_L[out++] = c;
         }
 
         return factor_pattern;
@@ -109,4 +211,4 @@ namespace
                                                                                                 const ichol::symbolic::ETree &etree);
     template ichol::symbolic::FactorPattern compute_ic_factor_pattern<half_float::half>(const ichol::CsrMatrix<half_float::half> &A,
                                                                                         int level_k);
-}
+} // namespace ichol::symbolic

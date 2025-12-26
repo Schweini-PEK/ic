@@ -6,7 +6,7 @@
 #include "ichol/matrix_formats.hpp"
 #include "ichol/half.hpp"
 
-namespace
+namespace ichol::symbolic
 {
     /**
      * Construct the elimination tree from the pattern of A.
@@ -27,4 +27,11 @@ namespace
      */
     ichol::symbolic::LevelSets build_level_sets(const ichol::symbolic::FactorPattern &factor_pattern,
                                                 const ichol::SymbolicOptions &options);
-}
+
+    /**
+     * Perform symbolic analysis for IC or IC(k) factorization.
+     */
+    template <typename T>
+    SymbolicPlan ic_analyze(const ichol::CsrMatrix<T> &A,
+                            const SymbolicOptions &options);
+} // namespace ichol::symbolic
