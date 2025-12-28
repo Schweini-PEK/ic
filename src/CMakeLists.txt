@@ -7,7 +7,8 @@ file(GLOB_RECURSE ICHOL_SRC
 list(FILTER ICHOL_SRC EXCLUDE REGEX ".*/apps/.*")
 
 add_library(ichol STATIC ${ICHOL_SRC}
-        ../include/ichol/supernode.hpp)
+        ../include/ichol/supernode.hpp
+)
 
 target_include_directories(ichol PUBLIC
     ${PROJECT_SOURCE_DIR}/include

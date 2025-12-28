@@ -15,9 +15,14 @@ namespace ichol::symbolic
     ichol::symbolic::ETree build_etree(const ichol::matrix::CsrMatrix<T> &A);
 
     template <typename T>
+    ichol::symbolic::ETree build_etree(const matrix::CscMatrix<T>& A);
+
+    template <typename T>
     ichol::symbolic::FactorPattern compute_complete_cholesky_pattern(const ichol::matrix::CsrMatrix<T> &A,
                                                                      const ichol::symbolic::ETree &etree);
-
+    template <typename T>
+    ichol::symbolic::FactorPattern compute_complete_cholesky_pattern(const ichol::matrix::CscMatrix<T> &A,
+                                                                     const ichol::symbolic::ETree &etree);
     template <typename T>
     ichol::symbolic::FactorPattern compute_ic_factor_pattern(const ichol::matrix::CsrMatrix<T> &A,
                                                              int level_k);
