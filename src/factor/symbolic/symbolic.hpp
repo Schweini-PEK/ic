@@ -27,12 +27,21 @@ namespace ichol::symbolic
     ichol::symbolic::FactorPattern compute_ic_factor_pattern(const ichol::matrix::CsrMatrix<T> &A,
                                                              int level_k);
 
+    // declaration to add
+    std::vector<std::pair<int,int>> detect_supernodes(const FactorPattern &pattern, const ETree &etree);
+    std::vector<std::pair<int,int>> detect_supernodes_approx(const FactorPattern &pattern, const ETree &etree, double overlap_threshold);
+    std::vector<int> build_col2snode(const std::vector<std::pair<int,int>>& snodes, int ncols);
+    std::vector<std::vector<int>> compute_snode_rows(const FactorPattern& pattern, const std::vector<std::pair<int,int>>& snodes);
+
+
     /**
      * Build level scheduling given the sparsity pattern of L.
      */
     ichol::symbolic::LevelSets build_level_sets(const ichol::symbolic::FactorPattern &factor_pattern,
                                                 const ichol::SymbolicOptions &options);
 
+    SnodeLevelSets build_snode_level_sets(const LevelSets &col_level_sets,
+                                          const std::vector<std::pair<int,int>> &snodes);
     /**
      * Perform symbolic analysis for IC or IC(k) factorization.
      */

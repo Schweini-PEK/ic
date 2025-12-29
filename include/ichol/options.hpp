@@ -11,7 +11,6 @@ namespace ichol
     struct SymbolicOptions {
         Ordering ordering = Ordering::AMD;
         bool use_etree = true;
-
         // IC(k)
         int level_k = -1; // -1 means complete Cholesky
     };
@@ -20,6 +19,8 @@ namespace ichol
         int min_supernode_size = 16;
         int max_supernode_size = 128;
         bool relaxed = false;
+        bool approximate = false;
+        double overlap_threshold = 0.8;
     };
 
     struct PCGOptions {

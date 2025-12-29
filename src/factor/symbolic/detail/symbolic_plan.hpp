@@ -22,6 +22,11 @@ namespace ichol::symbolic
         std::vector<int> levels;    // size n
     };
 
+    struct SnodeLevelSets {
+        std::vector<int> snode_level;
+        LevelSets level_sets; // level_sets.levels are snode ids
+    };
+
     struct FactorPattern
     {
         std::vector<int> row_ptr_L; // size n + 1
@@ -34,5 +39,15 @@ namespace ichol::symbolic
         ETree etree;
         LevelSets level_sets;
         FactorPattern factor_pattern;
+    };
+    struct SupernodalSymbolicPlan
+    {
+        ETree etree;                         // from CSC
+        FactorPattern factor_pattern;        // column-level L pattern
+
+        std::vector<std::pair<int,int>> snodes; // [start_col, end_col)
+        std::vector<int> col2snode;             // size = ncols
+
+        SnodeLevelSets snode_level_sets;         // supernode DAG scheduling
     };
 }
