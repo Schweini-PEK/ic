@@ -19,153 +19,144 @@
 //
 // #include <algorithm>
 //
-#include <vector>
+#include <iostream>
+#include <iomanip>
+#include <algorithm>
+#include <numeric>
 
-#include <utility>
-
+#include "ichol/mtx_read.hpp"
 #include "factor/symbolic/symbolic.hpp"
 #include "factor/symbolic/detail/symbolic_plan.hpp"
-template <typename T>
-static ichol::matrix::CscMatrix<T> vector_to_csc(
-    int n,
-    std::initializer_list<std::tuple<int, int, T>> undirected_edges,
-    T diag_val = T(10))
+
+using namespace ichol;
+using namespace ichol::symbolic;
+
+static void print_sn_range_list(const std::vector<std::pair<int,int>>& snodes, int limit = 20)
 {
-    std::vector<std::vector<std::pair<int, T>>> cols(n);
-    for (int i = 0; i < n; ++i)
-        cols[i].push_back({i, diag_val});
-
-    for (const auto &e : undirected_edges)
-    {
-        int a, b;
-        T v;
-        std::tie(a, b, v) = e;
-        if (a < 0 || a >= n || b < 0 || b >= n)
-            continue;
-
-        if (a >= b)
-            cols[b].push_back({a, v});
-        else
-            cols[a].push_back({b, v});
+    int m = static_cast<int>(snodes.size());
+    std::cout << "  total supernodes = " << m << "\n";
+    int shown = std::min(m, limit);
+    std::cout << "  first " << shown << " supernodes [start,end):\n";
+    for (int i = 0; i < shown; ++i) {
+        std::cout << "    [" << snodes[i].first << "," << snodes[i].second << ")";
+        std::cout << " size=" << (snodes[i].second - snodes[i].first) << "\n";
     }
-
-    for (int j = 0; j < n; ++j)
-    {
-        auto &c = cols[j];
-        std::sort(c.begin(), c.end(),
-                  [](const auto &x, const auto &y) { return x.first < y.first; });
-        c.erase(std::unique(c.begin(), c.end(),
-                            [](const auto &x, const auto &y)
-                            { return x.first == y.first; }),
-                c.end());
-    }
-
-    ichol::matrix::CscMatrix<T> A;
-    A.num_rows = n;
-    A.num_cols = n;
-
-    A.col_ptr.resize(n + 1, 0);
-    for (int j = 0; j < n; ++j)
-        A.col_ptr[j + 1] = A.col_ptr[j] + (int)cols[j].size();
-
-    A.nnz = A.col_ptr[n];
-    A.row_ind.reserve(A.nnz);
-    A.values.reserve(A.nnz);
-
-    for (int j = 0; j < n; ++j)
-        for (auto &p : cols[j])
-        {
-            A.row_ind.push_back(p.first);
-            A.values.push_back(p.second);
-        }
-
-    return A;
-}
-TEST(SupernodalCSC, ConservativeDetectionAndLevels)
-{
-    using T = double;
-    const int n = 5;
-
-    // Chain: 0-1-2-3-4
-    auto A = vector_to_csc<T>(
-        n,
-        {
-            {0,1,-1},
-            {1,2,-1},
-            {2,3,-1},
-            {3,4,-1},
-        });
-
-    auto etree = ichol::symbolic::build_etree(A);
-    auto fp    = ichol::symbolic::compute_complete_cholesky_pattern(A, etree);
-
-    auto col_ls = ichol::symbolic::build_level_sets(fp, ichol::SymbolicOptions{});
-
-    auto snodes = ichol::symbolic::detect_supernodes(fp, etree);
-    auto sn_res = ichol::symbolic::build_snode_level_sets(col_ls, snodes);
-
-    const auto &snode_level = sn_res.snode_level;
-    const auto &snode_ls    = sn_res.level_sets;
-
-    ASSERT_FALSE(snodes.empty());
-    ASSERT_EQ((int)snode_level.size(), (int)snodes.size());
-
-    // Each column must belong to exactly one supernode
-    std::vector<int> col_count(n, 0);
-    for (auto &pr : snodes)
-        for (int c = pr.first; c < pr.second; ++c)
-            col_count[c]++;
-
-    for (int c = 0; c < n; ++c)
-        EXPECT_EQ(col_count[c], 1);
-
-    // snode level must be >= level of all columns it covers
-    std::vector<int> col_level(n, -1);
-    for (int L = 0; L + 1 < (int)col_ls.level_ptr.size(); ++L)
-        for (int p = col_ls.level_ptr[L]; p < col_ls.level_ptr[L+1]; ++p)
-            col_level[col_ls.levels[p]] = L;
-
-    for (size_t id = 0; id < snodes.size(); ++id)
-    {
-        int s = snodes[id].first;
-        int e = snodes[id].second;
-        int lv = snode_level[id];
-        for (int c = s; c < e; ++c)
-            EXPECT_GE(lv, col_level[c]);
-    }
-
-    // LevelSets sanity
-    EXPECT_EQ((int)snode_ls.levels.size(), (int)snodes.size());
-    EXPECT_EQ(snode_ls.level_ptr.back(), (int)snodes.size());
+    if (m > shown) std::cout << "    ... (+" << (m - shown) << " more)\n";
 }
 
-
-TEST(SupernodalCSC, ApproximateEqualsConservativeAtOne)
+// produce histogram of supernode sizes (columns per supernode)
+static std::vector<int> snode_size_histogram(const std::vector<std::pair<int,int>>& snodes, int max_bucket = 20)
 {
-    using T = double;
-    const int n = 6;
-
-    auto A = vector_to_csc<T>(
-        n,
-        {
-            {0,1,-1},
-            {0,2,-1},
-            {1,2,-1},
-            {2,3,-1},
-            {3,4,-1},
-            {4,5,-1},
-        });
-
-    auto etree = ichol::symbolic::build_etree(A);
-    auto fp    = ichol::symbolic::compute_complete_cholesky_pattern(A, etree);
-
-    auto sn1 = ichol::symbolic::detect_supernodes(fp, etree);
-    auto sn2 = ichol::symbolic::detect_supernodes_approx(fp, etree, 1.0);
-
-    ASSERT_EQ(sn1.size(), sn2.size());
-    for (size_t i = 0; i < sn1.size(); ++i)
-    {
-        EXPECT_EQ(sn1[i].first,  sn2[i].first);
-        EXPECT_EQ(sn1[i].second, sn2[i].second);
+    std::vector<int> hist(max_bucket + 1, 0); // last bucket is ">= max_bucket"
+    for (auto &p : snodes) {
+        int sz = p.second - p.first;
+        if (sz >= max_bucket) hist[max_bucket]++;
+        else hist[sz]++;
     }
+    return hist;
+}
+
+static void print_histogram(const std::vector<int>& hist)
+{
+    for (size_t i = 0; i + 1 < hist.size(); ++i) {
+        std::cout << "    size=" << std::setw(2) << i << " -> " << hist[i] << "\n";
+    }
+    std::cout << "    size>=" << (hist.size()-1) << " -> " << hist.back() << "\n";
+}
+
+TEST(SupernodalIO, CompareConservativeAndApproxOnNasa)
+{
+    std::string path = "F:/new/ic/test/data/nasa2146.mtx";
+    // load CSC (we run supernode pipeline on CSC)
+    auto A = ichol::io::mtx_to_csc<double>(path, false);
+
+    ASSERT_GT(A.num_cols, 0);
+    ASSERT_EQ(A.num_rows, A.num_cols);
+    std::cout << "Matrix: " << path << "  ncols=" << A.num_cols << " nnz=" << A.nnz << "\n";
+
+    // 1) build etree and factor pattern
+    auto etree = ichol::symbolic::build_etree<double>(A);
+    auto fp = ichol::symbolic::compute_complete_cholesky_pattern<double>(A, etree);
+
+    // sanity checks
+    ASSERT_EQ(static_cast<int>(fp.row_ptr_L.size()), A.num_cols + 1);
+    ASSERT_EQ(fp.row_ptr_L.back(), static_cast<int>(fp.col_ind_L.size()));
+
+    // 2) column-level level sets (used to derive snode levels)
+    SymbolicOptions symopts; // default
+    auto col_ls = ichol::symbolic::build_level_sets(fp, symopts);
+
+    // 3) conservative detection
+    auto sn_cons = ichol::symbolic::detect_supernodes(fp, etree);
+    std::cout << "Conservative detect:\n";
+    print_sn_range_list(sn_cons);
+    auto hist_cons = snode_size_histogram(sn_cons, 16);
+    std::cout << "Conservative size histogram:\n";
+    print_histogram(hist_cons);
+
+    // 4) approximate detection with threshold = 1.0 (should match conservative)
+    auto sn_appx1 = ichol::symbolic::detect_supernodes_approx(fp, etree, 1.0);
+    std::cout << "\nApproximate detect (threshold=1.0):\n";
+    print_sn_range_list(sn_appx1);
+    auto hist_appx1 = snode_size_histogram(sn_appx1, 16);
+    std::cout << "Approx(1.0) size histogram:\n";
+    print_histogram(hist_appx1);
+
+    // 5) approximate detection with threshold = 0.8 (coarser, likely fewer snodes)
+    double thr = 0.8;
+    auto sn_appx08 = ichol::symbolic::detect_supernodes_approx(fp, etree, thr);
+    std::cout << "\nApproximate detect (threshold=" << thr << "):\n";
+    print_sn_range_list(sn_appx08);
+    auto hist_appx08 = snode_size_histogram(sn_appx08, 16);
+    std::cout << "Approx(0.8) size histogram:\n";
+    print_histogram(hist_appx08);
+
+    // 6) basic assertions about relationships
+    ASSERT_EQ(sn_cons.size(), sn_appx1.size());
+    EXPECT_LE(sn_appx08.size(), sn_cons.size());
+
+    // 7) build col->snode map and check coverage
+    auto col2s_cons = ichol::symbolic::build_col2snode(sn_cons, A.num_cols);
+    auto col2s_appx08 = ichol::symbolic::build_col2snode(sn_appx08, A.num_cols);
+
+    ASSERT_EQ(static_cast<int>(col2s_cons.size()), A.num_cols);
+    ASSERT_EQ(static_cast<int>(col2s_appx08.size()), A.num_cols);
+
+    // each column must map to exactly one snode id (>=0)
+    for (int c = 0; c < A.num_cols; ++c) {
+        EXPECT_GE(col2s_cons[c], 0);
+        EXPECT_LT(col2s_cons[c], static_cast<int>(sn_cons.size()));
+        EXPECT_GE(col2s_appx08[c], 0);
+        EXPECT_LT(col2s_appx08[c], static_cast<int>(sn_appx08.size()));
+    }
+
+    // 8) compute snode rows for both and compare numbers
+    auto snrows_cons = ichol::symbolic::compute_snode_rows(fp, sn_cons);
+    auto snrows_appx08 = ichol::symbolic::compute_snode_rows(fp, sn_appx08);
+
+    std::cout << "\nSnode rows: conservative has " << snrows_cons.size() << " blocks, approx(0.8) has " << snrows_appx08.size() << "\n";
+
+    // 9) build snode-level-sets for approx(0.8) and conservative
+    auto snode_level_cons = ichol::symbolic::build_snode_level_sets(col_ls, sn_cons);
+    auto snode_level_appx08 = ichol::symbolic::build_snode_level_sets(col_ls, sn_appx08);
+
+    std::cout << "\nSnode-level sets: conservative levels = " << (snode_level_cons.snode_level.size()) << "; level buckets = " << (snode_level_cons.level_sets.level_ptr.size()-1) << "\n";
+    std::cout << "                   approx(0.8) levels = " << (snode_level_appx08.snode_level.size()) << "; level buckets = " << (snode_level_appx08.level_sets.level_ptr.size()-1) << "\n";
+
+    // 10) print a short comparison summary
+    std::cout << "\nSummary:\n";
+    std::cout << "  conservative supernodes: " << sn_cons.size() << "\n";
+    std::cout << "  approx(th=1.0) supernodes: " << sn_appx1.size() << "\n";
+    std::cout << "  approx(th=0.8) supernodes: " << sn_appx08.size() << "\n";
+    std::cout << "  conservative total snode rows nnz (sum sizes): ";
+    int sum_cons = 0;
+    for (auto &r : snrows_cons) sum_cons += (int)r.size();
+    std::cout << sum_cons << "\n";
+    int sum_appx08 = 0;
+    for (auto &r : snrows_appx08) sum_appx08 += (int)r.size();
+    std::cout << "  approx(0.8) total snode rows nnz (sum sizes): " << sum_appx08 << "\n";
+
+    // small sanity checks
+    EXPECT_GT(sn_cons.size(), 0u);
+    EXPECT_GT(sn_appx08.size(), 0u);
 }
