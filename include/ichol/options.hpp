@@ -34,7 +34,7 @@ namespace ichol
 
     struct SymbolicOptions
     {
-        Ordering ordering = Ordering::AMD;
+        Ordering ordering = Ordering::Identity;
         bool use_etree = true;
 
         // IC(k)
@@ -55,7 +55,9 @@ namespace ichol
         FactorizationAlgorithm algorithm = FactorizationAlgorithm::ICKDT;
         int max_restarts = 5;
 
+        double static_shift = 1e-6; // For static shift strategy
         double pivot_tol = 0.0; // For pivot check
+        double shift_growth = 2.0; // For shift increase on restart
 
         // For ICKDT
         int lfil = 20;

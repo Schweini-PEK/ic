@@ -13,6 +13,7 @@ function(add_unit_test name)
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src
+            ${PROJECT_SOURCE_DIR}/test
     )
 
     add_test(NAME ${name} COMMAND ${name})

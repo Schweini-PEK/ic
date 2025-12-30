@@ -1,7 +1,6 @@
 #pragma once
 
 #include "ichol/matrix_formats.hpp"
-#include "backends/CUDA/util/host_cast.hpp"
 
 namespace ichol::numeric::util
 {
@@ -25,7 +24,7 @@ namespace ichol::numeric::util
             int cnt = 0;
             for (int p = r0; p < diagp; ++p)
             {
-                if (ichol::cuda::util::host_to_double(val_fixed[p]) != 0.0)
+                if (ichol::cuda::util::cuda_type_to_double(val_fixed[p]) != 0.0)
                     cnt++;
             }
             cnt += 1;
@@ -45,15 +44,15 @@ namespace ichol::numeric::util
             for (int p = r0; p < diagp; ++p)
             {
                 G v = val_fixed[p];
-                if (ichol::cuda::util::host_to_double(v) != 0.0)
+                if (ichol::cuda::util::cuda_type_to_double(v) != 0.0)
                 {
                     L.col_ind[outp] = col_ind[p];
-                    L.values[outp] = (T)ichol::cuda::util::host_to_double(v);
+                    L.values[outp] = (T)ichol::cuda::util::cuda_type_to_double(v);
                     outp++;
                 }
             }
             L.col_ind[outp] = i;
-            L.values[outp] = (T)ichol::cuda::util::host_to_double(val_fixed[diagp]);
+            L.values[outp] = (T)ichol::cuda::util::cuda_type_to_double(val_fixed[diagp]);
         }
 
         return L;

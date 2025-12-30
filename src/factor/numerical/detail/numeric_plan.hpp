@@ -23,7 +23,7 @@ namespace ichol::numeric
     };
 
     /**
-     * Information about the IC factorization process.
+     * Output information about the IC factorization process.
      */
     struct ICInfo
     {

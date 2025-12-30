@@ -1,4 +1,4 @@
-//src/factor/numerical/cuda/detail/ickdt_factorize_impl.hpp
+// src/factor/numerical/cuda/detail/ickdt_factorize_impl.hpp
 #pragma once
 
 #include <vector>
@@ -66,7 +66,7 @@ namespace ichol::numeric::cuda
         {
             std::vector<G> tmp(nnzA);
             for (int p = 0; p < nnzA; ++p)
-                tmp[p] = ichol::cuda::util::host_cast<G>(Ahost.values[p]);
+                tmp[p] = ichol::cuda::util::to_cuda_type<G>(Ahost.values[p]);
             CUDA_CHECK(cudaMemcpy(d_valA, tmp.data(), nnzA * sizeof(G), cudaMemcpyHostToDevice));
         }
 
@@ -157,8 +157,8 @@ namespace ichol::numeric::cuda
                 d_rowPtrL, d_colIndL, d_valL,
                 d_colPtrL, d_colRowL, d_colCsrPosL,
                 options.lfil,
-                ichol::cuda::util::host_cast<G>(options.drop_tol),
-                ichol::cuda::util::host_cast<G>(options.pivot_tol),
+                ichol::cuda::util::to_cuda_type<G>(options.drop_tol),
+                ichol::cuda::util::to_cuda_type<G>(options.pivot_tol),
                 max_off_level, H_level, N_level,
                 d_status, d_fail_row);
 

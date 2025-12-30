@@ -1,21 +1,21 @@
-// backends/CUDA/util/host_cast.hpp
+// backends/CUDA/util/to_cuda_type.hpp
 #pragma once
 
 #include <cuda_fp16.h>
 #include <type_traits>
-#include <ichol/half.hpp> // half_float::half
+#include <ichol/half.hpp>
 
 namespace ichol::cuda::util
 {
 
     /**
-     * host_cast:
+     * to_cuda_type:
      *   double              -> double
      *   float               -> float
      *   half_float::half   -> __half
      */
     template <class G, class S>
-    __host__ __forceinline__ G host_cast(S x)
+    __host__ __forceinline__ G to_cuda_type(S x)
     {
         using GG = std::remove_cv_t<std::remove_reference_t<G>>;
         using SS = std::remove_cv_t<std::remove_reference_t<S>>;
@@ -43,18 +43,18 @@ namespace ichol::cuda::util
         }
         else
         {
-            static_assert(sizeof(GG) == 0, "host_cast: only supports double->double, float->float, half_float::half->__half");
+            static_assert(sizeof(GG) == 0, "to_cuda_type: only supports double->double, float->float, half_float::half->__half");
         }
     }
 
     /**
-     * host_to_double:
+     * cuda_type_to_double:
      *   double              -> double
      *   float               -> double
      *   __half              -> double
      */
     template <class G>
-    __host__ __forceinline__ double host_to_double(G x)
+    __host__ __forceinline__ double cuda_type_to_double(G x)
     {
         using GG = std::remove_cv_t<std::remove_reference_t<G>>;
 
@@ -72,7 +72,7 @@ namespace ichol::cuda::util
         }
         else
         {
-            static_assert(sizeof(GG) == 0, "host_to_double: only supports double, float, __half");
+            static_assert(sizeof(GG) == 0, "cuda_type_to_double: only supports double, float, __half");
         }
     }
 
