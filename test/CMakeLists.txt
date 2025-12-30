@@ -13,6 +13,7 @@ function(add_unit_test name)
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src
+            ${PROJECT_SOURCE_DIR}/test
     )
 
     add_test(NAME ${name} COMMAND ${name})
@@ -22,3 +23,5 @@ add_unit_test(test_io)
 add_unit_test(test_fact)
 add_unit_test(test_cg)
 add_unit_test(test_ic)
+add_unit_test(test_symbolic)
+add_unit_test(test_supernodal)

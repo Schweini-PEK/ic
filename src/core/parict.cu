@@ -1,883 +1,1397 @@
-// parict.cu
-// CUDA-oriented ParICT implementation skeleton faithful to Algorithm 2 (ParILUT outline)
-// adapted to SPD case (ParICT computes only L such that A ≈ L * L^T).
-// Based on ParILUT paper description of ParICT and Algorithm 2. :contentReference[oaicite:0]{index=0}
-
-#include <cuda_runtime.h>
-#include <cusparse.h>
-#include <thrust/device_vector.h>
-#include <thrust/host_vector.h>
-#include <thrust/transform.h>
-#include <thrust/reduce.h>
-#include <thrust/sort.h>
-#include <thrust/functional.h>
-#include <vector>
-#include <cmath>
-#include <cstdint>
-#include <algorithm>
-#include <ichol/parict.hpp>
-
-// ------------------------------
-// Error handling
-// ------------------------------
-#define CUDA_CHECK(call)                                         \
-    do                                                           \
-    {                                                            \
-        cudaError_t err = call;                                  \
-        if (err != cudaSuccess)                                  \
-        {                                                        \
-            printf("CUDA error %s:%d: %s\n", __FILE__, __LINE__, \
-                   cudaGetErrorString(err));                     \
-            std::abort();                                        \
-        }                                                        \
-    } while (0)
-
-#define CUSPARSE_CHECK(call)                                      \
-    do                                                            \
-    {                                                             \
-        cusparseStatus_t st = call;                               \
-        if (st != CUSPARSE_STATUS_SUCCESS)                        \
-        {                                                         \
-            printf("cuSPARSE error %s:%d\n", __FILE__, __LINE__); \
-            std::abort();                                         \
-        }                                                         \
-    } while (0)
-
-// ------------------------------
-// Basic CSR container
-// ------------------------------
-struct CsrDevice
-{
-    int num_rows = 0;
-    int nnz = 0;
-    int *row_ptr = nullptr;
-    int *col_ind = nullptr;
-    double *values = nullptr; // lower-triangular entries for L and full for A (assumed sorted per row)
-};
-
-// Candidate location for lower triangle (i >= j)
-struct CandidateIJ
-{
-    int i, j;
-};
-
-// ------------------------------
-// Device helpers
-// ------------------------------
-__device__ __forceinline__ double csr_get_value_sorted_row(const int *row_ptr, const int *col_ind, const double *values,
-                                                           int row, int col)
-{
-    int start = row_ptr[row];
-    int end = row_ptr[row + 1];
-    // binary search in sorted colind
-    int lo = start, hi = end - 1;
-    while (lo <= hi)
-    {
-        int mid = (lo + hi) >> 1;
-        int c = col_ind[mid];
-        if (c == col)
-            return values[mid];
-        if (c < col)
-            lo = mid + 1;
-        else
-            hi = mid - 1;
-    }
-    return 0.0;
-}
-
-// Dot product of two L rows restricted to columns < limit_col.
-// Assumes L rows sorted by column index and only stores j <= i entries.
-__device__ __forceinline__ double dot_L_rows_lt(const int *L_row_ptr, const int *L_col_ind, const double *L_values,
-                                                int i, int j, int limit_col)
-{
-    int pi = L_row_ptr[i], ei = L_row_ptr[i + 1];
-    int pj = L_row_ptr[j], ej = L_row_ptr[j + 1];
-
-    double sum = 0.0;
-
-    while (pi < ei && pj < ej)
-    {
-        int ci = L_col_ind[pi];
-        int cj = L_col_ind[pj];
-
-        if (ci >= limit_col)
-        { // row i surpassed limit
-            if (cj >= limit_col)
-                break;
-        }
-        if (cj >= limit_col)
-        { // row j surpassed limit
-            if (ci >= limit_col)
-                break;
-        }
-
-        if (ci == cj)
-        {
-            if (ci < limit_col)
-            {
-                sum += L_values[pi] * L_values[pj];
-            }
-            ++pi;
-            ++pj;
-        }
-        else if (ci < cj)
-        {
-            ++pi;
-        }
-        else
-        {
-            ++pj;
-        }
-    }
-    return sum;
-}
-
-// ------------------------------
-// Kernels
-// ------------------------------
-
-// Compute residuals r_ij = a_ij - (L L^T)_ij for candidate list.
-// Algorithm 2 line: "Compute ILU residual at candidate locations" (adapted to IC).
-__global__ void compute_candidates_residual_kernel(const int *A_row_ptr, const int *A_col_ind, const double *A_values,
-                                                   const int *L_row_ptr, const int *L_col_ind, const double *L_values,
-                                                   const CandidateIJ *cand, double *rvals, int ncand)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= ncand)
-        return;
-
-    int i = cand[tid].i;
-    int j = cand[tid].j; // j <= i
-
-    double aij = csr_get_value_sorted_row(A_row_ptr, A_col_ind, A_values, i, j);
-
-    // (L L^T)_ij = sum_k l_ik * l_jk
-    // For Cholesky-style update, only k < = min(i,j); here j <= i.
-    double lij_dot = dot_L_rows_lt(L_row_ptr, L_col_ind, L_values, i, j, /*limit_col=*/j);
-
-    // Include k=j term if present in both rows? The dot helper uses < j.
-    // Cholesky off-diagonal formula uses sum_{k<j}. We'll follow that.
-    double llT_ij = lij_dot;
-
-    rvals[tid] = aij - llT_ij;
-}
-
-// One synchronous fixed-point sweep for ParICT.
-// Algorithm 2 lines: "Do one sweep of the fixed-point ILU algorithm"
-// adapted to incomplete Cholesky fixed-point update.
-// We update all stored nonzeros in L.
-// For i>j:
-//   l_ij = (a_ij - sum_{k<j} l_ik * l_jk) / l_jj
-// For i==j:
-//   l_ii = sqrt(a_ii - sum_{k<i} l_ik^2)
-// This matches the paper's note that square roots are used in ParICT. :contentReference[oaicite:1]{index=1}
-__global__ void parict_fixed_point_sweep_kernel(const int *A_row_ptr, const int *A_col_ind, const double *A_values,
-                                                const int *L_row_ptr, const int *L_col_ind,
-                                                const double *L_old, double *L_new,
-                                                int n)
-{
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= n)
-        return;
-
-    int start = L_row_ptr[row];
-    int end = L_row_ptr[row + 1];
-
-    // Iterate over nonzeros in L row. Each thread handles one row for simplicity.
-    for (int p = start; p < end; ++p)
-    {
-        int col = L_col_ind[p]; // col <= row
-
-        if (col == row)
-        {
-            // diagonal update
-            double aii = csr_get_value_sorted_row(A_row_ptr, A_col_ind, A_values, row, row);
-
-            // sum_{k < i} l_ik^2
-            double ss = 0.0;
-            int p2 = start;
-            while (p2 < end)
-            {
-                int ck = L_col_ind[p2];
-                if (ck >= row)
-                    break;
-                double vik = L_old[p2];
-                ss += vik * vik;
-                ++p2;
-            }
-
-            double val = aii - ss;
-            // Guard against negative due to incompleteness; leave as-is if negative.
-            L_new[p] = (val > 0.0) ? sqrt(val) : L_old[p];
-        }
-        else
-        {
-            // off-diagonal update
-            double aij = csr_get_value_sorted_row(A_row_ptr, A_col_ind, A_values, row, col);
-
-            double sum = dot_L_rows_lt(L_row_ptr, L_col_ind, L_old, row, col, /*limit_col=*/col);
-
-            // divide by l_jj
-            double ljj = csr_get_value_sorted_row(L_row_ptr, L_col_ind, L_old, col, col);
-
-            double numer = aij - sum;
-            L_new[p] = (ljj != 0.0) ? (numer / ljj) : L_old[p];
-        }
-    }
-}
-
-// Compute absolute values of L (excluding diagonal mask) into array for selection.
-__global__ void abs_offdiag_kernel(const int *L_row_ptr, const int *L_col_ind, const double *L_values,
-                                   double *out_abs, int n)
-{
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= n)
-        return;
-
-    int start = L_row_ptr[row];
-    int end = L_row_ptr[row + 1];
-
-    for (int p = start; p < end; ++p)
-    {
-        int col = L_col_ind[p];
-        double v = L_values[p];
-        out_abs[p] = (col == row) ? 1e300 : fabs(v); // huge sentinel so diagonal won't be selected
-    }
-}
-
-// Mark entries to remove based on threshold tau and keep diagonals.
-__global__ void mark_remove_kernel(const int *L_row_ptr, const int *L_col_ind, const double *L_values,
-                                   uint8_t *remove_flag, double tau, int n)
-{
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= n)
-        return;
-
-    int start = L_row_ptr[row];
-    int end = L_row_ptr[row + 1];
-
-    for (int p = start; p < end; ++p)
-    {
-        int col = L_col_ind[p];
-        if (col == row)
-        {
-            remove_flag[p] = 0;
-        }
-        else
-        {
-            remove_flag[p] = (fabs(L_values[p]) <= tau) ? 1 : 0;
-        }
-    }
-}
-
-// ------------------------------
-// Host-side building blocks
-// ------------------------------
-
-// Utility: copy CSR host->device
-static CsrDevice csr_to_device(const ichol::CSR<double> &h)
-{
-    CsrDevice d;
-    d.num_rows = h.num_rows;
-    d.nnz = h.nnz;
-
-    CUDA_CHECK(cudaMalloc(&d.row_ptr, sizeof(int) * (d.num_rows + 1)));
-    CUDA_CHECK(cudaMalloc(&d.col_ind, sizeof(int) * d.nnz));
-    CUDA_CHECK(cudaMalloc(&d.values, sizeof(double) * d.nnz));
-
-    CUDA_CHECK(cudaMemcpy(d.row_ptr, h.row_ptr.data(), sizeof(int) * (d.num_rows + 1), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d.col_ind, h.col_ind.data(), sizeof(int) * d.nnz, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d.values, h.values.data(), sizeof(double) * d.nnz, cudaMemcpyHostToDevice));
-
-    return d;
-}
-
-static void csr_free(CsrDevice &d)
-{
-    if (d.row_ptr)
-        CUDA_CHECK(cudaFree(d.row_ptr));
-    if (d.col_ind)
-        CUDA_CHECK(cudaFree(d.col_ind));
-    if (d.values)
-        CUDA_CHECK(cudaFree(d.values));
-    d = {};
-}
-
-// Build initial L from lower triangle of A (level-0 pattern).
-// Matches paper's initialization choice for ParILUT/ParICT. :contentReference[oaicite:2]{index=2}
-static ichol::CSR<double> init_L_from_A_lower(const ichol::CSR<double> &A)
-{
-    ichol::CSR<double> L;
-    L.num_rows = A.num_rows;
-    L.num_cols = A.num_cols;
-    L.row_ptr.resize(L.num_rows + 1, 0);
-
-    // Count lower-triangular nnz per row
-    for (int i = 0; i < A.num_rows; ++i)
-    {
-        for (int p = A.row_ptr[i]; p < A.row_ptr[i + 1]; ++p)
-        {
-            int j = A.col_ind[p];
-            if (j <= i)
-                L.row_ptr[i + 1]++;
-        }
-        // Ensure diagonal exists
-        // If A missing diagonal, this simplistic initializer won't add it.
-    }
-    // Prefix sum
-    for (int i = 0; i < A.num_rows; ++i)
-        L.row_ptr[i + 1] += L.row_ptr[i];
-
-    int nnzL = L.row_ptr[L.num_rows];
-    L.nnz = nnzL;
-    L.col_ind.resize(nnzL);
-    L.values.resize(nnzL);
-
-    std::vector<int> offset = L.row_ptr;
-
-    for (int i = 0; i < A.num_rows; ++i)
-    {
-        for (int p = A.row_ptr[i]; p < A.row_ptr[i + 1]; ++p)
-        {
-            int j = A.col_ind[p];
-            if (j <= i)
-            {
-                int q = offset[i]++;
-                L.col_ind[q] = j;
-                L.values[q] = A.values[p];
-            }
-        }
-    }
-
-    // Sort each row by col
-    for (int i = 0; i < L.num_rows; ++i)
-    {
-        int s = L.row_ptr[i], e = L.row_ptr[i + 1];
-        std::vector<int> idx(e - s);
-        for (int k = 0; k < e - s; ++k)
-            idx[k] = s + k;
-        std::sort(idx.begin(), idx.end(), [&](int a, int b)
-                  { return L.col_ind[a] < L.col_ind[b]; });
-
-        std::vector<int> cols(e - s);
-        std::vector<double> vals(e - s);
-        for (int k = 0; k < e - s; ++k)
-        {
-            cols[k] = L.col_ind[idx[k]];
-            vals[k] = L.values[idx[k]];
-        }
-        for (int k = 0; k < e - s; ++k)
-        {
-            L.col_ind[s + k] = cols[k];
-            L.values[s + k] = vals[k];
-        }
-    }
-
-    return L;
-}
-
-// Naive host-side candidate identification:
-// candidates = pattern(A_lower ∪ (L*L^T)_lower) \ pattern(L)
-// This matches "Identify candidate locations" for ParICT adaptation. :contentReference[oaicite:3]{index=3}
-static std::vector<CandidateIJ> identify_candidates_host(const ichol::CSR<double> &A, const ichol::CSR<double> &L)
-{
-    const int n = A.num_rows;
-
-    // Build quick row-wise sets for current L pattern
-    std::vector<std::vector<int>> Lpat(n);
-    for (int i = 0; i < n; ++i)
-    {
-        for (int p = L.row_ptr[i]; p < L.row_ptr[i + 1]; ++p)
-        {
-            Lpat[i].push_back(L.col_ind[p]);
-        }
-        std::sort(Lpat[i].begin(), Lpat[i].end());
-    }
-
-    // Candidates collected per row with an ordered set-like vector
-    std::vector<std::vector<int>> candCols(n);
-
-    // 1) Add A lower triangle locations not in L
-    for (int i = 0; i < n; ++i)
-    {
-        for (int p = A.row_ptr[i]; p < A.row_ptr[i + 1]; ++p)
-        {
-            int j = A.col_ind[p];
-            if (j <= i)
-            {
-                bool inL = std::binary_search(Lpat[i].begin(), Lpat[i].end(), j);
-                if (!inL)
-                    candCols[i].push_back(j);
-            }
-        }
-    }
-
-    // 2) Add locations from symbolic pattern of L*L^T (very naive)
-    // For each row i, for each pair of columns k in row i and column j sharing k.
-    // We approximate by: for each i, for each k in row i, for each j where L(j,k) exists,
-    // add (i,j) to candidates if j <= i.
-    // This is an O(nnz * avg_row) host heuristic.
-    std::vector<std::vector<int>> rowsWithK(n);
-    for (int i = 0; i < n; ++i)
-    {
-        for (int p = L.row_ptr[i]; p < L.row_ptr[i + 1]; ++p)
-        {
-            int k = L.col_ind[p];
-            rowsWithK[k].push_back(i);
-        }
-    }
-    for (int k = 0; k < n; ++k)
-    {
-        auto &rw = rowsWithK[k];
-        std::sort(rw.begin(), rw.end());
-    }
-
-    for (int i = 0; i < n; ++i)
-    {
-        // gather k list from row i
-        for (int p = L.row_ptr[i]; p < L.row_ptr[i + 1]; ++p)
-        {
-            int k = L.col_ind[p];
-            // all rows j that also have column k
-            for (int j : rowsWithK[k])
-            {
-                if (j <= i)
-                {
-                    bool inL = std::binary_search(Lpat[i].begin(), Lpat[i].end(), j);
-                    if (!inL)
-                        candCols[i].push_back(j);
-                }
-            }
-        }
-    }
-
-    // Unique per row
-    std::vector<CandidateIJ> candidates;
-    for (int i = 0; i < n; ++i)
-    {
-        auto &v = candCols[i];
-        if (v.empty())
-            continue;
-        std::sort(v.begin(), v.end());
-        v.erase(std::unique(v.begin(), v.end()), v.end());
-        for (int j : v)
-        {
-            if (j <= i)
-                candidates.push_back({i, j});
-        }
-    }
-
-    return candidates;
-}
-
-// Merge candidates into L pattern with initial values l_ij = r_ij (formula (5) choice).
-// This implements Algorithm 2 line: "Add mL nonzeros to L" adapted to adding all candidates. :contentReference[oaicite:4]{index=4}
-static ichol::CSR<double> add_candidates_to_L_host(const ichol::CSR<double> &L,
-                                                   const std::vector<CandidateIJ> &cand,
-                                                   const std::vector<double> &rvals_host,
-                                                   int &mL_added_out)
-{
-    const int n = L.num_rows;
-    mL_added_out = (int)cand.size();
-
-    // Group candidates by row
-    std::vector<std::vector<std::pair<int, double>>> addByRow(n);
-    for (size_t t = 0; t < cand.size(); ++t)
-    {
-        addByRow[cand[t].i].push_back({cand[t].j, rvals_host[t]}); // init value = residual
-    }
-
-    ichol::CSR<double> Lnew;
-    Lnew.num_rows = n;
-    Lnew.row_ptr.resize(n + 1, 0);
-
-    // Count new nnz per row
-    for (int i = 0; i < n; ++i)
-    {
-        int oldCount = L.row_ptr[i + 1] - L.row_ptr[i];
-        int addCount = (int)addByRow[i].size();
-        Lnew.row_ptr[i + 1] = oldCount + addCount;
-    }
-    for (int i = 0; i < n; ++i)
-        Lnew.row_ptr[i + 1] += Lnew.row_ptr[i];
-
-    int nnzNew = Lnew.row_ptr[n];
-    Lnew.col_ind.resize(nnzNew);
-    Lnew.values.resize(nnzNew);
-
-    // Fill rows by merging then sorting
-    for (int i = 0; i < n; ++i)
-    {
-        int sNew = Lnew.row_ptr[i];
-        int sOld = L.row_ptr[i], eOld = L.row_ptr[i + 1];
-
-        int pos = sNew;
-        for (int p = sOld; p < eOld; ++p)
-        {
-            Lnew.col_ind[pos] = L.col_ind[p];
-            Lnew.values[pos] = L.values[p];
-            ++pos;
-        }
-        for (auto &pr : addByRow[i])
-        {
-            Lnew.col_ind[pos] = pr.first;
-            Lnew.values[pos] = pr.second;
-            ++pos;
-        }
-
-        // sort by col and combine duplicates (keep newest value preference)
-        int eNew = Lnew.row_ptr[i + 1];
-        std::vector<int> idx(eNew - sNew);
-        for (int k = 0; k < eNew - sNew; ++k)
-            idx[k] = sNew + k;
-        std::sort(idx.begin(), idx.end(), [&](int a, int b)
-                  { return Lnew.col_ind[a] < Lnew.col_ind[b]; });
-
-        std::vector<int> cols;
-        std::vector<double> vals;
-        cols.reserve(eNew - sNew);
-        vals.reserve(eNew - sNew);
-
-        for (int id : idx)
-        {
-            if (!cols.empty() && cols.back() == Lnew.col_ind[id])
-            {
-                vals.back() = Lnew.values[id];
-            }
-            else
-            {
-                cols.push_back(Lnew.col_ind[id]);
-                vals.push_back(Lnew.values[id]);
-            }
-        }
-
-        // Write back (may leave leftover; compact later)
-        for (size_t k = 0; k < cols.size(); ++k)
-        {
-            Lnew.col_ind[sNew + (int)k] = cols[k];
-            Lnew.values[sNew + (int)k] = vals[k];
-        }
-        // If duplicates collapsed, we will compact globally next.
-    }
-
-    // Global compaction to remove duplicate slack
-    ichol::CSR<double> Lcompact;
-    Lcompact.num_rows = n;
-    Lcompact.row_ptr.resize(n + 1, 0);
-
-    // First count unique per row by scanning sorted row segments
-    for (int i = 0; i < n; ++i)
-    {
-        int s = Lnew.row_ptr[i], e = Lnew.row_ptr[i + 1];
-        int count = 0;
-        int last = -1;
-        for (int p = s; p < e; ++p)
-        {
-            int c = Lnew.col_ind[p];
-            if (c == last)
-                continue;
-            last = c;
-            ++count;
-        }
-        Lcompact.row_ptr[i + 1] = count;
-    }
-    for (int i = 0; i < n; ++i)
-        Lcompact.row_ptr[i + 1] += Lcompact.row_ptr[i];
-
-    int nnzC = Lcompact.row_ptr[n];
-    Lcompact.col_ind.resize(nnzC);
-    Lcompact.values.resize(nnzC);
-
-    for (int i = 0; i < n; ++i)
-    {
-        int sOld = Lnew.row_ptr[i], eOld = Lnew.row_ptr[i + 1];
-        int sC = Lcompact.row_ptr[i];
-        int posC = sC;
-        int last = -1;
-        for (int p = sOld; p < eOld; ++p)
-        {
-            int c = Lnew.col_ind[p];
-            if (c == last)
-                continue;
-            last = c;
-            Lcompact.col_ind[posC] = c;
-            Lcompact.values[posC] = Lnew.values[p];
-            ++posC;
-        }
-    }
-
-    Lcompact.num_cols = Lcompact.num_rows;
-    Lcompact.nnz = Lcompact.row_ptr.back();
-
-    return Lcompact;
-}
-
-// Remove approximately mL smallest-magnitude off-diagonal entries from L.
-// Implements Algorithm 2 line: "Remove the mL ... smallest magnitude elements from L" adapted to ParICT. :contentReference[oaicite:5]{index=5}
-static ichol::CSR<double> remove_smallest_magnitude_L_gpu(const ichol::CSR<double> &Lhost, int mL_to_remove)
-{
-    if (mL_to_remove <= 0)
-        return Lhost;
-
-    // Move to device
-    CsrDevice Ld = csr_to_device(Lhost);
-
-    // Build abs array over nnz
-    thrust::device_vector<double> absvals(Ld.nnz);
-    {
-        int threads = 128;
-        int blocks = (Ld.num_rows + threads - 1) / threads;
-        abs_offdiag_kernel<<<blocks, threads>>>(Ld.row_ptr, Ld.col_ind, Ld.values,
-                                                thrust::raw_pointer_cast(absvals.data()),
-                                                Ld.num_rows);
-        CUDA_CHECK(cudaDeviceSynchronize());
-    }
-
-    // Copy absvals to host to select threshold (simple faithful-but-not-fast approach).
-    thrust::host_vector<double> h_abs = absvals;
-
-    // We want threshold tau such that about mL_to_remove off-diagonals are <= tau.
-    // Ignore sentinel huge values.
-    std::vector<double> filt;
-    filt.reserve(h_abs.size());
-    for (double v : h_abs)
-    {
-        if (v < 1e200)
-            filt.push_back(v);
-    }
-    if ((int)filt.size() <= mL_to_remove)
-    {
-        csr_free(Ld);
-        // If asked to remove too many, return diagonal-only-ish fallback is not handled here.
-        return Lhost;
-    }
-
-    std::nth_element(filt.begin(), filt.begin() + mL_to_remove - 1, filt.end());
-    double tau = filt[mL_to_remove - 1];
-
-    // Mark removal flags on device
-    thrust::device_vector<uint8_t> remove_flag(Ld.nnz);
-    {
-        int threads = 128;
-        int blocks = (Ld.num_rows + threads - 1) / threads;
-        mark_remove_kernel<<<blocks, threads>>>(Ld.row_ptr, Ld.col_ind, Ld.values,
-                                                thrust::raw_pointer_cast(remove_flag.data()),
-                                                tau, Ld.num_rows);
-        CUDA_CHECK(cudaDeviceSynchronize());
-    }
-
-    // Bring flags back to host and rebuild CSR without flagged entries.
-    thrust::host_vector<uint8_t> h_flag = remove_flag;
-
-    ichol::CSR<double> Lnew;
-    Lnew.num_rows = Lhost.num_rows;
-    Lnew.row_ptr.resize(Lnew.num_rows + 1, 0);
-
-    // Count kept per row
-    for (int i = 0; i < Lnew.num_rows; ++i)
-    {
-        int s = Lhost.row_ptr[i], e = Lhost.row_ptr[i + 1];
-        int count = 0;
-        for (int p = s; p < e; ++p)
-        {
-            if (h_flag[p] == 0)
-                ++count;
-        }
-        Lnew.row_ptr[i + 1] = count;
-    }
-    for (int i = 0; i < Lnew.num_rows; ++i)
-        Lnew.row_ptr[i + 1] += Lnew.row_ptr[i];
-
-    int nnzN = Lnew.row_ptr[Lnew.num_rows];
-    Lnew.col_ind.resize(nnzN);
-    Lnew.values.resize(nnzN);
-
-    // Fill
-    for (int i = 0; i < Lnew.num_rows; ++i)
-    {
-        int s = Lhost.row_ptr[i], e = Lhost.row_ptr[i + 1];
-        int pos = Lnew.row_ptr[i];
-        for (int p = s; p < e; ++p)
-        {
-            if (h_flag[p] == 0)
-            {
-                Lnew.col_ind[pos] = Lhost.col_ind[p];
-                Lnew.values[pos] = Lhost.values[p];
-                ++pos;
-            }
-        }
-    }
-
-    csr_free(Ld);
-
-    Lnew.num_cols = Lnew.num_rows;
-    Lnew.nnz = Lnew.row_ptr.back();
-
-    return Lnew;
-}
-
-// Perform one ParICT fixed-point sweep on GPU, producing updated Lhost.
-static ichol::CSR<double> parict_sweep_gpu(const ichol::CSR<double> &Ahost, const ichol::CSR<double> &Lhost)
-{
-    CsrDevice Ad = csr_to_device(Ahost);
-    CsrDevice Ld = csr_to_device(Lhost);
-
-    // Allocate new L values
-    double *Lnew_vals = nullptr;
-    CUDA_CHECK(cudaMalloc(&Lnew_vals, sizeof(double) * Ld.nnz));
-
-    int threads = 128;
-    int blocks = (Ld.num_rows + threads - 1) / threads;
-
-    parict_fixed_point_sweep_kernel<<<blocks, threads>>>(
-        Ad.row_ptr, Ad.col_ind, Ad.values,
-        Ld.row_ptr, Ld.col_ind,
-        Ld.values, Lnew_vals,
-        Ld.num_rows);
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    // Copy back updated values
-    ichol::CSR<double> Lout = Lhost;
-    CUDA_CHECK(cudaMemcpy(Lout.values.data(), Lnew_vals, sizeof(double) * Ld.nnz, cudaMemcpyDeviceToHost));
-
-    CUDA_CHECK(cudaFree(Lnew_vals));
-    csr_free(Ad);
-    csr_free(Ld);
-
-    return Lout;
-}
-
-// Compute candidate residuals on GPU and return residual values on host plus norm estimate.
-static void compute_candidate_residuals_and_norm_gpu(const ichol::CSR<double> &Ahost, const ichol::CSR<double> &Lhost,
-                                                     const std::vector<CandidateIJ> &cand,
-                                                     std::vector<double> &rvals_host,
-                                                     double &rnorm_est_out)
-{
-    rvals_host.clear();
-    rnorm_est_out = 0.0;
-    if (cand.empty())
-        return;
-
-    // Device matrices
-    CsrDevice Ad = csr_to_device(Ahost);
-    CsrDevice Ld = csr_to_device(Lhost);
-
-    // Device candidate array
-    CandidateIJ *d_cand = nullptr;
-    double *d_rvals = nullptr;
-    int nc = (int)cand.size();
-
-    CUDA_CHECK(cudaMalloc(&d_cand, sizeof(CandidateIJ) * nc));
-    CUDA_CHECK(cudaMalloc(&d_rvals, sizeof(double) * nc));
-    CUDA_CHECK(cudaMemcpy(d_cand, cand.data(), sizeof(CandidateIJ) * nc, cudaMemcpyHostToDevice));
-
-    int threads = 256;
-    int blocks = (nc + threads - 1) / threads;
-
-    compute_candidates_residual_kernel<<<blocks, threads>>>(
-        Ad.row_ptr, Ad.col_ind, Ad.values,
-        Ld.row_ptr, Ld.col_ind, Ld.values,
-        d_cand, d_rvals, nc);
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    // Copy residuals back
-    rvals_host.resize(nc);
-    CUDA_CHECK(cudaMemcpy(rvals_host.data(), d_rvals, sizeof(double) * nc, cudaMemcpyDeviceToHost));
-
-    // Estimate residual norm using candidate residuals:
-    // Algorithm 2 line: "Estimate ILU residual norm" approximated by ||(R)Sc||_F. :contentReference[oaicite:6]{index=6}
-    thrust::device_ptr<double> rp(d_rvals);
-    double sumsq = thrust::transform_reduce(
-        rp, rp + nc,
-        [] __host__ __device__(double x)
-        { return x * x; },
-        0.0, thrust::plus<double>());
-    rnorm_est_out = std::sqrt(sumsq);
-
-    CUDA_CHECK(cudaFree(d_cand));
-    CUDA_CHECK(cudaFree(d_rvals));
-    csr_free(Ad);
-    csr_free(Ld);
-}
-
-// ------------------------------
-// ParICT driver following Algorithm 2 line-by-line
-// ------------------------------
-
-namespace ichol
-{
-    ichol::CSR<double> parict_factorize(const ichol::CSR<double> &Ahost, const ichol::ParICT_Params &params)
-    {
-        // Initial L = lower triangular part of A
-        ichol::CSR<double> L = init_L_from_A_lower(Ahost);
-
-        for (int step = 0; step < params.max_steps; ++step)
-        {
-
-            // ------------------------------------------------------------
-            // Algorithm 2 line 1: Identify candidate locations
-            // ------------------------------------------------------------
-            std::vector<CandidateIJ> candidates = identify_candidates_host(Ahost, L);
-
-            // ------------------------------------------------------------
-            // Algorithm 2 line 2: Compute ILU residual at candidate locations
-            //  (ParICT: residual of A - L L^T at candidate locations)
-            // ------------------------------------------------------------
-            std::vector<double> rvals;
-            double rnorm_est = 0.0;
-            compute_candidate_residuals_and_norm_gpu(Ahost, L, candidates, rvals, rnorm_est);
-
-            // ------------------------------------------------------------
-            // Algorithm 2 line 3: Estimate ILU residual norm
-            //  (we already computed rnorm_est from candidate residuals)
-            // ------------------------------------------------------------
-            (void)rnorm_est; // available for convergence logic if desired
-
-            // ------------------------------------------------------------
-            // Algorithm 2 line 4: Add mL nonzeros to L
-            //  (ParICT adaptation: add all candidates; init value l_ij = r_ij)
-            // ------------------------------------------------------------
-            int mL_added = 0;
-            L = add_candidates_to_L_host(L, candidates, rvals, mL_added);
-
-            // ------------------------------------------------------------
-            // Algorithm 2 line 5: Do one sweep of the fixed-point ILU algorithm
-            //  (ParICT: one fixed-point incomplete Cholesky-style sweep)
-            // ------------------------------------------------------------
-            L = parict_sweep_gpu(Ahost, L);
-
-            // ------------------------------------------------------------
-            // Algorithm 2 line 6: Remove the mL smallest magnitude elements from L
-            //  (keeping diagonal)
-            // ------------------------------------------------------------
-            L = remove_smallest_magnitude_L_gpu(L, mL_added);
-
-            // ------------------------------------------------------------
-            // Algorithm 2 line 7: Do one sweep of the fixed-point ILU algorithm
-            //  (ParICT: second sweep after removal)
-            // ------------------------------------------------------------
-            L = parict_sweep_gpu(Ahost, L);
-
-            // ------------------------------------------------------------
-            // Algorithm 2 line 8: until (convergence)
-            //  (Here: fixed step count; convergence check can use rnorm_est)
-            // ------------------------------------------------------------
-        }
-
-        return L;
-    }
-
-} // namespace ichol
-
-// Notes on faithfulness to the paper:
-//
-// - The step structure exactly matches Algorithm 2 ordering:
-//   add -> sweep -> remove -> sweep. :contentReference[oaicite:7]{index=7}
-// - Candidate definition follows the paper’s union of nz(A) and nz(LU) not in S,
-//   adapted to SPD by using L L^T and lower triangle only. :contentReference[oaicite:8]{index=8}
-// - New entries are initialized using residual values (paper’s formula (5) choice). :contentReference[oaicite:9]{index=9}
-// - Removal keeps the number of nonzeros roughly constant by removing mL entries.
-//
-// This file is a CUDA-structured reference implementation; performance-critical
-// candidate search and pattern operations are shown in a simple host form consistent
-// with the algorithmic description.
+// // parict.cu
+// //
+// // ParICT-style implementation (ParILUT/ParICT loop specialized to SPD),
+// // assuming the caller already provides a symmetrically scaled SPD matrix.
+// //
+// // Fixes vs your current file:
+// // - Deterministically enforces LOWER+DIAG structure everywhere (j>i -> 0, excluded from dropping).
+// // - No uninitialized writes: every sweep writes every entry in L_new.
+// // - New entries are initialized using a residual-style estimate on candidate locations:
+// //     r_ij = a_ij - sum_{m<j} l_im l_jm   (using OLD values), then l_ij = r_ij / max(l_jj, diag_floor).
+// // - Initial guess uses A-based values on the initial pattern.
+// // - End-only validity check is reinstated, but checks what PCG needs:
+// //     all entries finite and all diagonals finite & strictly positive (=> LL^T SPD).
+// //   If it fails, returns empty and sets finfo to trigger outer shift-restart.
+
+// #include <cuda_runtime.h>
+// #include <cuda_fp16.h>
+
+// #include <thrust/device_ptr.h>
+// #include <thrust/execution_policy.h>
+// #include <thrust/sort.h>
+// #include <thrust/unique.h>
+// #include <thrust/remove.h>
+// #include <thrust/scan.h>
+
+// #include <vector>
+// #include <algorithm>
+// #include <stdexcept>
+// #include <type_traits>
+// #include <cstdint>
+// #include <cmath>
+// #include <limits>
+
+// #include "ichol/parict.hpp"
+// #include "ichol/half.hpp"
+// #include "ichol/fact.hpp"
+
+// namespace ichol
+// {
+
+//     static inline void cuda_check(cudaError_t e, const char *msg)
+//     {
+//         if (e != cudaSuccess)
+//             throw std::runtime_error(std::string("CUDA error: ") + msg + ": " + cudaGetErrorString(e));
+//     }
+
+//     // ------------------------
+//     // Host<->device scalar mapping
+//     // ------------------------
+//     template <class T>
+//     struct gpu_type
+//     {
+//         using type = __half;
+//     };
+//     template <>
+//     struct gpu_type<float>
+//     {
+//         using type = float;
+//     };
+//     template <>
+//     struct gpu_type<double>
+//     {
+//         using type = double;
+//     };
+//     template <>
+//     struct gpu_type<half_float::half>
+//     {
+//         using type = __half;
+//     };
+
+//     template <class G>
+//     struct accum_type
+//     {
+//         using type = G;
+//     };
+//     template <>
+//     struct accum_type<__half>
+//     {
+//         using type = float;
+//     };
+
+//     // ------------------------
+//     // Device scalar conversion helpers (specialized; no if constexpr)
+//     // ------------------------
+//     template <class G>
+//     __device__ __forceinline__ typename accum_type<G>::type g_to_acc(G x);
+
+//     template <>
+//     __device__ __forceinline__ float g_to_acc<__half>(__half x) { return __half2float(x); }
+
+//     template <>
+//     __device__ __forceinline__ float g_to_acc<float>(float x) { return x; }
+
+//     template <>
+//     __device__ __forceinline__ double g_to_acc<double>(double x) { return x; }
+
+//     template <class G>
+//     __device__ __forceinline__ G acc_to_g(typename accum_type<G>::type x);
+
+//     template <>
+//     __device__ __forceinline__ __half acc_to_g<__half>(float x) { return __float2half_rn(x); }
+
+//     template <>
+//     __device__ __forceinline__ float acc_to_g<float>(float x) { return x; }
+
+//     template <>
+//     __device__ __forceinline__ double acc_to_g<double>(double x) { return x; }
+
+//     template <class Acc>
+//     __device__ __forceinline__ Acc acc_sqrt(Acc x)
+//     {
+//         if (std::is_same<Acc, float>::value)
+//             return sqrtf((float)x);
+//         return (Acc)::sqrt((double)x);
+//     }
+
+//     template <class Acc>
+//     __device__ __forceinline__ Acc acc_abs(Acc x)
+//     {
+//         if (std::is_same<Acc, float>::value)
+//             return fabsf((float)x);
+//         return (Acc)::fabs((double)x);
+//     }
+
+//     template <class Acc>
+//     __device__ __forceinline__ Acc acc_max(Acc a, Acc b) { return (a > b) ? a : b; }
+
+//     __device__ __forceinline__ bool acc_isfinite(float x) { return isfinite(x); }
+//     __device__ __forceinline__ bool acc_isfinite(double x) { return isfinite(x); }
+
+//     template <class G>
+//     __device__ __forceinline__ typename accum_type<G>::type g_abs_acc(G x)
+//     {
+//         using Acc = typename accum_type<G>::type;
+//         Acc v = g_to_acc<G>(x);
+//         return acc_abs<Acc>(v);
+//     }
+
+//     // A small internal floor to prevent diag_floor=0 even if user passes 0.
+//     // (User still controls pivot_tol; this just avoids division by 0.)
+//     template <class Acc>
+//     struct pivot_eps;
+//     template <>
+//     struct pivot_eps<float>
+//     {
+//         static constexpr float value = 1e-30f;
+//     };
+//     template <>
+//     struct pivot_eps<double>
+//     {
+//         static constexpr double value = 1e-300;
+//     };
+
+//     // ------------------------
+//     // Host conversions (no if constexpr)
+//     // ------------------------
+//     template <class G, class T>
+//     struct host_to_gpu
+//     {
+//         static inline G cvt(T x) { return (G)x; }
+//     };
+//     template <class T>
+//     struct host_to_gpu<__half, T>
+//     {
+//         static inline __half cvt(T x) { return __float2half_rn((float)x); }
+//     };
+
+//     template <class T, class G>
+//     struct gpu_to_host
+//     {
+//         static inline T cvt(G x) { return (T)x; }
+//     };
+//     template <class T>
+//     struct gpu_to_host<T, __half>
+//     {
+//         static inline T cvt(__half x) { return (T)__half2float(x); }
+//     };
+
+//     // ------------------------
+//     // CSR row binary search (assumes row sorted by col)
+//     // ------------------------
+//     template <class G>
+//     __device__ __forceinline__ G csr_row_get(const int *row_ptr, const int *col_ind, const G *val,
+//                                              int row, int col)
+//     {
+//         int lo = row_ptr[row];
+//         int hi = row_ptr[row + 1];
+//         while (lo < hi)
+//         {
+//             int mid = lo + ((hi - lo) >> 1);
+//             int c = col_ind[mid];
+//             if (c < col)
+//                 lo = mid + 1;
+//             else
+//                 hi = mid;
+//         }
+//         if (lo < row_ptr[row + 1] && col_ind[lo] == col)
+//             return val[lo];
+//         return (G)0;
+//     }
+
+//     // ------------------------
+//     // Fill CSR row_ids[nnz] from row_ptr (row_ids[p]=row index)
+//     // ------------------------
+//     __global__ void kernel_fill_row_ids(int n, const int *row_ptr, int *row_ids)
+//     {
+//         int i = blockIdx.x * blockDim.x + threadIdx.x;
+//         if (i >= n)
+//             return;
+//         int b = row_ptr[i];
+//         int e = row_ptr[i + 1];
+//         for (int p = b; p < e; ++p)
+//             row_ids[p] = i;
+//     }
+
+//     // ------------------------
+//     // Build CSC from CSR(L)
+//     // ------------------------
+//     __global__ void kernel_count_csc_from_csr(int nnz, const int *col_ind, int n, int *col_counts)
+//     {
+//         int p = blockIdx.x * blockDim.x + threadIdx.x;
+//         if (p >= nnz)
+//             return;
+//         int c = col_ind[p];
+//         if (0 <= c && c < n)
+//             atomicAdd(&col_counts[c], 1);
+//     }
+
+//     template <class G>
+//     __global__ void kernel_fill_csc_from_csr(int nnz,
+//                                              const int *row_ids,
+//                                              const int *csr_col, const G *csr_val,
+//                                              const int *csc_col_ptr, int *csc_next,
+//                                              int *csc_row, G *csc_val,
+//                                              int n)
+//     {
+//         int p = blockIdx.x * blockDim.x + threadIdx.x;
+//         if (p >= nnz)
+//             return;
+
+//         int c = csr_col[p];
+//         if (!(0 <= c && c < n))
+//             return;
+
+//         int r = row_ids[p];
+//         int off = atomicAdd(&csc_next[c], 1);
+//         int dst = csc_col_ptr[c] + off;
+//         csc_row[dst] = r;
+//         csc_val[dst] = csr_val[p];
+//     }
+
+//     // ------------------------
+//     // Product-contrib: for each L(i,m) contribute nnz in CSC column m
+//     // ------------------------
+//     __global__ void kernel_product_contrib(int nnzL, const int *L_col, const int *csc_col_ptr, int n, int *contrib)
+//     {
+//         int p = blockIdx.x * blockDim.x + threadIdx.x;
+//         if (p >= nnzL)
+//             return;
+//         int m = L_col[p];
+//         if (!(0 <= m && m < n))
+//         {
+//             contrib[p] = 0;
+//             return;
+//         }
+//         contrib[p] = csc_col_ptr[m + 1] - csc_col_ptr[m];
+//     }
+
+//     // Fill product keys for pattern(L*L^T): for each L(i,m), for each r in col(m): key(i,r) if r<=i else UINT64_MAX
+//     __global__ void kernel_fill_product_keys(int nnzL,
+//                                              const int *L_row_ids, const int *L_col,
+//                                              const int *csc_col_ptr, const int *csc_row,
+//                                              const int *offset, const int *contrib,
+//                                              uint64_t *out_keys,
+//                                              int n)
+//     {
+//         int p = blockIdx.x * blockDim.x + threadIdx.x;
+//         if (p >= nnzL)
+//             return;
+//         int i = L_row_ids[p];
+//         int m = L_col[p];
+//         if (!(0 <= m && m < n) || !(0 <= i && i < n))
+//         {
+//             // still need to write something to all positions for this p-range
+//             int len = contrib[p];
+//             int out = offset[p];
+//             for (int t = 0; t < len; ++t)
+//                 out_keys[out + t] = UINT64_MAX;
+//             return;
+//         }
+
+//         int b = csc_col_ptr[m];
+//         int len = contrib[p];
+//         int out = offset[p];
+
+//         for (int t = 0; t < len; ++t)
+//         {
+//             int r = csc_row[b + t];
+//             if (0 <= r && r <= i)
+//                 out_keys[out + t] = (uint64_t(uint32_t(i)) << 32) | uint32_t(r);
+//             else
+//                 out_keys[out + t] = UINT64_MAX;
+//         }
+//     }
+
+//     // Make CSR keys for lower triangle only: key(i,j) if j<=i else UINT64_MAX
+//     __global__ void kernel_make_csr_keys_lower(int nnz, const int *row_ids, const int *col_ind, int n, uint64_t *keys)
+//     {
+//         int p = blockIdx.x * blockDim.x + threadIdx.x;
+//         if (p >= nnz)
+//             return;
+//         int i = row_ids[p];
+//         int j = col_ind[p];
+//         if (0 <= i && i < n && 0 <= j && j <= i)
+//             keys[p] = (uint64_t(uint32_t(i)) << 32) | uint32_t(j);
+//         else
+//             keys[p] = UINT64_MAX;
+//     }
+
+//     // Count keys per row (keys are row-major sorted; atomic is fine for reference)
+//     __global__ void kernel_row_counts_from_keys(int nnz, const uint64_t *keys, int n, int *row_counts)
+//     {
+//         int p = blockIdx.x * blockDim.x + threadIdx.x;
+//         if (p >= nnz)
+//             return;
+//         uint64_t k = keys[p];
+//         if (k == UINT64_MAX)
+//             return;
+//         int i = int(k >> 32);
+//         if (0 <= i && i < n)
+//             atomicAdd(&row_counts[i], 1);
+//     }
+
+//     // Fill col_ind array from keys (keys assumed sorted row-major)
+//     __global__ void kernel_fill_cols_from_keys(int nnz, const uint64_t *keys, int *col_ind)
+//     {
+//         int p = blockIdx.x * blockDim.x + threadIdx.x;
+//         if (p >= nnz)
+//             return;
+//         col_ind[p] = int(uint32_t(keys[p] & 0xFFFFFFFFu));
+//     }
+
+//     // ------------------------
+//     // Residual-style init on expanded pattern:
+//     // - if existed in old pattern -> copy old value
+//     // - else:
+//     //   diag: sqrt(max(Aii - sum Lim^2, pivot_tol_eff))
+//     //   off : r_ij = Aij - sum_{m<j} Lim*Ljm (OLD values), then lij = r_ij / max(Ljj, diag_floor)
+//     // Always enforces j>i -> 0.
+//     // ------------------------
+//     template <class G>
+//     __global__ void kernel_init_values_residual(int n,
+//                                                 const int *A_rp, const int *A_ci, const G *A_v,
+//                                                 const int *old_rp, const int *old_ci, const G *old_v,
+//                                                 const int *new_rp, const int *new_ci, G *new_v,
+//                                                 typename accum_type<G>::type pivot_tol_in)
+//     {
+//         using Acc = typename accum_type<G>::type;
+
+//         Acc pivot_tol = pivot_tol_in;
+//         pivot_tol = acc_max<Acc>(pivot_tol, (Acc)pivot_eps<Acc>::value);
+//         Acc diag_floor = acc_sqrt<Acc>(pivot_tol);
+
+//         int i = blockIdx.x * blockDim.x + threadIdx.x;
+//         if (i >= n)
+//             return;
+
+//         int ob = old_rp[i], oe = old_rp[i + 1];
+//         int nb = new_rp[i], ne = new_rp[i + 1];
+
+//         for (int p = nb; p < ne; ++p)
+//         {
+//             int j = new_ci[p];
+
+//             // enforce lower+diag only
+//             if (!(0 <= j && j <= i))
+//             {
+//                 new_v[p] = (G)0;
+//                 continue;
+//             }
+
+//             // binary search in old row for (i,j)
+//             int lo = ob, hi = oe;
+//             while (lo < hi)
+//             {
+//                 int mid = lo + ((hi - lo) >> 1);
+//                 int c = old_ci[mid];
+//                 if (c < j)
+//                     lo = mid + 1;
+//                 else
+//                     hi = mid;
+//             }
+
+//             if (lo < oe && old_ci[lo] == j)
+//             {
+//                 // copy old
+//                 new_v[p] = old_v[lo];
+//                 continue;
+//             }
+
+//             // new entry
+//             if (j == i)
+//             {
+//                 Acc aii = g_to_acc<G>(csr_row_get<G>(A_rp, A_ci, A_v, i, i));
+//                 Acc sumsq = (Acc)0;
+//                 for (int q = ob; q < oe; ++q)
+//                 {
+//                     int m = old_ci[q];
+//                     if (m < 0 || m >= i)
+//                         continue;
+//                     Acc lim = g_to_acc<G>(old_v[q]);
+//                     sumsq += lim * lim;
+//                 }
+//                 Acc d = aii - sumsq;
+//                 d = acc_max<Acc>(d, pivot_tol);
+//                 Acc Lii = acc_sqrt<Acc>(d);
+//                 if (!(Lii > (Acc)0))
+//                     Lii = diag_floor;
+//                 if (Lii < diag_floor)
+//                     Lii = diag_floor;
+//                 new_v[p] = acc_to_g<G>(Lii);
+//             }
+//             else
+//             {
+//                 // find Ljj in old row j
+//                 int jb = old_rp[j], je = old_rp[j + 1];
+//                 int diagj_pos = -1;
+//                 for (int q = jb; q < je; ++q)
+//                 {
+//                     if (old_ci[q] == j)
+//                     {
+//                         diagj_pos = q;
+//                         break;
+//                     }
+//                 }
+//                 Acc Ljj = (diagj_pos >= 0) ? g_to_acc<G>(old_v[diagj_pos]) : (Acc)0;
+//                 if (!(Ljj > (Acc)0))
+//                     Ljj = diag_floor;
+//                 if (Ljj < diag_floor)
+//                     Ljj = diag_floor;
+
+//                 Acc aij = g_to_acc<G>(csr_row_get<G>(A_rp, A_ci, A_v, i, j));
+
+//                 // r_ij = aij - sum_{m<j} Lim*Ljm using OLD values
+//                 Acc s = (Acc)0;
+//                 for (int qi = ob; qi < oe; ++qi)
+//                 {
+//                     int m = old_ci[qi];
+//                     if (m < 0 || m >= j)
+//                         continue;
+
+//                     Acc Lim = g_to_acc<G>(old_v[qi]);
+//                     if (Lim == (Acc)0)
+//                         continue;
+
+//                     // find Ljm in old row j (binary search)
+//                     int l2 = jb, h2 = je;
+//                     while (l2 < h2)
+//                     {
+//                         int mid = l2 + ((h2 - l2) >> 1);
+//                         int c = old_ci[mid];
+//                         if (c < m)
+//                             l2 = mid + 1;
+//                         else
+//                             h2 = mid;
+//                     }
+//                     if (l2 < je && old_ci[l2] == m)
+//                     {
+//                         Acc Ljm = g_to_acc<G>(old_v[l2]);
+//                         s += Lim * Ljm;
+//                     }
+//                 }
+
+//                 Acc rij = aij - s;
+//                 Acc lij = rij / Ljj;
+
+//                 if (!acc_isfinite(lij))
+//                     lij = (Acc)0;
+//                 new_v[p] = acc_to_g<G>(lij);
+//             }
+//         }
+//     }
+
+//     // ------------------------
+//     // Guarded Jacobi fixed-point sweep on CSR pattern (SPD Cholesky form)
+//     // - Writes EVERY entry of L_new deterministically.
+//     // - Enforces j>i -> 0.
+//     // - Floors diagonals with pivot_tol_eff.
+//     // - Replaces non-finite offdiagonals with 0.
+//     // ------------------------
+//     template <class G>
+//     __global__ void kernel_parict_fp_sweep_csr_guarded(int n,
+//                                                        const int *A_rp, const int *A_ci, const G *A_v,
+//                                                        const int *L_rp, const int *L_ci,
+//                                                        const G *L_old,
+//                                                        typename accum_type<G>::type pivot_tol_in,
+//                                                        G *L_new)
+//     {
+//         using Acc = typename accum_type<G>::type;
+
+//         Acc pivot_tol = pivot_tol_in;
+//         pivot_tol = acc_max<Acc>(pivot_tol, (Acc)pivot_eps<Acc>::value);
+//         Acc diag_floor = acc_sqrt<Acc>(pivot_tol);
+
+//         int i = blockIdx.x * blockDim.x + threadIdx.x;
+//         if (i >= n)
+//             return;
+
+//         int ib = L_rp[i];
+//         int ie = L_rp[i + 1];
+
+//         // deterministic init: lower keeps old, upper forced to 0
+//         for (int p = ib; p < ie; ++p)
+//         {
+//             int j = L_ci[p];
+//             if (j > i)
+//                 L_new[p] = (G)0;
+//             else
+//                 L_new[p] = L_old[p];
+//         }
+
+//         // find diagonal in row i (assumed present in valid pattern)
+//         int diag_pos = -1;
+//         for (int p = ib; p < ie; ++p)
+//         {
+//             if (L_ci[p] == i)
+//             {
+//                 diag_pos = p;
+//                 break;
+//             }
+//         }
+//         if (diag_pos < 0)
+//             return;
+
+//         // diagonal: Lii = sqrt(max(Aii - sum_{m<i} Lim^2, pivot_tol))
+//         Acc aii = g_to_acc<G>(csr_row_get<G>(A_rp, A_ci, A_v, i, i));
+
+//         Acc sumsq = (Acc)0;
+//         for (int p = ib; p < ie; ++p)
+//         {
+//             int m = L_ci[p];
+//             if (m < 0 || m >= i)
+//                 continue;
+//             Acc lim = g_to_acc<G>(L_old[p]);
+//             sumsq += lim * lim;
+//         }
+
+//         Acc d = aii - sumsq;
+//         d = acc_max<Acc>(d, pivot_tol);
+//         Acc Lii = acc_sqrt<Acc>(d);
+//         if (!(Lii > (Acc)0))
+//             Lii = diag_floor;
+//         if (Lii < diag_floor)
+//             Lii = diag_floor;
+//         L_new[diag_pos] = acc_to_g<G>(Lii);
+
+//         // off-diagonals: Lij = (Aij - sum_{m<j} Lim*Ljm) / max(Ljj, diag_floor)
+//         for (int p = ib; p < ie; ++p)
+//         {
+//             int j = L_ci[p];
+//             if (j < 0 || j >= i)
+//                 continue;
+
+//             Acc aij = g_to_acc<G>(csr_row_get<G>(A_rp, A_ci, A_v, i, j));
+
+//             // find Ljj
+//             int jb = L_rp[j];
+//             int je = L_rp[j + 1];
+
+//             int diagj_pos = -1;
+//             for (int q = jb; q < je; ++q)
+//             {
+//                 if (L_ci[q] == j)
+//                 {
+//                     diagj_pos = q;
+//                     break;
+//                 }
+//             }
+//             if (diagj_pos < 0)
+//             {
+//                 L_new[p] = (G)0;
+//                 continue;
+//             }
+
+//             Acc Ljj = g_to_acc<G>(L_old[diagj_pos]);
+//             if (!(Ljj > (Acc)0))
+//                 Ljj = diag_floor;
+//             if (Ljj < diag_floor)
+//                 Ljj = diag_floor;
+
+//             Acc s = (Acc)0;
+//             for (int pi = ib; pi < ie; ++pi)
+//             {
+//                 int m = L_ci[pi];
+//                 if (m < 0 || m >= j)
+//                     continue;
+
+//                 Acc Lim = g_to_acc<G>(L_old[pi]);
+//                 if (Lim == (Acc)0)
+//                     continue;
+
+//                 // find Ljm in row j (binary search)
+//                 int lo = jb, hi = je;
+//                 while (lo < hi)
+//                 {
+//                     int mid = lo + ((hi - lo) >> 1);
+//                     int c = L_ci[mid];
+//                     if (c < m)
+//                         lo = mid + 1;
+//                     else
+//                         hi = mid;
+//                 }
+//                 if (lo < je && L_ci[lo] == m)
+//                 {
+//                     Acc Ljm = g_to_acc<G>(L_old[lo]);
+//                     s += Lim * Ljm;
+//                 }
+//             }
+
+//             Acc lij = (aij - s) / Ljj;
+//             if (!acc_isfinite(lij))
+//                 lij = (Acc)0;
+//             L_new[p] = acc_to_g<G>(lij);
+//         }
+//     }
+
+//     // ------------------------
+//     // End-of-run validity check for PCG:
+//     // - every row has a diagonal entry
+//     // - diagonal is finite and strictly positive
+//     // - all entries are finite
+//     // Writes first failing row into fail_row (initialized to -1).
+//     // ------------------------
+//     template <class G>
+//     __global__ void kernel_check_posdiag_finite(int n,
+//                                                 const int *L_rp, const int *L_ci, const G *L_v,
+//                                                 int *fail_row)
+//     {
+//         using Acc = typename accum_type<G>::type;
+
+//         int i = blockIdx.x * blockDim.x + threadIdx.x;
+//         if (i >= n)
+//             return;
+//         if (atomicAdd(fail_row, 0) >= 0)
+//             return;
+
+//         int ib = L_rp[i];
+//         int ie = L_rp[i + 1];
+
+//         int diag_pos = -1;
+//         for (int p = ib; p < ie; ++p)
+//         {
+//             int j = L_ci[p];
+//             if (j == i)
+//                 diag_pos = p;
+
+//             Acc v = g_to_acc<G>(L_v[p]);
+//             if (!acc_isfinite(v))
+//             {
+//                 atomicCAS(fail_row, -1, i);
+//                 return;
+//             }
+//         }
+
+//         if (diag_pos < 0)
+//         {
+//             atomicCAS(fail_row, -1, i);
+//             return;
+//         }
+
+//         Acc d = g_to_acc<G>(L_v[diag_pos]);
+//         if (!(d > (Acc)0) || !acc_isfinite(d))
+//         {
+//             atomicCAS(fail_row, -1, i);
+//             return;
+//         }
+//     }
+
+//     // ------------------------
+//     // Drop helpers
+//     // ------------------------
+//     template <class G>
+//     __global__ void kernel_build_offdiag_list(int nnz,
+//                                               const int *row_ids, const int *col_ind,
+//                                               const G *vals,
+//                                               int *counter,
+//                                               int *off_pos,
+//                                               typename accum_type<G>::type *off_mag)
+//     {
+//         using Acc = typename accum_type<G>::type;
+
+//         int p = blockIdx.x * blockDim.x + threadIdx.x;
+//         if (p >= nnz)
+//             return;
+
+//         int i = row_ids[p];
+//         int j = col_ind[p];
+
+//         // only strict lower entries are droppable
+//         if (!(j >= 0 && j < i))
+//             return;
+
+//         Acc v = g_to_acc<G>(vals[p]);
+//         if (!acc_isfinite(v))
+//             v = (Acc)0;
+
+//         int idx = atomicAdd(counter, 1);
+//         off_pos[idx] = p;
+//         off_mag[idx] = acc_abs<Acc>(v);
+//     }
+
+//     __global__ void kernel_set_all_int(int n, int *a, int v)
+//     {
+//         int i = blockIdx.x * blockDim.x + threadIdx.x;
+//         if (i < n)
+//             a[i] = v;
+//     }
+
+//     __global__ void kernel_scatter_drop(int drop_count, const int *drop_positions, int *keep)
+//     {
+//         int t = blockIdx.x * blockDim.x + threadIdx.x;
+//         if (t >= drop_count)
+//             return;
+//         int p = drop_positions[t];
+//         keep[p] = 0;
+//     }
+
+//     __global__ void kernel_count_kept_per_row(int n, const int *row_ptr, const int *keep, int *row_counts)
+//     {
+//         int i = blockIdx.x * blockDim.x + threadIdx.x;
+//         if (i >= n)
+//             return;
+//         int b = row_ptr[i], e = row_ptr[i + 1];
+//         int c = 0;
+//         for (int p = b; p < e; ++p)
+//             c += (keep[p] != 0);
+//         row_counts[i] = c;
+//     }
+
+//     template <class G>
+//     __global__ void kernel_compact_csr(int n,
+//                                        const int *old_rp, const int *old_ci, const G *old_v,
+//                                        const int *keep,
+//                                        const int *new_rp, int *new_ci, G *new_v)
+//     {
+//         int i = blockIdx.x * blockDim.x + threadIdx.x;
+//         if (i >= n)
+//             return;
+
+//         int ob = old_rp[i], oe = old_rp[i + 1];
+//         int out = new_rp[i];
+
+//         for (int p = ob; p < oe; ++p)
+//         {
+//             if (keep[p])
+//             {
+//                 new_ci[out] = old_ci[p];
+//                 new_v[out] = old_v[p];
+//                 out++;
+//             }
+//         }
+//     }
+
+//     // ------------------------
+//     // Iteration count selection (C++14-safe). Uses whichever field exists:
+//     // iterations -> sweeps -> max_iters -> default(5)
+//     // ------------------------
+//     template <typename P>
+//     static inline auto pick_steps_impl(const P &p, int) -> decltype(p.iterations, int())
+//     {
+//         return (int)p.iterations;
+//     }
+//     template <typename P>
+//     static inline auto pick_steps_impl(const P &p, long) -> decltype(p.sweeps, int())
+//     {
+//         return (int)p.sweeps;
+//     }
+//     template <typename P>
+//     static inline auto pick_steps_impl(const P &p, long long) -> decltype(p.max_iters, int())
+//     {
+//         return (int)p.max_iters;
+//     }
+//     static inline int pick_steps_impl(...) { return 5; }
+
+//     static inline int get_num_steps(const ICTP_Params &p)
+//     {
+//         int s = pick_steps_impl(p, 0);
+//         if (s < 1)
+//             s = 1;
+//         return s;
+//     }
+
+//     // ------------------------
+//     // Host CSR get (A rows assumed sorted by col)
+//     // ------------------------
+//     template <class T>
+//     static inline double host_csr_get(const ichol::matrix::CsrMatrix<T> &A, int i, int j)
+//     {
+//         int lo = A.row_ptr[i];
+//         int hi = A.row_ptr[i + 1];
+//         while (lo < hi)
+//         {
+//             int mid = lo + ((hi - lo) >> 1);
+//             int c = A.col_ind[mid];
+//             if (c < j)
+//                 lo = mid + 1;
+//             else
+//                 hi = mid;
+//         }
+//         if (lo < A.row_ptr[i + 1] && A.col_ind[lo] == j)
+//             return (double)A.values[lo];
+//         return 0.0;
+//     }
+
+//     // ------------------------
+//     // Initialize L from Sym pattern using A-based guess, but PRUNE to lower+diag only.
+//     // diag = sqrt(Aii), offdiag = Aij / max(sqrt(Ajj), tiny)
+//     // ------------------------
+//     template <class T>
+//     static ichol::matrix::CsrMatrix<T> init_L_from_Sym_lower(const ichol::matrix::CsrMatrix<T> &A, const core::IC_Symbolic &Sym)
+//     {
+//         const int n = A.num_rows;
+
+//         // Count lower+diag nnz per row from Sym
+//         std::vector<int> rp((size_t)n + 1, 0);
+//         for (int i = 0; i < n; ++i)
+//         {
+//             int cnt = 0;
+//             for (int p = Sym.row_ptr_L[i]; p < Sym.row_ptr_L[i + 1]; ++p)
+//             {
+//                 int j = Sym.col_ind_L[p];
+//                 if (0 <= j && j <= i)
+//                     cnt++;
+//             }
+//             rp[i + 1] = cnt;
+//         }
+//         for (int i = 0; i < n; ++i)
+//             rp[i + 1] += rp[i];
+//         int nnz = rp[n];
+
+//         ichol::matrix::CsrMatrix<T> L;
+//         L.num_rows = n;
+//         L.num_cols = n;
+//         L.nnz = nnz;
+//         L.row_ptr = rp;
+//         L.col_ind.resize((size_t)nnz);
+//         L.values.resize((size_t)nnz);
+
+//         // Precompute sqrt(diag)
+//         std::vector<double> dj((size_t)n, 0.0);
+//         for (int i = 0; i < n; ++i)
+//         {
+//             double aii = host_csr_get(A, i, i);
+//             dj[i] = (aii > 0.0) ? std::sqrt(aii) : 0.0;
+//             if (!(dj[i] > 0.0))
+//                 dj[i] = 1e-300; // avoid div0 in init
+//         }
+
+//         // Fill
+//         for (int i = 0; i < n; ++i)
+//         {
+//             int out = rp[i];
+//             for (int p = Sym.row_ptr_L[i]; p < Sym.row_ptr_L[i + 1]; ++p)
+//             {
+//                 int j = Sym.col_ind_L[p];
+//                 if (!(0 <= j && j <= i))
+//                     continue;
+
+//                 L.col_ind[out] = j;
+//                 if (j == i)
+//                 {
+//                     L.values[out] = (T)dj[i];
+//                 }
+//                 else
+//                 {
+//                     double aij = host_csr_get(A, i, j);
+//                     L.values[out] = (T)(aij / dj[j]);
+//                 }
+//                 out++;
+//             }
+
+//             // ensure sorted within row (Sym is typically sorted but do not assume)
+//             int b = rp[i], e = rp[i + 1];
+//             // simple insertion sort by col on small rows; acceptable as reference
+//             for (int p = b + 1; p < e; ++p)
+//             {
+//                 int cj = L.col_ind[p];
+//                 T vj = L.values[p];
+//                 int q = p - 1;
+//                 while (q >= b && L.col_ind[q] > cj)
+//                 {
+//                     L.col_ind[q + 1] = L.col_ind[q];
+//                     L.values[q + 1] = L.values[q];
+//                     --q;
+//                 }
+//                 L.col_ind[q + 1] = cj;
+//                 L.values[q + 1] = vj;
+//             }
+//         }
+
+//         return L;
+//     }
+
+//     // ------------------------
+//     // Download device CSR to host CSR<T>
+//     // ------------------------
+//     template <class T, class G>
+//     static ichol::matrix::CsrMatrix<T> download_L(int n, int nnz, const int *d_rp, const int *d_ci, const G *d_v)
+//     {
+//         ichol::matrix::CsrMatrix<T> L;
+//         L.num_rows = n;
+//         L.num_cols = n;
+//         L.nnz = nnz;
+
+//         L.row_ptr.resize((size_t)n + 1);
+//         L.col_ind.resize((size_t)nnz);
+//         L.values.resize((size_t)nnz);
+
+//         cuda_check(cudaMemcpy(L.row_ptr.data(), d_rp, sizeof(int) * (n + 1), cudaMemcpyDeviceToHost), "download L rp");
+//         cuda_check(cudaMemcpy(L.col_ind.data(), d_ci, sizeof(int) * nnz, cudaMemcpyDeviceToHost), "download L ci");
+
+//         std::vector<G> tmp((size_t)nnz);
+//         cuda_check(cudaMemcpy(tmp.data(), d_v, sizeof(G) * (size_t)nnz, cudaMemcpyDeviceToHost), "download L val");
+//         for (int i = 0; i < nnz; ++i)
+//             L.values[i] = gpu_to_host<T, G>::cvt(tmp[i]);
+
+//         return L;
+//     }
+
+//     // ------------------------
+//     // Top-level ParICT wrapper
+//     // ------------------------
+//     template <class T>
+//     ichol::matrix::CsrMatrix<T> parict(const ichol::matrix::CsrMatrix<T> &Ahost,
+//                                        const ICTP_Params &row_params,
+//                                        const IC_Attempt_Params &fparams,
+//                                        const core::IC_Symbolic &Sym,
+//                                        ICTP_Factor_Info *info)
+//     {
+//         using G = typename gpu_type<T>::type;
+//         using Acc = typename accum_type<G>::type;
+
+//         const int n = Ahost.num_rows;
+//         if (Ahost.num_cols != n)
+//             throw std::runtime_error("parict(ParICT): A must be square.");
+//         if (Sym.n != n)
+//             throw std::runtime_error("parict(ParICT): Sym.n mismatch.");
+
+//         const int steps = get_num_steps(row_params);
+
+//         // Initial L from Sym, pruned to lower+diag, A-based guess
+//         ichol::matrix::CsrMatrix<T> L0 = init_L_from_Sym_lower<T>(Ahost, Sym);
+//         const int nnz_target = L0.nnz;
+//         const int off_target = std::max(0, nnz_target - n);
+
+//         // ---------- Stage A to device ----------
+//         int *dA_rp = nullptr, *dA_ci = nullptr;
+//         G *dA_v = nullptr;
+
+//         cuda_check(cudaMalloc(&dA_rp, sizeof(int) * (n + 1)), "malloc A rp");
+//         cuda_check(cudaMalloc(&dA_ci, sizeof(int) * (size_t)Ahost.nnz), "malloc A ci");
+//         cuda_check(cudaMalloc(&dA_v, sizeof(G) * (size_t)Ahost.nnz), "malloc A v");
+
+//         cuda_check(cudaMemcpy(dA_rp, Ahost.row_ptr.data(), sizeof(int) * (n + 1), cudaMemcpyHostToDevice), "cpy A rp");
+//         cuda_check(cudaMemcpy(dA_ci, Ahost.col_ind.data(), sizeof(int) * (size_t)Ahost.nnz, cudaMemcpyHostToDevice), "cpy A ci");
+//         {
+//             std::vector<G> tmp((size_t)Ahost.nnz);
+//             for (int i = 0; i < Ahost.nnz; ++i)
+//                 tmp[i] = host_to_gpu<G, T>::cvt(Ahost.values[i]);
+//             cuda_check(cudaMemcpy(dA_v, tmp.data(), sizeof(G) * (size_t)Ahost.nnz, cudaMemcpyHostToDevice), "cpy A v");
+//         }
+
+//         // ---------- Stage initial L to device ----------
+//         int *dL_rp = nullptr, *dL_ci = nullptr;
+//         G *dL_v0 = nullptr, *dL_v1 = nullptr;
+
+//         int nnzL = L0.nnz;
+
+//         cuda_check(cudaMalloc(&dL_rp, sizeof(int) * (n + 1)), "malloc L rp");
+//         cuda_check(cudaMalloc(&dL_ci, sizeof(int) * (size_t)nnzL), "malloc L ci");
+//         cuda_check(cudaMalloc(&dL_v0, sizeof(G) * (size_t)nnzL), "malloc L v0");
+//         cuda_check(cudaMalloc(&dL_v1, sizeof(G) * (size_t)nnzL), "malloc L v1");
+
+//         cuda_check(cudaMemcpy(dL_rp, L0.row_ptr.data(), sizeof(int) * (n + 1), cudaMemcpyHostToDevice), "cpy L rp");
+//         cuda_check(cudaMemcpy(dL_ci, L0.col_ind.data(), sizeof(int) * (size_t)nnzL, cudaMemcpyHostToDevice), "cpy L ci");
+//         {
+//             std::vector<G> tmp((size_t)nnzL);
+//             for (int i = 0; i < nnzL; ++i)
+//                 tmp[i] = host_to_gpu<G, T>::cvt(L0.values[i]);
+//             cuda_check(cudaMemcpy(dL_v0, tmp.data(), sizeof(G) * (size_t)nnzL, cudaMemcpyHostToDevice), "cpy L v0");
+//         }
+
+//         int *dL_row_ids = nullptr;
+//         cuda_check(cudaMalloc(&dL_row_ids, sizeof(int) * (size_t)nnzL), "malloc L row_ids");
+
+//         int *d_fail = nullptr;
+//         cuda_check(cudaMalloc(&d_fail, sizeof(int)), "malloc fail");
+
+//         Acc pivot_tol = (Acc)fparams.pivot_tol;
+
+//         // ---------- Step loop ----------
+//         for (int s = 0; s < steps; ++s)
+//         {
+//             // row_ids for current L
+//             {
+//                 int threads = 128;
+//                 int blocks = (n + threads - 1) / threads;
+//                 kernel_fill_row_ids<<<blocks, threads>>>(n, dL_rp, dL_row_ids);
+//                 cuda_check(cudaGetLastError(), "kernel_fill_row_ids(L)");
+//             }
+
+//             // ---------- Build CSC of current L ----------
+//             int *d_col_counts = nullptr, *d_col_ptr = nullptr, *d_col_next = nullptr, *d_csc_row = nullptr;
+//             G *d_csc_val = nullptr;
+
+//             cuda_check(cudaMalloc(&d_col_counts, sizeof(int) * (n + 1)), "malloc col_counts");
+//             cuda_check(cudaMalloc(&d_col_ptr, sizeof(int) * (n + 1)), "malloc col_ptr");
+//             cuda_check(cudaMalloc(&d_col_next, sizeof(int) * (n + 1)), "malloc col_next");
+//             cuda_check(cudaMalloc(&d_csc_row, sizeof(int) * (size_t)nnzL), "malloc csc_row");
+//             cuda_check(cudaMalloc(&d_csc_val, sizeof(G) * (size_t)nnzL), "malloc csc_val");
+
+//             cuda_check(cudaMemset(d_col_counts, 0, sizeof(int) * (n + 1)), "memset col_counts");
+//             {
+//                 int threads = 256;
+//                 int blocks = (nnzL + threads - 1) / threads;
+//                 kernel_count_csc_from_csr<<<blocks, threads>>>(nnzL, dL_ci, n, d_col_counts);
+//                 cuda_check(cudaGetLastError(), "kernel_count_csc_from_csr");
+//             }
+//             {
+//                 thrust::device_ptr<int> counts(d_col_counts);
+//                 thrust::device_ptr<int> ptr(d_col_ptr);
+//                 thrust::exclusive_scan(thrust::device, counts, counts + (n + 1), ptr);
+//             }
+//             cuda_check(cudaMemset(d_col_next, 0, sizeof(int) * (n + 1)), "memset col_next");
+//             {
+//                 int threads = 256;
+//                 int blocks = (nnzL + threads - 1) / threads;
+//                 kernel_fill_csc_from_csr<G><<<blocks, threads>>>(nnzL, dL_row_ids, dL_ci, dL_v0,
+//                                                                  d_col_ptr, d_col_next, d_csc_row, d_csc_val, n);
+//                 cuda_check(cudaGetLastError(), "kernel_fill_csc_from_csr");
+//             }
+
+//             // ---------- Keys for L, A, and product pattern ----------
+//             // L keys (lower only)
+//             uint64_t *d_keys_L = nullptr;
+//             cuda_check(cudaMalloc(&d_keys_L, sizeof(uint64_t) * (size_t)nnzL), "malloc keys_L");
+//             {
+//                 int threads = 256;
+//                 int blocks = (nnzL + threads - 1) / threads;
+//                 kernel_make_csr_keys_lower<<<blocks, threads>>>(nnzL, dL_row_ids, dL_ci, n, d_keys_L);
+//                 cuda_check(cudaGetLastError(), "kernel_make_csr_keys_lower(L)");
+//             }
+
+//             // A keys (lower only)
+//             int nnzA = Ahost.nnz;
+//             int *dA_row_ids = nullptr;
+//             cuda_check(cudaMalloc(&dA_row_ids, sizeof(int) * (size_t)nnzA), "malloc A row_ids");
+//             {
+//                 int threads = 128;
+//                 int blocks = (n + threads - 1) / threads;
+//                 kernel_fill_row_ids<<<blocks, threads>>>(n, dA_rp, dA_row_ids);
+//                 cuda_check(cudaGetLastError(), "kernel_fill_row_ids(A)");
+//             }
+//             uint64_t *d_keys_A = nullptr;
+//             cuda_check(cudaMalloc(&d_keys_A, sizeof(uint64_t) * (size_t)nnzA), "malloc keys_A");
+//             {
+//                 int threads = 256;
+//                 int blocks = (nnzA + threads - 1) / threads;
+//                 kernel_make_csr_keys_lower<<<blocks, threads>>>(nnzA, dA_row_ids, dA_ci, n, d_keys_A);
+//                 cuda_check(cudaGetLastError(), "kernel_make_csr_keys_lower(A)");
+//             }
+
+//             // product keys
+//             int *d_contrib = nullptr, *d_offset = nullptr;
+//             cuda_check(cudaMalloc(&d_contrib, sizeof(int) * (size_t)nnzL), "malloc contrib");
+//             cuda_check(cudaMalloc(&d_offset, sizeof(int) * (size_t)nnzL), "malloc offset");
+
+//             {
+//                 int threads = 256;
+//                 int blocks = (nnzL + threads - 1) / threads;
+//                 kernel_product_contrib<<<blocks, threads>>>(nnzL, dL_ci, d_col_ptr, n, d_contrib);
+//                 cuda_check(cudaGetLastError(), "kernel_product_contrib");
+//             }
+//             {
+//                 thrust::device_ptr<int> c(d_contrib);
+//                 thrust::device_ptr<int> o(d_offset);
+//                 thrust::exclusive_scan(thrust::device, c, c + nnzL, o);
+//             }
+
+//             int last_off = 0, last_c = 0;
+//             cuda_check(cudaMemcpy(&last_off, d_offset + (nnzL - 1), sizeof(int), cudaMemcpyDeviceToHost), "cpy last offset");
+//             cuda_check(cudaMemcpy(&last_c, d_contrib + (nnzL - 1), sizeof(int), cudaMemcpyDeviceToHost), "cpy last contrib");
+//             int nnzP = last_off + last_c;
+
+//             uint64_t *d_keys_P = nullptr;
+//             cuda_check(cudaMalloc(&d_keys_P, sizeof(uint64_t) * (size_t)nnzP), "malloc keys_P");
+//             {
+//                 int threads = 256;
+//                 int blocks = (nnzL + threads - 1) / threads;
+//                 kernel_fill_product_keys<<<blocks, threads>>>(nnzL, dL_row_ids, dL_ci,
+//                                                               d_col_ptr, d_csc_row,
+//                                                               d_offset, d_contrib, d_keys_P, n);
+//                 cuda_check(cudaGetLastError(), "kernel_fill_product_keys");
+//             }
+
+//             // concatenate keys_all = [keys_L, keys_A, keys_P]
+//             int nnzAll = nnzL + nnzA + nnzP;
+//             uint64_t *d_keys_all = nullptr;
+//             cuda_check(cudaMalloc(&d_keys_all, sizeof(uint64_t) * (size_t)nnzAll), "malloc keys_all");
+
+//             cuda_check(cudaMemcpy(d_keys_all, d_keys_L, sizeof(uint64_t) * (size_t)nnzL, cudaMemcpyDeviceToDevice), "cpy keys_L");
+//             cuda_check(cudaMemcpy(d_keys_all + nnzL, d_keys_A, sizeof(uint64_t) * (size_t)nnzA, cudaMemcpyDeviceToDevice), "cpy keys_A");
+//             cuda_check(cudaMemcpy(d_keys_all + nnzL + nnzA, d_keys_P, sizeof(uint64_t) * (size_t)nnzP, cudaMemcpyDeviceToDevice), "cpy keys_P");
+
+//             // remove UINT64_MAX, sort+unique (expanded pattern keys)
+//             thrust::device_ptr<uint64_t> kbeg(d_keys_all);
+//             thrust::device_ptr<uint64_t> kend = kbeg + nnzAll;
+//             kend = thrust::remove(thrust::device, kbeg, kend, UINT64_MAX);
+//             nnzAll = (int)(kend - kbeg);
+
+//             thrust::sort(thrust::device, kbeg, kbeg + nnzAll);
+//             kend = thrust::unique(thrust::device, kbeg, kbeg + nnzAll);
+//             nnzAll = (int)(kend - kbeg);
+
+//             // ---------- Build expanded CSR pattern from keys ----------
+//             int nnzL2 = nnzAll;
+
+//             int *dL2_rp = nullptr, *dL2_ci = nullptr;
+//             G *dL2_v0 = nullptr, *dL2_v1 = nullptr;
+
+//             cuda_check(cudaMalloc(&dL2_rp, sizeof(int) * (n + 1)), "malloc L2 rp");
+
+//             int *d_row_counts = nullptr;
+//             cuda_check(cudaMalloc(&d_row_counts, sizeof(int) * (n + 1)), "malloc row_counts");
+//             cuda_check(cudaMemset(d_row_counts, 0, sizeof(int) * (n + 1)), "memset row_counts");
+
+//             {
+//                 int threads = 256;
+//                 int blocks = (nnzL2 + threads - 1) / threads;
+//                 kernel_row_counts_from_keys<<<blocks, threads>>>(nnzL2, d_keys_all, n, d_row_counts);
+//                 cuda_check(cudaGetLastError(), "kernel_row_counts_from_keys");
+//             }
+//             {
+//                 thrust::device_ptr<int> rc(d_row_counts);
+//                 thrust::device_ptr<int> rp(dL2_rp);
+//                 thrust::exclusive_scan(thrust::device, rc, rc + (n + 1), rp);
+//             }
+
+//             cuda_check(cudaMalloc(&dL2_ci, sizeof(int) * (size_t)nnzL2), "malloc L2 ci");
+//             cuda_check(cudaMalloc(&dL2_v0, sizeof(G) * (size_t)nnzL2), "malloc L2 v0");
+//             cuda_check(cudaMalloc(&dL2_v1, sizeof(G) * (size_t)nnzL2), "malloc L2 v1");
+
+//             {
+//                 int threads = 256;
+//                 int blocks = (nnzL2 + threads - 1) / threads;
+//                 kernel_fill_cols_from_keys<<<blocks, threads>>>(nnzL2, d_keys_all, dL2_ci);
+//                 cuda_check(cudaGetLastError(), "kernel_fill_cols_from_keys");
+//             }
+
+//             // init values (old values kept; new ones residual-initialized)
+//             {
+//                 int threads = 128;
+//                 int blocks = (n + threads - 1) / threads;
+//                 kernel_init_values_residual<G><<<blocks, threads>>>(n, dA_rp, dA_ci, dA_v,
+//                                                                     dL_rp, dL_ci, dL_v0,
+//                                                                     dL2_rp, dL2_ci, dL2_v0,
+//                                                                     pivot_tol);
+//                 cuda_check(cudaGetLastError(), "kernel_init_values_residual");
+//             }
+
+//             // ---------- Sweep #1 (expanded) ----------
+//             {
+//                 int threads = 128;
+//                 int blocks = (n + threads - 1) / threads;
+//                 kernel_parict_fp_sweep_csr_guarded<G><<<blocks, threads>>>(n, dA_rp, dA_ci, dA_v,
+//                                                                            dL2_rp, dL2_ci, dL2_v0,
+//                                                                            pivot_tol, dL2_v1);
+//                 cuda_check(cudaGetLastError(), "kernel_parict_fp_sweep_csr_guarded #1");
+//             }
+
+//             // ---------- Global drop to restore nnz target ----------
+//             int *dL2_row_ids = nullptr;
+//             cuda_check(cudaMalloc(&dL2_row_ids, sizeof(int) * (size_t)nnzL2), "malloc L2 row_ids");
+//             {
+//                 int threads = 128;
+//                 int blocks = (n + threads - 1) / threads;
+//                 kernel_fill_row_ids<<<blocks, threads>>>(n, dL2_rp, dL2_row_ids);
+//                 cuda_check(cudaGetLastError(), "kernel_fill_row_ids(L2)");
+//             }
+
+//             int *d_off_counter = nullptr;
+//             int *d_off_pos = nullptr;
+//             Acc *d_off_mag = nullptr;
+
+//             cuda_check(cudaMalloc(&d_off_counter, sizeof(int)), "malloc off_counter");
+//             cuda_check(cudaMemset(d_off_counter, 0, sizeof(int)), "memset off_counter");
+
+//             cuda_check(cudaMalloc(&d_off_pos, sizeof(int) * (size_t)nnzL2), "malloc off_pos");
+//             cuda_check(cudaMalloc(&d_off_mag, sizeof(Acc) * (size_t)nnzL2), "malloc off_mag");
+
+//             {
+//                 int threads = 256;
+//                 int blocks = (nnzL2 + threads - 1) / threads;
+//                 kernel_build_offdiag_list<G><<<blocks, threads>>>(nnzL2, dL2_row_ids, dL2_ci, dL2_v1,
+//                                                                   d_off_counter, d_off_pos, d_off_mag);
+//                 cuda_check(cudaGetLastError(), "kernel_build_offdiag_list");
+//             }
+
+//             int off_nnz = 0;
+//             cuda_check(cudaMemcpy(&off_nnz, d_off_counter, sizeof(int), cudaMemcpyDeviceToHost), "read off_nnz");
+
+//             int drop_count = off_nnz - off_target;
+//             if (drop_count < 0)
+//                 drop_count = 0;
+
+//             {
+//                 thrust::device_ptr<Acc> mbeg(d_off_mag);
+//                 thrust::device_ptr<int> pbeg(d_off_pos);
+//                 thrust::sort_by_key(thrust::device, mbeg, mbeg + off_nnz, pbeg); // ascending
+//             }
+
+//             int *d_keep = nullptr;
+//             cuda_check(cudaMalloc(&d_keep, sizeof(int) * (size_t)nnzL2), "malloc keep");
+//             {
+//                 int threads = 256;
+//                 int blocks = (nnzL2 + threads - 1) / threads;
+//                 kernel_set_all_int<<<blocks, threads>>>(nnzL2, d_keep, 1);
+//                 cuda_check(cudaGetLastError(), "kernel_set_all_int");
+//             }
+//             if (drop_count > 0)
+//             {
+//                 int threads = 256;
+//                 int blocks = (drop_count + threads - 1) / threads;
+//                 kernel_scatter_drop<<<blocks, threads>>>(drop_count, d_off_pos, d_keep);
+//                 cuda_check(cudaGetLastError(), "kernel_scatter_drop");
+//             }
+
+//             // compact CSR to pruned pattern
+//             int *dL3_rp = nullptr, *dL3_ci = nullptr;
+//             G *dL3_v0 = nullptr, *dL3_v1 = nullptr;
+
+//             cuda_check(cudaMalloc(&dL3_rp, sizeof(int) * (n + 1)), "malloc L3 rp");
+//             int *d_row_counts3 = nullptr;
+//             cuda_check(cudaMalloc(&d_row_counts3, sizeof(int) * (n + 1)), "malloc row_counts3");
+//             cuda_check(cudaMemset(d_row_counts3, 0, sizeof(int) * (n + 1)), "memset row_counts3");
+
+//             {
+//                 int threads = 128;
+//                 int blocks = (n + threads - 1) / threads;
+//                 kernel_count_kept_per_row<<<blocks, threads>>>(n, dL2_rp, d_keep, d_row_counts3);
+//                 cuda_check(cudaGetLastError(), "kernel_count_kept_per_row");
+//             }
+//             {
+//                 thrust::device_ptr<int> rc(d_row_counts3);
+//                 thrust::device_ptr<int> rp(dL3_rp);
+//                 thrust::exclusive_scan(thrust::device, rc, rc + (n + 1), rp);
+//             }
+
+//             int nnzL3 = 0;
+//             cuda_check(cudaMemcpy(&nnzL3, dL3_rp + n, sizeof(int), cudaMemcpyDeviceToHost), "read nnzL3");
+
+//             cuda_check(cudaMalloc(&dL3_ci, sizeof(int) * (size_t)nnzL3), "malloc L3 ci");
+//             cuda_check(cudaMalloc(&dL3_v0, sizeof(G) * (size_t)nnzL3), "malloc L3 v0");
+//             cuda_check(cudaMalloc(&dL3_v1, sizeof(G) * (size_t)nnzL3), "malloc L3 v1");
+
+//             {
+//                 int threads = 128;
+//                 int blocks = (n + threads - 1) / threads;
+//                 kernel_compact_csr<G><<<blocks, threads>>>(n, dL2_rp, dL2_ci, dL2_v1,
+//                                                            d_keep, dL3_rp, dL3_ci, dL3_v0);
+//                 cuda_check(cudaGetLastError(), "kernel_compact_csr");
+//             }
+
+//             // ---------- Sweep #2 (pruned) ----------
+//             {
+//                 int threads = 128;
+//                 int blocks = (n + threads - 1) / threads;
+//                 kernel_parict_fp_sweep_csr_guarded<G><<<blocks, threads>>>(n, dA_rp, dA_ci, dA_v,
+//                                                                            dL3_rp, dL3_ci, dL3_v0,
+//                                                                            pivot_tol, dL3_v1);
+//                 cuda_check(cudaGetLastError(), "kernel_parict_fp_sweep_csr_guarded #2");
+//             }
+
+//             // ---------- Replace current L with L3 ----------
+//             cudaFree(dL_rp);
+//             cudaFree(dL_ci);
+//             cudaFree(dL_v0);
+//             cudaFree(dL_v1);
+//             dL_rp = dL3_rp;
+//             dL_ci = dL3_ci;
+//             dL_v0 = dL3_v1; // newest values
+//             dL_v1 = dL3_v0; // reuse buffer next step
+//             nnzL = nnzL3;
+
+//             cudaFree(dL_row_ids);
+//             cuda_check(cudaMalloc(&dL_row_ids, sizeof(int) * (size_t)nnzL), "realloc L row_ids");
+
+//             // ---------- Free step temporaries ----------
+//             cudaFree(d_col_counts);
+//             cudaFree(d_col_ptr);
+//             cudaFree(d_col_next);
+//             cudaFree(d_csc_row);
+//             cudaFree(d_csc_val);
+//             cudaFree(d_keys_L);
+//             cudaFree(dA_row_ids);
+//             cudaFree(d_keys_A);
+//             cudaFree(d_contrib);
+//             cudaFree(d_offset);
+//             cudaFree(d_keys_P);
+//             cudaFree(d_keys_all);
+//             cudaFree(d_row_counts);
+
+//             cudaFree(dL2_rp);
+//             cudaFree(dL2_ci);
+//             cudaFree(dL2_v0);
+//             cudaFree(dL2_v1);
+//             cudaFree(dL2_row_ids);
+
+//             cudaFree(d_off_counter);
+//             cudaFree(d_off_pos);
+//             cudaFree(d_off_mag);
+//             cudaFree(d_keep);
+//             cudaFree(d_row_counts3);
+//         }
+
+//         // ---------- End-of-run validity check (must trigger restart if bad) ----------
+//         cuda_check(cudaMemset(d_fail, 0xFF, sizeof(int)), "init fail endcheck");
+//         {
+//             int threads = 128;
+//             int blocks = (n + threads - 1) / threads;
+//             kernel_check_posdiag_finite<G><<<blocks, threads>>>(n, dL_rp, dL_ci, dL_v0, d_fail);
+//             cuda_check(cudaGetLastError(), "kernel_check_posdiag_finite");
+//         }
+//         int hfail = -1;
+//         cuda_check(cudaMemcpy(&hfail, d_fail, sizeof(int), cudaMemcpyDeviceToHost), "read fail endcheck");
+//         if (hfail >= 0)
+//         {
+//             if (info)
+//             {
+//                 info->code = IC_Breakdown::B1_SmallOrNegativePivot;
+//                 info->step = hfail;
+//             }
+//             cudaFree(dA_rp);
+//             cudaFree(dA_ci);
+//             cudaFree(dA_v);
+//             cudaFree(dL_rp);
+//             cudaFree(dL_ci);
+//             cudaFree(dL_v0);
+//             cudaFree(dL_v1);
+//             cudaFree(dL_row_ids);
+//             cudaFree(d_fail);
+//             return ichol::matrix::CsrMatrix<T>{};
+//         }
+
+//         // ---------- Download final L ----------
+//         ichol::matrix::CsrMatrix<T> L = download_L<T, G>(n, nnzL, dL_rp, dL_ci, dL_v0);
+
+//         if (info)
+//         {
+//             info->code = IC_Breakdown::None;
+//             info->step = 0;
+//         }
+
+//         // ---------- Cleanup ----------
+//         cudaFree(dA_rp);
+//         cudaFree(dA_ci);
+//         cudaFree(dA_v);
+//         cudaFree(dL_rp);
+//         cudaFree(dL_ci);
+//         cudaFree(dL_v0);
+//         cudaFree(dL_v1);
+//         cudaFree(dL_row_ids);
+//         cudaFree(d_fail);
+
+//         return L;
+//     }
+
+//     // explicit instantiations
+//     template ichol::matrix::CsrMatrix<double> parict(const ichol::matrix::CsrMatrix<double> &Ahost,
+//                                                      const ICTP_Params &row_params,
+//                                                      const IC_Attempt_Params &fparams,
+//                                                      const core::IC_Symbolic &Sym,
+//                                                      ICTP_Factor_Info *info);
+
+//     template ichol::matrix::CsrMatrix<float> parict(const ichol::matrix::CsrMatrix<float> &Ahost,
+//                                                     const ICTP_Params &row_params,
+//                                                     const IC_Attempt_Params &fparams,
+//                                                     const core::IC_Symbolic &Sym,
+//                                                     ICTP_Factor_Info *info);
+
+//     template ichol::matrix::CsrMatrix<half_float::half> parict(const ichol::matrix::CsrMatrix<half_float::half> &Ahost,
+//                                                                const ICTP_Params &row_params,
+//                                                                const IC_Attempt_Params &fparams,
+//                                                                const core::IC_Symbolic &Sym,
+//                                                                ICTP_Factor_Info *info);
+
+// } // namespace ichol

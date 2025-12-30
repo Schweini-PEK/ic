@@ -1,10 +1,11 @@
+#pragma once
 #ifndef ICHOL_FACT_HPP
 #define ICHOL_FACT_HPP
 
 #include <cmath>
+#include <iostream>
 
 #include "matrix_formats.hpp"
-#include "ictp.hpp"
 #include "symbolic.hpp"
 
 /**
@@ -15,7 +16,7 @@
  * The input matrix @param A is supposed to be stored as lower tri + diag.
  */
 template <class T>
-inline std::vector<double> col_norm_scale(const ichol::CSR<T> &A)
+inline std::vector<double> col_norm_scale(const ichol::matrix::CsrMatrix<T> &A)
 {
     const int n = A.num_rows;
     std::vector<double> col_sq(n, 0.0);
@@ -46,16 +47,41 @@ inline std::vector<double> col_norm_scale(const ichol::CSR<T> &A)
     return D;
 }
 
+template <class T>
+inline std::vector<double> pivot_scale(const ichol::matrix::CsrMatrix<T> &A)
+{
+    const int n = A.num_rows;
+    std::vector<double> D(n, 1.0);
+    double temp = 0.0;
+    for (int i = 0; i < n; ++i)
+    {
+        int last = A.row_ptr[i + 1] - 1;
+        if (A.col_ind[last] == i)
+        {
+            temp = double(std::sqrt(A.values[last]));
+            if (temp > 0.0 && std::isfinite(temp))
+                D[i] = temp;
+            else
+                D[i] = 1e-12;
+        }
+        else
+        {
+            std::cerr << "pivot_scale: missing diagonal entry in row " << i << std::endl;
+        }
+    }
+    return D;
+}
+
 /**
  * Apply symmetric diagonal scaling to A: B = D^{-1} A D^{-1}
  *
  * D is given as a vector of its diagonal entries.
  */
 template <class T>
-inline ichol::CSR<T> apply_symm_prescaling(const ichol::CSR<T> &A,
+inline ichol::matrix::CsrMatrix<T> apply_symm_prescaling(const ichol::matrix::CsrMatrix<T> &A,
                                            const std::vector<double> &D)
 {
-    ichol::CSR<T> B;
+    ichol::matrix::CsrMatrix<T> B;
     B.num_rows = A.num_rows;
     B.num_cols = A.num_cols;
     B.row_ptr = A.row_ptr;
@@ -77,13 +103,13 @@ inline ichol::CSR<T> apply_symm_prescaling(const ichol::CSR<T> &A,
 }
 
 template <class T>
-inline ichol::CSR<T> add_diagonal_shift(const ichol::CSR<T> &A, T alpha)
+inline ichol::matrix::CsrMatrix<T> add_diagonal_shift(const ichol::matrix::CsrMatrix<T> &A, T alpha)
 {
     if (alpha == T(0))
         return A;
 
     const int n = A.num_rows;
-    ichol::CSR<T> S = A;
+    ichol::matrix::CsrMatrix<T> S = A;
 
     for (int i = 0; i < n; ++i)
     {
@@ -108,6 +134,9 @@ struct ICTP_Params
 {
     int lfil_per_row = 20;  // Level of fill per row
     double drop_tol = 1e-4; // Drop tolerance
+
+    // For PARICT
+    int steps = 5;
 };
 
 /**
@@ -154,6 +183,8 @@ struct IC_Factorize_Params
     double initial_shift = 1e-10;
     double shift_growth = 2.0;
     int max_restarts = 5;
+
+    std::string scaling = "pivot"; // "none", "col_norm", "pivot"
 };
 
 struct IC_Factorize_Info
@@ -173,7 +204,8 @@ namespace ichol
      * The scaling matrix and pivot shifting are all in precision T
      */
     template <class T>
-    CSR<T> IC_factorize(const CSR<double> &Ahost,
+    ichol::matrix::CsrMatrix<T> IC_factorize(const std::string &algo,
+                        const ichol::matrix::CsrMatrix<double> &Ahost,
                         const ICTP_Params &ictp_params,
                         const IC_Factorize_Params &params,
                         const core::IC_Symbolic &Sym,
