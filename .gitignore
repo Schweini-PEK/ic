@@ -5,3 +5,6 @@ archive/
 build/
 
 test/data/
+
+
+.idea/
