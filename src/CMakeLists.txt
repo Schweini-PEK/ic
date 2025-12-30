@@ -1,4 +1,4 @@
-file(GLOB_RECURSE ICHOL_SRC
+file(GLOB_RECURSE ICHOL_SRC CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
      "${CMAKE_CURRENT_SOURCE_DIR}/*.hpp"
      "${CMAKE_CURRENT_SOURCE_DIR}/*.cu"
@@ -16,6 +16,15 @@ target_compile_options(ichol PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 
 find_package(CUDAToolkit REQUIRED)
+find_package(PkgConfig REQUIRED)
+
+pkg_check_modules(AMD REQUIRED IMPORTED_TARGET amd)
+pkg_check_modules(SUITESPARSECONFIG REQUIRED IMPORTED_TARGET suitesparseconfig)
+
+target_link_libraries(ichol PUBLIC
+    PkgConfig::AMD
+    PkgConfig::SUITESPARSECONFIG
+)
 
 target_link_libraries(ichol PUBLIC
     CUDA::cudart
