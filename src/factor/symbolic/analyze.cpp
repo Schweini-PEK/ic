@@ -1,4 +1,4 @@
-#include "symbolic.hpp"
+#include "factor/symbolic/symbolic.hpp"
 
 namespace ichol::symbolic
 {

@@ -18,6 +18,8 @@ extern "C"
 
 namespace ichol::symbolic
 {
+    Permutation identity_permutation(int n);
+
     Permutation amd_from_csr(int n,
                              const std::vector<int> &row_ptr,
                              const std::vector<int> &col_ind);

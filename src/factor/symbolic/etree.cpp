@@ -1,6 +1,6 @@
 #include <vector>
 
-#include "symbolic.hpp"
+#include "factor/symbolic/symbolic.hpp"
 
 namespace
 {
@@ -29,7 +29,10 @@ namespace
             i = a;
         }
     }
+} // namespace
 
+namespace ichol::symbolic
+{
     template <typename T>
     ichol::symbolic::ETree build_etree(const ichol::matrix::CsrMatrix<T> &A)
     {
@@ -60,4 +63,4 @@ namespace
     template ichol::symbolic::ETree build_etree<double>(const ichol::matrix::CsrMatrix<double> &A);
     template ichol::symbolic::ETree build_etree<float>(const ichol::matrix::CsrMatrix<float> &A);
     template ichol::symbolic::ETree build_etree<half_float::half>(const ichol::matrix::CsrMatrix<half_float::half> &A);
-}
+} // namespace ichol::symbolic

@@ -7,7 +7,7 @@
 #include <vector>
 #include <algorithm>
 
-namespace
+namespace ichol::symbolic
 {
     ichol::symbolic::LevelSets build_level_sets(const ichol::symbolic::FactorPattern &factor_pattern,
                                                 const ichol::SymbolicOptions &options)
@@ -56,4 +56,4 @@ namespace
 
         return level_sets;
     }
-} // namespace
+} // namespace ichol::symbolic

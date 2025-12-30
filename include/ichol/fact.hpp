@@ -6,7 +6,6 @@
 #include <iostream>
 
 #include "matrix_formats.hpp"
-#include "ictp.hpp"
 #include "symbolic.hpp"
 
 /**

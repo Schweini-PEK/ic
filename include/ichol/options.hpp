@@ -1,14 +1,39 @@
 #pragma once
 
+#include <string>
+
 namespace ichol
 {
-    enum class Ordering {
+    enum class Ordering
+    {
         Identity,
         AMD,
         NestedDissection
     };
 
-    struct SymbolicOptions {
+    enum class Scaling
+    {
+        None,
+        UnitSqrtDiag,
+        UnitRowNorm
+    };
+
+    enum class PivotShiftStrategy
+    {
+        None,
+        MachineEpsilon,
+        Static,
+        Dynamic
+    };
+
+    enum class FactorizationAlgorithm
+    {
+        PARICT,
+        ICKDT
+    };
+
+    struct SymbolicOptions
+    {
         Ordering ordering = Ordering::AMD;
         bool use_etree = true;
 
@@ -16,13 +41,29 @@ namespace ichol
         int level_k = -1; // -1 means complete Cholesky
     };
 
-    struct SuperNodeOptions {
+    struct SuperNodeOptions
+    {
         int min_supernode_size = 16;
         int max_supernode_size = 128;
         bool relaxed = false;
     };
 
-    struct PCGOptions {
+    struct IncompleteCholeskyOptions
+    {
+        Scaling scaling = Scaling::UnitSqrtDiag;
+        PivotShiftStrategy pivot_shift_strategy = PivotShiftStrategy::MachineEpsilon;
+        FactorizationAlgorithm algorithm = FactorizationAlgorithm::ICKDT;
+        int max_restarts = 5;
+
+        double pivot_tol = 0.0; // For pivot check
+
+        // For ICKDT
+        int lfil = 20;
+        double drop_tol = 1e-4;
+    };
+
+    struct PCGOptions
+    {
         int max_iterations = 1000;
         double relative_tolerance = 1e-6;
         double absolute_tolerance = 1e-10;

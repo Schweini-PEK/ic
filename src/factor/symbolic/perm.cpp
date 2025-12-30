@@ -106,7 +106,7 @@ namespace ichol::symbolic
             }
         }
 
-        return B;
+        A = std::move(B);
     }
 
     template void apply_permutation_csr(ichol::matrix::CsrMatrix<double> &A,

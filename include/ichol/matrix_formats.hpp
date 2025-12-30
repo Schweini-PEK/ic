@@ -6,6 +6,7 @@
 #define INCHOL_MATRIX_FORMATS_HPP
 
 #include <vector>
+#include "ichol/half.hpp"
 
 namespace ichol::matrix
 {
@@ -78,8 +79,23 @@ namespace ichol::matrix
                 csc_to_csr_map[dest] = p;
             }
         }
+    }
 
-    } // namespace ichol::matrix
-}
+    template <typename Tin, typename Tout>
+    inline matrix::CsrMatrix<Tout> convert_csr_precision(const matrix::CsrMatrix<Tin> &src)
+    {
+        matrix::CsrMatrix<Tout> dst;
+        dst.num_rows = src.num_rows;
+        dst.num_cols = src.num_cols;
+        const int nnz = static_cast<int>(src.values.size());
+        dst.nnz = nnz;
+        dst.row_ptr = src.row_ptr; // copy structure
+        dst.col_ind = src.col_ind; // copy structure
+        dst.values.resize(static_cast<std::size_t>(nnz));
+        for (int i = 0; i < nnz; ++i)
+            dst.values[static_cast<std::size_t>(i)] = static_cast<Tout>(src.values[static_cast<std::size_t>(i)]);
+        return dst;
+    }
+} // namespace ichol::matrix
 
 #endif // INCHOL_MATRIX_FORMATS_HPP
