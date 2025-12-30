@@ -1,13 +1,24 @@
 #include "symbolic.hpp"
-#include "ichol/half.hpp"
 
 namespace ichol::symbolic
 {
     template <typename T>
-    SymbolicPlan ic_analyze(const ichol::matrix::CsrMatrix<T> &A,
+    SymbolicPlan ic_analyze(ichol::matrix::CsrMatrix<T> &A,
                             const SymbolicOptions &options)
     {
         SymbolicPlan plan;
+
+        switch (options.ordering)
+        {
+        case ichol::Ordering::Identity:
+            plan.perm = identity_permutation(A.num_rows);
+            break;
+
+        case ichol::Ordering::AMD:
+            plan.perm = amd_from_csr(A.num_rows, A.row_ptr, A.col_ind);
+            ichol::symbolic::apply_permutation_csr<T>(A, plan.perm);
+            break;
+        }
 
         if (options.level_k == -1) // Complete Cholesky
         {
@@ -36,10 +47,10 @@ namespace ichol::symbolic
         return plan;
     }
 
-    template SymbolicPlan ic_analyze<double>(const ichol::matrix::CsrMatrix<double> &A,
+    template SymbolicPlan ic_analyze<double>(ichol::matrix::CsrMatrix<double> &A,
                                              const SymbolicOptions &options);
-    template SymbolicPlan ic_analyze<float>(const ichol::matrix::CsrMatrix<float> &A,
+    template SymbolicPlan ic_analyze<float>(ichol::matrix::CsrMatrix<float> &A,
                                             const SymbolicOptions &options);
-    template SymbolicPlan ic_analyze<half_float::half>(const ichol::matrix::CsrMatrix<half_float::half> &A,
+    template SymbolicPlan ic_analyze<half_float::half>(ichol::matrix::CsrMatrix<half_float::half> &A,
                                                        const SymbolicOptions &options);
 }
