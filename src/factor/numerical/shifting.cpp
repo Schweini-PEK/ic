@@ -12,6 +12,9 @@ namespace ichol::numeric
 
         for (int i = 0; i < n; ++i)
         {
+            int row_end = A.row_ptr[i + 1];
+            if (A.col_ind[row_end - 1] != i)
+                throw std::runtime_error("add_diagonal_shift: Matrix missing diagonal entry.");
             A.values[A.row_ptr[i + 1] - 1] += alpha;
         }
     }

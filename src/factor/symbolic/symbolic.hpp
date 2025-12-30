@@ -55,6 +55,7 @@ namespace ichol::symbolic
      * Perform symbolic analysis for IC or IC(k) factorization.
      *
      * After this function, A is permuted according to @param options.ordering.
+     * The permutation vector is available in returned SymbolicPlan.perm.perm
      */
     template <typename T>
     SymbolicPlan ic_analyze(ichol::matrix::CsrMatrix<T> &A,

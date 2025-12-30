@@ -1,10 +1,12 @@
+//src/factor/numerical/factorize.cpp
 #include "factor/numerical/factorize.hpp"
 #include "factor/numerical/cuda/preconditioner.hpp"
 #include "backends/cpu/util/cast.hpp"
+#include <iostream>
 
 namespace
 {
-    std::vector<double> compute_prescaling_vector(ichol::matrix::CsrMatrix<double> &A,
+    std::vector<double> compute_prescaling_vector(const ichol::matrix::CsrMatrix<double> &A,
                                                   ichol::IncompleteCholeskyOptions &options)
     {
         std::vector<double> D;
@@ -19,7 +21,7 @@ namespace
             D = ichol::numeric::scale_diag_sqrt(A);
             break;
 
-        case ichol::Scaling::UnitRowNorm:
+        case ichol::Scaling::UnitColNorm:
             D = ichol::numeric::scale_col_norm(A);
             break;
         }
@@ -53,7 +55,7 @@ namespace
 
     template <typename T>
     ichol::matrix::CsrMatrix<T> compute_ic_factor(ichol::matrix::CsrMatrix<T> &A_work,
-                                                  ichol::symbolic::SymbolicPlan &sym_plan,
+                                                  const ichol::symbolic::SymbolicPlan &sym_plan,
                                                   ichol::numeric::NumericPlan &num_plan,
                                                   ichol::IncompleteCholeskyOptions &options)
     {
@@ -77,21 +79,23 @@ namespace ichol::numeric
 {
     template <typename T>
     ichol::matrix::CsrMatrix<T> incomplete_cholesky_preconditioner(ichol::matrix::CsrMatrix<double> &A,
-                                                                   ichol::symbolic::SymbolicPlan &sym_plan,
+                                                                   const ichol::symbolic::SymbolicPlan &sym_plan,
                                                                    ichol::numeric::NumericPlan &num_plan,
                                                                    ichol::IncompleteCholeskyOptions &options)
     {
         num_plan.prescaling.D = compute_prescaling_vector(A, options);
 
         ichol::numeric::apply_prescaling(A, num_plan.prescaling.D);
-        num_plan.A_scaled = A; // For PCG use
 
         ichol::matrix::CsrMatrix<T> A_work = ichol::matrix::convert_csr_precision<double, T>(A);
         ichol::matrix::CsrMatrix<T> L;
         T shift = get_shift<T>(options);
+
+        ichol::numeric::add_diagonal_shift<T>(A_work, shift);
+        num_plan.ic_info.shift_used = static_cast<double>(shift);
+
         for (int attempt = 0; attempt < options.max_restarts; ++attempt)
         {
-            ichol::numeric::add_diagonal_shift<T>(A_work, shift);
             L = compute_ic_factor<T>(A_work, sym_plan, num_plan, options);
 
             if (num_plan.ic_info.code == ICBreakdown::None)
@@ -100,6 +104,10 @@ namespace ichol::numeric
                 num_plan.ic_info.shift_used = static_cast<double>(shift);
                 num_plan.ic_info.restarts = attempt;
 
+                std::cout << "Incomplete Cholesky factorization succeeded after "
+                          << attempt << " restarts, shift used: "
+                          << num_plan.ic_info.shift_used << "\n";
+
                 return L;
             }
             else // Factorization failed; increase shift and retry
@@ -107,6 +115,7 @@ namespace ichol::numeric
                 ++num_plan.ic_info.restarts;
                 shift *= ichol::util::cast_fp_type<T, double>(options.shift_growth);
                 ichol::numeric::add_diagonal_shift<T>(A_work, shift);
+                num_plan.ic_info.shift_used += static_cast<double>(shift);
             }
         }
 
@@ -115,16 +124,16 @@ namespace ichol::numeric
     }
 
     template ichol::matrix::CsrMatrix<double> incomplete_cholesky_preconditioner<double>(ichol::matrix::CsrMatrix<double> &A,
-                                                                                         ichol::symbolic::SymbolicPlan &sym_plan,
+                                                                                         const ichol::symbolic::SymbolicPlan &sym_plan,
                                                                                          ichol::numeric::NumericPlan &num_plan,
                                                                                          ichol::IncompleteCholeskyOptions &options);
 
     template ichol::matrix::CsrMatrix<float> incomplete_cholesky_preconditioner<float>(ichol::matrix::CsrMatrix<double> &A,
-                                                                                       ichol::symbolic::SymbolicPlan &sym_plan,
+                                                                                       const ichol::symbolic::SymbolicPlan &sym_plan,
                                                                                        ichol::numeric::NumericPlan &num_plan,
                                                                                        ichol::IncompleteCholeskyOptions &options);
     template ichol::matrix::CsrMatrix<half_float::half> incomplete_cholesky_preconditioner<half_float::half>(ichol::matrix::CsrMatrix<double> &A,
-                                                                                                             ichol::symbolic::SymbolicPlan &sym_plan,
+                                                                                                             const ichol::symbolic::SymbolicPlan &sym_plan,
                                                                                                              ichol::numeric::NumericPlan &num_plan,
                                                                                                              ichol::IncompleteCholeskyOptions &options);
 

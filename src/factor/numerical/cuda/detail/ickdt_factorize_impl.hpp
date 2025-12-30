@@ -11,7 +11,6 @@
 #include "ichol/options.hpp"
 #include "factor/symbolic/symbolic.hpp"
 #include "factor/numerical/detail/numeric_plan.hpp"
-#include "factor/numerical/cuda/detail/ickdt_factorize_impl.hpp"
 #include "backends/CUDA/util/gmath.cuh"
 #include "backends/CUDA/util/host_cast.hpp"
 #include "backends/CUDA/util/hash.cuh"
@@ -86,8 +85,8 @@ namespace ichol::numeric::cuda
         CUDA_CHECK(cudaMemcpy(d_colRowL, col_row.data(), nnzL * sizeof(int), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_colCsrPosL, col_csr_pos.data(), nnzL * sizeof(int), cudaMemcpyHostToDevice));
 
-        CUDA_CHECK(cudaMalloc(&d_levelRows, n * sizeof(int)));
-        CUDA_CHECK(cudaMemcpy(d_levelRows, level_rows.data(), n * sizeof(int), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMalloc(&d_levelRows, level_rows.size() * sizeof(int)));
+        CUDA_CHECK(cudaMemcpy(d_levelRows, level_rows.data(), level_rows.size() * sizeof(int), cudaMemcpyHostToDevice));
 
         CUDA_CHECK(cudaMalloc(&d_status, sizeof(int)));
         CUDA_CHECK(cudaMalloc(&d_fail_row, sizeof(int)));
@@ -107,11 +106,10 @@ namespace ichol::numeric::cuda
         CUDA_CHECK(cudaDeviceGetAttribute(&maxShmOptin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev));
         CUDA_CHECK(cudaDeviceGetAttribute(&maxShmDefault, cudaDevAttrMaxSharedMemoryPerBlock, dev));
 
-        int maxlvl = (int)level_ptr.size() - 2;
-        for (int lev = 1; lev <= maxlvl; ++lev)
+        for (int lev = 0; lev + 1 < (int)level_ptr.size(); ++lev)
         {
-            int lev_begin = level_ptr[lev - 1];
-            int lev_end = level_ptr[lev];
+            int lev_begin = level_ptr[lev];
+            int lev_end = level_ptr[lev + 1];
             int nrows = lev_end - lev_begin;
             if (nrows <= 0)
                 continue;

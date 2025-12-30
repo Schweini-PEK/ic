@@ -1,3 +1,4 @@
+//src/factor/numerical/prescaling.cpp
 #include "factorize.hpp"
 
 namespace ichol::numeric
@@ -33,9 +34,9 @@ namespace ichol::numeric
                 const double vv = v * v;
 
                 col_sq[j] += vv;
-                if (j != i) // Ad twice for off-diag
+                if (j != i)
                 {
-                    col_sq[j] += vv;
+                    col_sq[i] += vv;
                 }
             }
         }

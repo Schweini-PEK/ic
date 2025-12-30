@@ -1,3 +1,4 @@
+//include/ichol/options.hpp
 #pragma once
 
 #include <string>
@@ -15,7 +16,7 @@ namespace ichol
     {
         None,
         UnitSqrtDiag,
-        UnitRowNorm
+        UnitColNorm
     };
 
     enum class PivotShiftStrategy

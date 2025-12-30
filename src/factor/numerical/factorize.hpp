@@ -35,7 +35,7 @@ namespace ichol::numeric
 
     template <typename T>
     ichol::matrix::CsrMatrix<T> incomplete_cholesky_preconditioner(ichol::matrix::CsrMatrix<double> &A,
-                                                                   ichol::symbolic::SymbolicPlan &sym_plan,
+                                                                   const ichol::symbolic::SymbolicPlan &sym_plan,
                                                                    ichol::numeric::NumericPlan &num_plan,
                                                                    ichol::IncompleteCholeskyOptions &options);
 } // namespace ichol::numeric

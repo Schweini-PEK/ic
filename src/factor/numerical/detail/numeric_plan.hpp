@@ -39,8 +39,6 @@ namespace ichol::numeric
     {
         PrescalingVectors prescaling;
         ICInfo ic_info;
-        ichol::matrix::CsrMatrix<double> A_scaled; // Prescaled matrix
-        // ichol::matrix::CsrMatrix<double> L;        // Final IC factor in double precision
     };
 } // namespace ichol::numeric
 
