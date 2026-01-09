@@ -1,6 +1,5 @@
 #include "symbolic.hpp"
 #include "ichol/half.hpp"
-
 namespace ichol::symbolic
 {
     template <typename T>
@@ -11,16 +10,19 @@ namespace ichol::symbolic
 
         if (options.level_k == -1) // Complete Cholesky
         {
+            // CHOLMOD-aligned etree + colcount
             plan.etree = build_etree<T>(A);
+
+            // Pattern of complete Cholesky using that etree
             plan.factor_pattern = compute_complete_cholesky_pattern<T>(A, plan.etree);
         }
         else // IC(k)
         {
+            // IC(k) pattern doesn't need etree
             plan.factor_pattern = compute_ic_factor_pattern<T>(A, options.level_k);
         }
 
         plan.level_sets = build_level_sets(plan.factor_pattern, options);
-
         return plan;
     }
 
@@ -31,14 +33,13 @@ namespace ichol::symbolic
     {
         SupernodalSymbolicPlan plan;
 
-        // 1. Elimination tree (CSC-native)
+        // 1) Elimination tree (CHOLMOD-aligned, CSC-native)
         plan.etree = build_etree<T>(A);
 
-        // 2. Complete Cholesky pattern (CSC-native)
-        plan.factor_pattern =
-            compute_complete_cholesky_pattern<T>(A, plan.etree);
+        // 2) Complete Cholesky pattern (CSC-native)
+        plan.factor_pattern = compute_complete_cholesky_pattern<T>(A, plan.etree);
 
-        // 3. Detect supernodes
+        // 3) Detect supernodes
         if (sn_options.approximate)
         {
             plan.snodes = detect_supernodes_approx(
@@ -49,29 +50,29 @@ namespace ichol::symbolic
         }
         else
         {
-            plan.snodes = detect_supernodes(
-                plan.factor_pattern,
-                plan.etree
-            );
+            // By default: CHOLMOD super_symbolic behavior (relaxed amalgamation)
+            // If you want to compare fundamental supernodes (relax=off),
+            // compile with -DICHOL_SUPERNODES_FUNDAMENTAL
+        #ifdef ICHOL_SUPERNODES_FUNDAMENTAL
+                    plan.snodes = detect_supernodes_fundamental(plan.etree);
+        #else
+                    plan.snodes = detect_supernodes(plan.factor_pattern, plan.etree);
+        #endif
         }
 
-        // 4. Column -> supernode mapping
-        int ncols = A.num_cols;
+        // 4) Column -> supernode mapping
+        const int ncols = A.num_cols;
         plan.col2snode = build_col2snode(plan.snodes, ncols);
 
-        // 5. Column-level scheduling
-        // reuse existing implementation
+        // 5) Column-level scheduling (reuse existing implementation)
         SymbolicOptions dummy;
-        auto col_level_sets =
-            build_level_sets(plan.factor_pattern, dummy);
+        auto col_level_sets = build_level_sets(plan.factor_pattern, dummy);
 
-        // 6. Supernode-level scheduling
-        plan.snode_level_sets =
-            build_snode_level_sets(col_level_sets, plan.snodes);
+        // 6) Supernode-level scheduling
+        plan.snode_level_sets = build_snode_level_sets(col_level_sets, plan.snodes);
 
         return plan;
     }
-
 
     template SymbolicPlan ic_analyze<double>(const ichol::matrix::CsrMatrix<double> &A,
                                              const SymbolicOptions &options);
@@ -79,4 +80,4 @@ namespace ichol::symbolic
                                             const SymbolicOptions &options);
     template SymbolicPlan ic_analyze<half_float::half>(const ichol::matrix::CsrMatrix<half_float::half> &A,
                                                        const SymbolicOptions &options);
-}
+} // namespace ichol::symbolic

@@ -14,6 +14,8 @@ namespace ichol::symbolic
     struct ETree
     {
         std::vector<int> parent; // size n
+        std::vector<int> colcount;  // size n, CHOLMOD-style simplicial column counts
+
     };
 
     struct LevelSets

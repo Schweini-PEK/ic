@@ -38,11 +38,9 @@ namespace ichol::symbolic
 
             for (int p = A.col_ptr[k]; p < A.col_ptr[k + 1]; ++p) {
                 int i = A.row_ind[p];
-                if (i < k) continue;
-                if (marker[i] != k) {
-                    marker[i] = k;
-                    stack.push_back(i);
-                }
+                if (i == k) continue;
+                int r = std::max(i, k); // 确保落到 L 的下三角（行>=列）
+                if (marker[r] != k) { marker[r] = k; stack.push_back(r); }
             }
 
             // propagate up the elimination tree: 对 stack 中的每个节点加入其未访问过的祖先
@@ -56,7 +54,12 @@ namespace ichol::symbolic
                 }
             }
 
-            cols[k].assign(stack.begin(), stack.end());
+            // CHOLMOD 里列模式通常是递增且唯一的（至少在符号阶段会保证可比性）
+            // 这里统一：只保留 >=k（下三角 L 的行），排序+去重
+            std::sort(stack.begin(), stack.end());
+            stack.erase(std::unique(stack.begin(), stack.end()), stack.end());
+            auto it = std::lower_bound(stack.begin(), stack.end(), k);
+            cols[k].assign(it, stack.end());
 
         }
 

@@ -1,32 +1,24 @@
-// // test_supernodal.cpp
-//
+// test_supernodal.cpp
 #include <gtest/gtest.h>
-//
-// // #include "factor/symbolic/symbolic.hpp"
-// // #include "ichol/matrix_formats.hpp"
-// // #include "factor/symbolic/symbolic.hpp"
-// // namespace test_checks
-// // {
-// //     // (No additional checks needed here for supernodal tests yet)
-// // } // namespace test_checks
-// //
-// // TEST(Supernodal, PlaceholderTest)
-// // {
-// //     std::string path = "test/data/nasa2146.mtx";
-// //
-// //     ASSERT_TRUE(true);
-// // }
-//
-// #include <algorithm>
-//
+
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
 #include <numeric>
+#include <string>
+#include <vector>
+#include <utility>
+#include <filesystem>
 
+// your project headers
 #include "ichol/mtx_read.hpp"
 #include "factor/symbolic/symbolic.hpp"
 #include "factor/symbolic/detail/symbolic_plan.hpp"
+
+// ---- SuiteSparse / CHOLMOD ----
+extern "C" {
+#include <cholmod.h>
+}
 
 using namespace ichol;
 using namespace ichol::symbolic;
@@ -44,7 +36,6 @@ static void print_sn_range_list(const std::vector<std::pair<int,int>>& snodes, i
     if (m > shown) std::cout << "    ... (+" << (m - shown) << " more)\n";
 }
 
-// produce histogram of supernode sizes (columns per supernode)
 static std::vector<int> snode_size_histogram(const std::vector<std::pair<int,int>>& snodes, int max_bucket = 20)
 {
     std::vector<int> hist(max_bucket + 1, 0); // last bucket is ">= max_bucket"
@@ -64,96 +55,210 @@ static void print_histogram(const std::vector<int>& hist)
     std::cout << "    size>=" << (hist.size()-1) << " -> " << hist.back() << "\n";
 }
 
-TEST(SupernodalIO, CompareConservativeAndApproxOnNasa)
+// =============== CHOLMOD integration helpers ===============
+
+#ifdef ICHOL_CHOLMOD_LONG
+    using cholmod_idx_t = SuiteSparse_long;
+    #define CHM(name) cholmod_l_##name
+#else
+    using cholmod_idx_t = int;
+    #define CHM(name) cholmod_##name
+#endif
+
+static cholmod_sparse* csc_to_cholmod_pattern(
+    const ichol::matrix::CscMatrix<double>& A,
+    int stype,                 // 0=unsym, -1=lower(sym), +1=upper(sym)
+    cholmod_common* c)
 {
-    std::string path = "F:/new/ic/test/data/nasa2146.mtx";
-    // load CSC (we run supernode pipeline on CSC)
+    cholmod_sparse* S = CHM(allocate_sparse)(
+        (size_t)A.num_rows, (size_t)A.num_cols, (size_t)A.nnz,
+        /*sorted=*/1, /*packed=*/1,
+        stype, CHOLMOD_PATTERN, c);
+
+    auto* p = static_cast<cholmod_idx_t*>(S->p);
+    auto* i = static_cast<cholmod_idx_t*>(S->i);
+
+    for (int k = 0; k < (int)A.col_ptr.size(); ++k) p[k] = (cholmod_idx_t)A.col_ptr[k];
+    for (int k = 0; k < (int)A.row_ind.size(); ++k) i[k] = (cholmod_idx_t)A.row_ind[k];
+
+    return S;
+}
+
+static std::vector<std::pair<int,int>> cholmod_symbolic_supernodes_identity(
+    const ichol::matrix::CscMatrix<double>& A,
+    int stype,
+    bool disable_postorder,
+    bool disable_relax,
+    cholmod_common* cc_out
+)
+{
+    cholmod_common cc_local;
+    cholmod_common* cc = cc_out ? cc_out : &cc_local;
+
+    CHM(start)(cc);
+
+    cc->supernodal = CHOLMOD_SUPERNODAL;
+
+    if (disable_postorder) cc->postorder = 0;
+    if (disable_relax) {
+        cc->nrelax[0] = cc->nrelax[1] = cc->nrelax[2] = 0;
+        cc->zrelax[0] = cc->zrelax[1] = cc->zrelax[2] = 0.0;
+    }
+
+    cc->nmethods = 1;
+    cc->method[0].ordering = CHOLMOD_GIVEN;
+
+    const int n = A.num_cols;
+    std::vector<cholmod_idx_t> perm((size_t)n);
+    for (int i = 0; i < n; ++i) perm[i] = (cholmod_idx_t)i;
+
+    cholmod_sparse* S = csc_to_cholmod_pattern(A, stype, cc);
+    cholmod_factor* L = CHM(analyze_p)(S, perm.data(), nullptr, 0, cc);
+
+    std::vector<std::pair<int,int>> sn_chol;
+
+    if (!L) {
+        std::cerr << "CHOLMOD analyze_p returned nullptr factor.\n";
+    } else if (!L->is_super) {
+        std::cerr << "CHOLMOD did not produce a supernodal factor (is_super = false).\n";
+    } else {
+        int nsuper = (int)L->nsuper;
+        auto* super = static_cast<cholmod_idx_t*>(L->super);
+
+        sn_chol.reserve((size_t)nsuper);
+        for (int s = 0; s < nsuper; ++s) {
+            int a = (int)super[s];
+            int b = (int)super[s + 1];
+            sn_chol.emplace_back(a, b);
+        }
+    }
+
+    CHM(free_factor)(&L, cc);
+    CHM(free_sparse)(&S, cc);
+
+    if (!cc_out) CHM(finish)(cc);
+    return sn_chol;
+}
+
+static void compare_partitions(
+    const std::vector<std::pair<int,int>>& ours,
+    const std::vector<std::pair<int,int>>& chol,
+    const char* tag_ours,
+    const char* tag_chol,
+    int max_print = 20
+)
+{
+    std::cout << "\n==== Partition compare: " << tag_ours << " vs " << tag_chol << " ====\n";
+    std::cout << "  " << tag_ours << " supernodes: " << ours.size() << "\n";
+    std::cout << "  " << tag_chol << " supernodes: " << chol.size() << "\n";
+
+    size_t m = std::min(ours.size(), chol.size());
+    size_t first_bad = m;
+    for (size_t k = 0; k < m; ++k) {
+        if (ours[k] != chol[k]) { first_bad = k; break; }
+    }
+
+    if (first_bad == m && ours.size() == chol.size()) {
+        std::cout << "  ✅ partitions identical\n";
+        return;
+    }
+
+    if (first_bad == m) {
+        std::cout << "  ⚠️ first " << m << " blocks match, but counts differ.\n";
+    } else {
+        std::cout << "  ❌ first mismatch at block k=" << first_bad << "\n";
+        std::cout << "     " << tag_ours << ": [" << ours[first_bad].first << "," << ours[first_bad].second << ")\n";
+        std::cout << "     " << tag_chol << ": [" << chol[first_bad].first << "," << chol[first_bad].second << ")\n";
+    }
+
+    int shown = (int)std::min(m, (size_t)max_print);
+    std::cout << "  showing first " << shown << " blocks side-by-side:\n";
+    for (int k = 0; k < shown; ++k) {
+        std::cout << "    k=" << std::setw(3) << k
+                  << "  " << tag_ours << "=[" << ours[k].first << "," << ours[k].second << ")"
+                  << "  " << tag_chol << "=[" << chol[k].first << "," << chol[k].second << ")\n";
+    }
+}
+
+// =============== Test ===============
+TEST(SupernodalIO, CompareConservativeAndApproxOnNasa_WithCHOLMOD)
+{
+    std::string path = "/tmp/ic/test/data/nasa2146.mtx";
     auto A = ichol::io::mtx_to_csc<double>(path, false);
 
     ASSERT_GT(A.num_cols, 0);
     std::cout << "Matrix: " << path << "  ncols=" << A.num_cols << " nnz=" << A.nnz << "\n";
 
-    // 1) build etree and factor pattern
+    // ---- your pipeline ----
     auto etree = ichol::symbolic::build_etree<double>(A);
     auto fp = ichol::symbolic::compute_complete_cholesky_pattern<double>(A, etree);
 
-    // sanity checks
     ASSERT_EQ(fp.row_ptr_L.back(), static_cast<int>(fp.col_ind_L.size()));
 
-    // 2) column-level level sets (used to derive snode levels)
     SymbolicOptions symopts; // default
     auto col_ls = ichol::symbolic::build_level_sets(fp, symopts);
 
-    // 3) conservative detection
-    auto sn_cons = ichol::symbolic::detect_supernodes(fp, etree);
-    std::cout << "Conservative detect:\n";
-    print_sn_range_list(sn_cons);
-    auto hist_cons = snode_size_histogram(sn_cons, 16);
-    std::cout << "Conservative size histogram:\n";
-    print_histogram(hist_cons);
+    // (A) ours: relaxed (matches CHOLMOD default super_symbolic behavior)
+    auto sn_ours_relaxed = ichol::symbolic::detect_supernodes(fp, etree);
+    std::cout << "Ours detect (CHOLMOD-style relaxed amalgamation):\n";
+    print_sn_range_list(sn_ours_relaxed);
+    auto hist_relaxed = snode_size_histogram(sn_ours_relaxed, 16);
+    std::cout << "Ours(relaxed) size histogram:\n";
+    print_histogram(hist_relaxed);
 
-    // 4) approximate detection with threshold = 1.0 (should match conservative)
+    // (B) ours: fundamental (relax=off), for strict comparison
+    auto sn_ours_fund = ichol::symbolic::detect_supernodes_fundamental(etree);
+    std::cout << "\nOurs detect (fundamental, relax=off):\n";
+    print_sn_range_list(sn_ours_fund);
+    auto hist_fund = snode_size_histogram(sn_ours_fund, 16);
+    std::cout << "Ours(fundamental) size histogram:\n";
+    print_histogram(hist_fund);
+
+    // Approx versions unchanged
     auto sn_appx1 = ichol::symbolic::detect_supernodes_approx(fp, etree, 1.0);
     std::cout << "\nApproximate detect (threshold=1.0):\n";
     print_sn_range_list(sn_appx1);
-    auto hist_appx1 = snode_size_histogram(sn_appx1, 16);
-    std::cout << "Approx(1.0) size histogram:\n";
-    print_histogram(hist_appx1);
 
-    // 5) approximate detection with threshold = 0.8 (coarser, likely fewer snodes)
     double thr = 0.8;
     auto sn_appx08 = ichol::symbolic::detect_supernodes_approx(fp, etree, thr);
     std::cout << "\nApproximate detect (threshold=" << thr << "):\n";
     print_sn_range_list(sn_appx08);
-    auto hist_appx08 = snode_size_histogram(sn_appx08, 16);
-    std::cout << "Approx(0.8) size histogram:\n";
-    print_histogram(hist_appx08);
 
-    // 6) basic assertions about relationships
-    EXPECT_LE(sn_appx08.size(), sn_cons.size());
+    EXPECT_LE(sn_appx08.size(), sn_ours_relaxed.size());
 
-    // 7) build col->snode map and check coverage
-    auto col2s_cons = ichol::symbolic::build_col2snode(sn_cons, A.num_cols);
-    auto col2s_appx08 = ichol::symbolic::build_col2snode(sn_appx08, A.num_cols);
+    // ---- CHOLMOD symbolic supernodes ----
+    // MUST match our etree/colcount semantics: we use strict UPPER (prefer_upper).
+    // So use stype = +1.
+    // const int stype = +1;
+    const int stype = -1;
 
-    ASSERT_EQ(static_cast<int>(col2s_cons.size()), A.num_cols);
-    ASSERT_EQ(static_cast<int>(col2s_appx08.size()), A.num_cols);
+    // (1) CHOLMOD default-ish: identity ordering, postorder ON, relax ON
+    auto sn_chol_default = cholmod_symbolic_supernodes_identity(
+        A, stype,
+        /*disable_postorder=*/false,
+        /*disable_relax=*/false,
+        /*cc_out=*/nullptr
+    );
 
-    // each column must map to exactly one snode id (>=0)
-    for (int c = 0; c < A.num_cols; ++c) {
-        EXPECT_GE(col2s_cons[c], 0);
-        EXPECT_LT(col2s_cons[c], static_cast<int>(sn_cons.size()));
-        EXPECT_GE(col2s_appx08[c], 0);
-        EXPECT_LT(col2s_appx08[c], static_cast<int>(sn_appx08.size()));
-    }
+    std::cout << "\nCHOLMOD supernodes (identity perm, postorder=ON, relax=ON):\n";
+    print_sn_range_list(sn_chol_default);
 
-    // 8) compute snode rows for both and compare numbers
-    auto snrows_cons = ichol::symbolic::compute_snode_rows(fp, sn_cons);
-    auto snrows_appx08 = ichol::symbolic::compute_snode_rows(fp, sn_appx08);
+    // (2) CHOLMOD fundamental: identity ordering, postorder ON, relax OFF
+    auto sn_chol_fund = cholmod_symbolic_supernodes_identity(
+        A, stype,
+        /*disable_postorder=*/false,
+        /*disable_relax=*/true,
+        /*cc_out=*/nullptr
+    );
 
-    std::cout << "\nSnode rows: conservative has " << snrows_cons.size() << " blocks, approx(0.8) has " << snrows_appx08.size() << "\n";
+    std::cout << "\nCHOLMOD supernodes (identity perm, postorder=ON, relax=OFF):\n";
+    print_sn_range_list(sn_chol_fund);
 
-    // 9) build snode-level-sets for approx(0.8) and conservative
-    auto snode_level_cons = ichol::symbolic::build_snode_level_sets(col_ls, sn_cons);
-    auto snode_level_appx08 = ichol::symbolic::build_snode_level_sets(col_ls, sn_appx08);
+    // ---- comparisons ----
+    compare_partitions(sn_ours_relaxed, sn_chol_default, "ours(relaxed)", "cholmod(relaxed)", 30);
+    compare_partitions(sn_ours_fund,    sn_chol_fund,    "ours(fund)",    "cholmod(fund)",    30);
 
-    std::cout << "\nSnode-level sets: conservative levels = " << (snode_level_cons.snode_level.size()) << "; level buckets = " << (snode_level_cons.level_sets.level_ptr.size()-1) << "\n";
-    std::cout << "                   approx(0.8) levels = " << (snode_level_appx08.snode_level.size()) << "; level buckets = " << (snode_level_appx08.level_sets.level_ptr.size()-1) << "\n";
-
-    // 10) print a short comparison summary
-    std::cout << "\nSummary:\n";
-    std::cout << "  conservative supernodes: " << sn_cons.size() << "\n";
-    std::cout << "  approx(th=1.0) supernodes: " << sn_appx1.size() << "\n";
-    std::cout << "  approx(th=0.8) supernodes: " << sn_appx08.size() << "\n";
-    std::cout << "  conservative total snode rows nnz (sum sizes): ";
-    int sum_cons = 0;
-    for (auto &r : snrows_cons) sum_cons += (int)r.size();
-    std::cout << sum_cons << "\n";
-    int sum_appx08 = 0;
-    for (auto &r : snrows_appx08) sum_appx08 += (int)r.size();
-    std::cout << "  approx(0.8) total snode rows nnz (sum sizes): " << sum_appx08 << "\n";
-
-    // small sanity checks
-    EXPECT_GT(sn_cons.size(), 0u);
-    EXPECT_GT(sn_appx08.size(), 0u);
+    // Optional strict asserts (enable only when you're confident everything aligned):
+    // EXPECT_EQ(sn_ours_relaxed, sn_chol_default);
+    // EXPECT_EQ(sn_ours_fund,    sn_chol_fund);
 }

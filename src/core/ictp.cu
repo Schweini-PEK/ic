@@ -630,7 +630,17 @@ static size_t shared_bytes_needed()
 
     return off;
 }
-
+template<typename T>
+__host__ __device__ inline T get_zero_value() {
+    // 如果是CUDA __half类型，用专用转换函数
+    if constexpr (std::is_same_v<T, __half>) {
+        return __float2half_rn(0.0f);  // RN=舍入到最近值，CUDA官方推荐
+    }
+    // 普通浮点类型（float/double），直接返回0.0f/0.0
+    else {
+        return T(0.0f);
+    }
+}
 template <typename T>
 static bool ictp_rowwise_gpu_dynamic(
     const ichol::matrix::CsrMatrix<T> &Ahost,
@@ -639,6 +649,7 @@ static bool ictp_rowwise_gpu_dynamic(
     ichol::matrix::CsrMatrix<T> &Lhost_out,
     ICTP_Factor_Info *info)
 {
+
     using G = typename gpu_type<T>::type;
 
     const int n = Ahost.num_rows;
@@ -791,7 +802,7 @@ static bool ictp_rowwise_gpu_dynamic(
         if (info)
         {
             int fr = -1;
-            G fp = (G)0;
+            G fp = get_zero_value<G>();
             CUDA_CHECK(cudaMemcpy(&fr, d_fail_row, sizeof(int), cudaMemcpyDeviceToHost));
             CUDA_CHECK(cudaMemcpy(&fp, d_fail_pivot, sizeof(G), cudaMemcpyDeviceToHost));
 

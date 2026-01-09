@@ -150,7 +150,17 @@ namespace ichol
     {
         static constexpr double value = 1e-300;
     };
-
+    template<typename T>
+    __host__ __device__ inline T get_zero_value() {
+        // 如果是CUDA __half类型，用专用转换函数
+        if constexpr (std::is_same_v<T, __half>) {
+            return __float2half_rn(0.0f);  // RN=舍入到最近值，CUDA官方推荐
+        }
+        // 普通浮点类型（float/double），直接返回0.0f/0.0
+        else {
+            return T(0.0f);
+        }
+    }
     // ------------------------
     // Host conversions (no if constexpr)
     // ------------------------
@@ -196,7 +206,7 @@ namespace ichol
         }
         if (lo < row_ptr[row + 1] && col_ind[lo] == col)
             return val[lo];
-        return (G)0;
+        return get_zero_value<G>();
     }
 
     // ------------------------
@@ -375,7 +385,7 @@ namespace ichol
             // enforce lower+diag only
             if (!(0 <= j && j <= i))
             {
-                new_v[p] = (G)0;
+                new_v[p] = get_zero_value<G>();
                 continue;
             }
 
@@ -514,7 +524,7 @@ namespace ichol
         {
             int j = L_ci[p];
             if (j > i)
-                L_new[p] = (G)0;
+                L_new[p] = get_zero_value<G>();
             else
                 L_new[p] = L_old[p];
         }
@@ -578,7 +588,7 @@ namespace ichol
             }
             if (diagj_pos < 0)
             {
-                L_new[p] = (G)0;
+                L_new[p] = get_zero_value<G>();
                 continue;
             }
 

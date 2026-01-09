@@ -30,3 +30,4 @@ add_executable(ict_pcg
 )
 
 target_link_libraries(ict_pcg PRIVATE ichol)
+

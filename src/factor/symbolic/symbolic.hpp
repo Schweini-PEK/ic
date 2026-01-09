@@ -27,9 +27,14 @@ namespace ichol::symbolic
     ichol::symbolic::FactorPattern compute_ic_factor_pattern(const ichol::matrix::CsrMatrix<T> &A,
                                                              int level_k);
 
-    // declaration to add
+    // CHOLMOD-style supernode detection
+    // - detect_supernodes: relaxed amalgamation (matches cholmod_super_symbolic default)
+    // - detect_supernodes_fundamental: relax=off (debug / comparison)
     std::vector<std::pair<int,int>> detect_supernodes(const FactorPattern &pattern, const ETree &etree);
-    std::vector<std::pair<int,int>> detect_supernodes_approx(const FactorPattern &pattern, const ETree &etree, double overlap_threshold);
+    std::vector<std::pair<int,int>> detect_supernodes_fundamental(const ETree &etree);
+    std::vector<std::pair<int, int>> detect_supernodes_approx(const FactorPattern &pattern,
+                                                           const ETree & /*etree*/,
+                                                           double overlap_threshold);
     std::vector<int> build_col2snode(const std::vector<std::pair<int,int>>& snodes, int ncols);
     std::vector<std::vector<int>> compute_snode_rows(const FactorPattern& pattern, const std::vector<std::pair<int,int>>& snodes);
 
