@@ -56,6 +56,7 @@ inline std::vector<int> build_etree(const ichol::matrix::CsrMatrix<double> &A)
     return Parent;
 }
 
+
 static inline std::vector<std::vector<int>>
 build_col_neighbors_from_lower(const ichol::matrix::CsrMatrix<double> &A)
 {

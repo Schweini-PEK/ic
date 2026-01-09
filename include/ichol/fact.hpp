@@ -4,7 +4,7 @@
 
 #include <cmath>
 #include <iostream>
-
+#include <string>
 #include "matrix_formats.hpp"
 #include "symbolic.hpp"
 
