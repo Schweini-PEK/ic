@@ -5,4 +5,5 @@ archive/
 build/
 cuda-keyring_1.1-1_all.deb*
 .idea/
+python/.idea/
 test/data/
