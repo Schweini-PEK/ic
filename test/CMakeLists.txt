@@ -19,6 +19,7 @@ function(add_unit_test name)
             ${PROJECT_SOURCE_DIR}/src
     )
 
+
     add_test(NAME ${name} COMMAND ${name})
 
     # --- add CHOLMOD to tests ---

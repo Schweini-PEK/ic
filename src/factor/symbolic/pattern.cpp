@@ -1,3 +1,4 @@
+#include <cassert>
 #include <deque>
 
 #include "symbolic.hpp"
@@ -14,68 +15,138 @@ namespace ichol::symbolic
         return factor_pattern;
     }
 
-    // compute_complete_cholesky_pattern - CSC native implementation
-    // Returns FactorPattern with col_ptr (n+1) and row_idx (total nnz of factor)
+    static inline void sort_unique(std::vector<int> &v)
+    {
+        std::sort(v.begin(), v.end());
+        v.erase(std::unique(v.begin(), v.end()), v.end());
+    }
+
+    // merge: a := union(a, b\{skip}), both a and b sorted unique, result sorted unique
+    static inline void union_sorted_skip(std::vector<int> &a,
+                                         const std::vector<int> &b,
+                                         int skip)
+    {
+        std::vector<int> out;
+        out.reserve(a.size() + b.size());
+
+        size_t i = 0, j = 0;
+        while (i < a.size() || j < b.size())
+        {
+            int va;
+            if (j >= b.size() || (i < a.size() && a[i] < b[j]))
+            {
+                va = a[i++];
+            }
+            else if (i >= a.size() || (j < b.size() && b[j] < a[i]))
+            {
+                va = b[j++];
+            }
+            else
+            {
+                va = a[i];
+                ++i;
+                ++j;
+            }
+
+            if (va == skip) continue;
+            if (out.empty() || out.back() != va) out.push_back(va);
+        }
+
+        a.swap(out);
+    }
+
+    // compute_complete_cholesky_pattern - CSC implementation (CHOLMOD-style symbolic)
+    // Build exact simplicial column pattern of L for A (symmetric pattern),
+    // using elimination tree and child-to-parent merge:
+    //   L_k := A_k ∪ (⋃_{j: parent[j]=k} (L_j \ {j})) , then keep only rows >= k.
     template <typename T>
     FactorPattern compute_complete_cholesky_pattern(
         const ichol::matrix::CscMatrix<T> &A,
         const ichol::symbolic::ETree &etree)
     {
         const int n = A.num_cols;
+        assert((int)etree.parent.size() == n);
 
-        // per-column discovered nodes
-        std::vector<std::vector<int>> cols(n);
-        std::vector<int> marker(n, -1);   // marker[v] == k 表示 v 已被列 k 访问
-        std::vector<int> stack; stack.reserve(n);
-
-        for (int k = 0; k < n; ++k) {
-            stack.clear();
-
-            if (marker[k] != k) {
-                marker[k] = k;
-                stack.push_back(k);
-            }
-
-            for (int p = A.col_ptr[k]; p < A.col_ptr[k + 1]; ++p) {
+        // ------------------------------------------------------------
+        // Build lower-triangular pattern of A as adjacency-by-column:
+        // Acol[c] contains rows r >= c where A(r,c) is nonzero (excluding diag handled later).
+        // We map any (i,j) to (min(i,j), max(i,j)) so pattern becomes symmetric.
+        // ------------------------------------------------------------
+        std::vector<std::vector<int>> Acol(n);
+        for (int j = 0; j < n; ++j)
+        {
+            for (int p = A.col_ptr[j]; p < A.col_ptr[j + 1]; ++p)
+            {
                 int i = A.row_ind[p];
-                if (i == k) continue;
-                int r = std::max(i, k); // 确保落到 L 的下三角（行>=列）
-                if (marker[r] != k) { marker[r] = k; stack.push_back(r); }
+                if (i == j) continue;
+                int c = (i < j) ? i : j;
+                int r = (i < j) ? j : i;
+                if (r == c) continue;
+                Acol[c].push_back(r);
             }
+        }
+        for (int c = 0; c < n; ++c) sort_unique(Acol[c]);
 
-            // propagate up the elimination tree: 对 stack 中的每个节点加入其未访问过的祖先
-            for (size_t idx = 0; idx < stack.size(); ++idx) {
-                int v = stack[idx];
-                int par = etree.parent[v];
-                while (par != -1 && marker[par] != k) {
-                    marker[par] = k;
-                    stack.push_back(par);
-                    par = etree.parent[par];
-                }
-            }
-
-            // CHOLMOD 里列模式通常是递增且唯一的（至少在符号阶段会保证可比性）
-            // 这里统一：只保留 >=k（下三角 L 的行），排序+去重
-            std::sort(stack.begin(), stack.end());
-            stack.erase(std::unique(stack.begin(), stack.end()), stack.end());
-            auto it = std::lower_bound(stack.begin(), stack.end(), k);
-            cols[k].assign(it, stack.end());
-
+        // ------------------------------------------------------------
+        // children lists from etree.parent
+        // ------------------------------------------------------------
+        std::vector<std::vector<int>> children(n);
+        for (int j = 0; j < n; ++j)
+        {
+            int p = etree.parent[j];
+            if (p >= 0) children[p].push_back(j);
         }
 
+        // ------------------------------------------------------------
+        // Build L column patterns by increasing k (children always < parent in etree)
+        // ------------------------------------------------------------
+        std::vector<std::vector<int>> Lcol(n);
+        for (int k = 0; k < n; ++k)
+        {
+            std::vector<int> rows = Acol[k];
+            rows.push_back(k);
+            sort_unique(rows);
+
+            // merge child patterns into parent, skipping child pivot index itself
+            for (int child : children[k])
+            {
+                // child columns should be ready since child < k in elim tree
+                union_sorted_skip(rows, Lcol[child], child);
+            }
+
+            // keep only lower triangle (rows >= k)
+            auto it = std::lower_bound(rows.begin(), rows.end(), k);
+            if (it != rows.begin()) rows.erase(rows.begin(), it);
+
+            // ensure diagonal exists
+            if (rows.empty() || rows.front() != k)
+            {
+                rows.insert(rows.begin(), k);
+            }
+
+            Lcol[k].swap(rows);
+        }
+
+        // ------------------------------------------------------------
+        // Pack into FactorPattern (CSC of L pattern)
+        // ------------------------------------------------------------
         FactorPattern pattern;
         pattern.row_ptr_L.resize(n + 1);
         pattern.row_ptr_L[0] = 0;
-        for (int k = 0; k < n; ++k) {
-            pattern.row_ptr_L[k + 1] = pattern.row_ptr_L[k] + static_cast<int>(cols[k].size());
+        for (int k = 0; k < n; ++k)
+        {
+            pattern.row_ptr_L[k + 1] =
+                pattern.row_ptr_L[k] + (int)Lcol[k].size();
         }
 
-        const int total_nnz = pattern.row_ptr_L[n];
-        pattern.col_ind_L.resize(total_nnz);
-        for (int k = 0; k < n; ++k) {
-            const int base = pattern.row_ptr_L[k];
-            for (size_t t = 0; t < cols[k].size(); ++t) {
-                pattern.col_ind_L[base + static_cast<int>(t)] = cols[k][t];
+        const int nnzL = pattern.row_ptr_L[n];
+        pattern.col_ind_L.resize(nnzL);
+        for (int k = 0; k < n; ++k)
+        {
+            int base = pattern.row_ptr_L[k];
+            for (size_t t = 0; t < Lcol[k].size(); ++t)
+            {
+                pattern.col_ind_L[base + (int)t] = Lcol[k][t];
             }
         }
 
