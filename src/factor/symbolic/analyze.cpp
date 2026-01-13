@@ -74,8 +74,7 @@ namespace ichol::symbolic
         plan.col2snode = build_col2snode(plan.snodes, ncols);
 
         // 5) Column-level scheduling (reuse existing implementation)
-        SymbolicOptions dummy;
-        auto col_level_sets = build_level_sets(plan.factor_pattern, dummy);
+        auto col_level_sets = build_level_sets(plan.factor_pattern);
 
         // 6) Supernode-level scheduling
         plan.snode_level_sets = build_snode_level_sets(col_level_sets, plan.snodes);

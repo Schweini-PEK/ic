@@ -20,12 +20,31 @@ target_compile_options(ichol PRIVATE
 find_package(CUDAToolkit REQUIRED)
 find_package(PkgConfig REQUIRED)
 
-pkg_check_modules(AMD REQUIRED IMPORTED_TARGET amd)
-pkg_check_modules(SUITESPARSECONFIG REQUIRED IMPORTED_TARGET suitesparseconfig)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(CHOLMOD REQUIRED IMPORTED_TARGET CHOLMOD)
+
+# Prefer the AMD that matches the loaded SuiteSparse module
+find_library(AMD_LIB amd
+    HINTS "$ENV{EBROOTSUITESPARSE}/lib64" "$ENV{EBROOTSUITESPARSE}/lib"
+    REQUIRED
+)
 
 target_link_libraries(ichol PUBLIC
-    PkgConfig::AMD
-    PkgConfig::SUITESPARSECONFIG
+    PkgConfig::CHOLMOD
+    ${AMD_LIB}
+)
+
+find_library(SPQR_CFG_LIB suitesparseconfig
+    HINTS "$ENV{EBROOTSUITESPARSE}/lib64" "$ENV{EBROOTSUITESPARSE}/lib"
+    REQUIRED
+)
+
+target_link_libraries(ichol PUBLIC
+    ${SPQR_CFG_LIB}
+)
+
+target_link_libraries(ichol PUBLIC
+    PkgConfig::CHOLMOD
 )
 
 target_link_libraries(ichol PUBLIC

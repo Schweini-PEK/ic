@@ -195,8 +195,7 @@ TEST(SupernodalIO, CompareConservativeAndApproxOnNasa_WithCHOLMOD)
 
     ASSERT_EQ(fp.row_ptr_L.back(), static_cast<int>(fp.col_ind_L.size()));
 
-    SymbolicOptions symopts; // default
-    auto col_ls = ichol::symbolic::build_level_sets(fp, symopts);
+    auto col_ls = ichol::symbolic::build_level_sets(fp);
 
     // (A) ours: relaxed (matches CHOLMOD default super_symbolic behavior)
     auto sn_ours_relaxed = ichol::symbolic::detect_supernodes(fp, etree);
