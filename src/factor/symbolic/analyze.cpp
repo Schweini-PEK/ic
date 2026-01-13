@@ -30,7 +30,7 @@ namespace ichol::symbolic
             plan.factor_pattern = compute_ic_factor_pattern<T>(A, options.level_k);
         }
 
-        plan.level_sets = build_level_sets(plan.factor_pattern, options);
+        plan.level_sets = build_level_sets(plan.factor_pattern);
 
         return plan;
     }

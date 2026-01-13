@@ -46,10 +46,13 @@ namespace ichol::symbolic
                                                              int level_k);
 
     /**
-     * Build level scheduling given the sparsity pattern of L.
+     * Build 0-based level scheduling given the sparsity pattern of L.
+     * 
+     * If a row has no dependencies, it is assigned to level 0.
+     * @param LevelSets.level_ptr gives the start indices of each level
+     * @param LevelSets.levels holds the row indices grouped contiguously by levels
      */
-    ichol::symbolic::LevelSets build_level_sets(const ichol::symbolic::FactorPattern &factor_pattern,
-                                                const ichol::SymbolicOptions &options);
+    ichol::symbolic::LevelSets build_level_sets(const ichol::symbolic::FactorPattern &factor_pattern);
 
     /**
      * Perform symbolic analysis for IC or IC(k) factorization.

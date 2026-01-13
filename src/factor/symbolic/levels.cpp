@@ -1,6 +1,5 @@
 #include "detail/symbolic_plan.hpp"
 #include "ichol/matrix_formats.hpp"
-#include "ichol/options.hpp"
 #include "ichol/half.hpp"
 
 #include <numeric>
@@ -9,8 +8,7 @@
 
 namespace ichol::symbolic
 {
-    ichol::symbolic::LevelSets build_level_sets(const ichol::symbolic::FactorPattern &factor_pattern,
-                                                const ichol::SymbolicOptions &options)
+    ichol::symbolic::LevelSets build_level_sets(const ichol::symbolic::FactorPattern &factor_pattern)
     {
         int n = (int)factor_pattern.row_ptr_L.size() - 1;
         int max_level = -1;

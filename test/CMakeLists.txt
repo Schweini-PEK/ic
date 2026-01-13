@@ -1,7 +1,11 @@
 find_package(GTest REQUIRED)
 
 function(add_unit_test name)
-    add_executable(${name} unit/${name}.cpp)
+    if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/unit/${name}.cu")
+        add_executable(${name} "${CMAKE_CURRENT_LIST_DIR}/unit/${name}.cu")
+    else()
+        add_executable(${name} "${CMAKE_CURRENT_LIST_DIR}/unit/${name}.cpp")
+    endif()
 
     target_link_libraries(${name}
         PRIVATE
@@ -25,3 +29,4 @@ add_unit_test(test_cg)
 add_unit_test(test_ic)
 add_unit_test(test_symbolic)
 add_unit_test(test_supernodal)
+add_unit_test(test_sptrsv)

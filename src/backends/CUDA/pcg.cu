@@ -294,9 +294,9 @@ namespace ichol
         cublasHandle_t cublasHandle = nullptr;
         CUBLAS_CHECK(cublasCreate(&cublasHandle));
 
-        int n = static_cast<int>(h_csrRowPtrA.size()) - 1;
-        int nnzA = static_cast<int>(h_valA.size());
-        int nnzL = static_cast<int>(h_valL.size());
+        const int n = static_cast<int>(h_csrRowPtrA.size()) - 1;
+        const int nnzA = static_cast<int>(h_valA.size());
+        const int nnzL = static_cast<int>(h_valL.size());
 
         std::vector<double> h_diagA(n, 0.0);
         // for (int i = 0; i < n; ++i)
@@ -774,7 +774,6 @@ namespace ichol
         CUSPARSE_CHECK(cusparseDestroy(cusparseHandle));
     }
 
-    // Explicit template instantiations for the types we support
     template void icPreconditionedCG_GPU<double>(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
