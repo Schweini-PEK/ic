@@ -15,6 +15,9 @@ namespace ichol::io
 
     template <typename T>
     ichol::matrix::CscMatrix<T> mtx_to_csc(const std::string &path, bool verify);
+
+    template <typename T>
+    ichol::matrix::CsrMatrix<T> gen_laplacian_csr(int n);
 } // namespace ichol::io
 
 #endif // ICHOL_MTX_READ_HPP
