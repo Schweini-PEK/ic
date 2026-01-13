@@ -14,6 +14,74 @@ namespace ichol::symbolic
         return factor_pattern;
     }
 
+    // compute_complete_cholesky_pattern - CSC native implementation
+    // Returns FactorPattern with col_ptr (n+1) and row_idx (total nnz of factor)
+    template <typename T>
+    FactorPattern compute_complete_cholesky_pattern(
+        const ichol::matrix::CscMatrix<T> &A,
+        const ichol::symbolic::ETree &etree)
+    {
+        const int n = A.num_cols;
+
+        // per-column discovered nodes
+        std::vector<std::vector<int>> cols(n);
+        std::vector<int> marker(n, -1);   // marker[v] == k 表示 v 已被列 k 访问
+        std::vector<int> stack; stack.reserve(n);
+
+        for (int k = 0; k < n; ++k) {
+            stack.clear();
+
+            if (marker[k] != k) {
+                marker[k] = k;
+                stack.push_back(k);
+            }
+
+            for (int p = A.col_ptr[k]; p < A.col_ptr[k + 1]; ++p) {
+                int i = A.row_ind[p];
+                if (i == k) continue;
+                int r = std::max(i, k); // 确保落到 L 的下三角（行>=列）
+                if (marker[r] != k) { marker[r] = k; stack.push_back(r); }
+            }
+
+            // propagate up the elimination tree: 对 stack 中的每个节点加入其未访问过的祖先
+            for (size_t idx = 0; idx < stack.size(); ++idx) {
+                int v = stack[idx];
+                int par = etree.parent[v];
+                while (par != -1 && marker[par] != k) {
+                    marker[par] = k;
+                    stack.push_back(par);
+                    par = etree.parent[par];
+                }
+            }
+
+            // CHOLMOD 里列模式通常是递增且唯一的（至少在符号阶段会保证可比性）
+            // 这里统一：只保留 >=k（下三角 L 的行），排序+去重
+            std::sort(stack.begin(), stack.end());
+            stack.erase(std::unique(stack.begin(), stack.end()), stack.end());
+            auto it = std::lower_bound(stack.begin(), stack.end(), k);
+            cols[k].assign(it, stack.end());
+
+        }
+
+        FactorPattern pattern;
+        pattern.row_ptr_L.resize(n + 1);
+        pattern.row_ptr_L[0] = 0;
+        for (int k = 0; k < n; ++k) {
+            pattern.row_ptr_L[k + 1] = pattern.row_ptr_L[k] + static_cast<int>(cols[k].size());
+        }
+
+        const int total_nnz = pattern.row_ptr_L[n];
+        pattern.col_ind_L.resize(total_nnz);
+        for (int k = 0; k < n; ++k) {
+            const int base = pattern.row_ptr_L[k];
+            for (size_t t = 0; t < cols[k].size(); ++t) {
+                pattern.col_ind_L[base + static_cast<int>(t)] = cols[k][t];
+            }
+        }
+
+        return pattern;
+    }
+
     template <typename T>
     ichol::symbolic::FactorPattern
     compute_ic_factor_pattern(const ichol::matrix::CsrMatrix<T> &A, int k)
@@ -140,6 +208,7 @@ namespace ichol::symbolic
         return fp;
     }
 
+
     template ichol::symbolic::FactorPattern compute_complete_cholesky_pattern<double>(const ichol::matrix::CsrMatrix<double> &A,
                                                                                       const ichol::symbolic::ETree &etree);
     template ichol::symbolic::FactorPattern compute_ic_factor_pattern<double>(const ichol::matrix::CsrMatrix<double> &A,
@@ -152,4 +221,16 @@ namespace ichol::symbolic
                                                                                                 const ichol::symbolic::ETree &etree);
     template ichol::symbolic::FactorPattern compute_ic_factor_pattern<half_float::half>(const ichol::matrix::CsrMatrix<half_float::half> &A,
                                                                                         int level_k);
+
+    template FactorPattern compute_complete_cholesky_pattern<double>(
+        const ichol::matrix::CscMatrix<double> &A,
+        const ichol::symbolic::ETree &etree);
+
+    template FactorPattern compute_complete_cholesky_pattern<float>(
+        const ichol::matrix::CscMatrix<float> &A,
+        const ichol::symbolic::ETree &etree);
+
+    template FactorPattern compute_complete_cholesky_pattern<half_float::half>(
+        const ichol::matrix::CscMatrix<half_float::half> &A,
+        const ichol::symbolic::ETree &etree);
 } // namespace ichol::symbolic

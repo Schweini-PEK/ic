@@ -6,7 +6,9 @@ file(GLOB_RECURSE ICHOL_SRC CONFIGURE_DEPENDS
 
 list(FILTER ICHOL_SRC EXCLUDE REGEX ".*/apps/.*")
 
-add_library(ichol STATIC ${ICHOL_SRC})
+add_library(ichol STATIC ${ICHOL_SRC}
+        ../include/ichol/supernode.hpp
+)
 
 target_include_directories(ichol PUBLIC
     ${PROJECT_SOURCE_DIR}/include
@@ -37,3 +39,4 @@ add_executable(ict_pcg
 )
 
 target_link_libraries(ict_pcg PRIVATE ichol)
+
