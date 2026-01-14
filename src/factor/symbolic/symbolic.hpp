@@ -20,9 +20,16 @@ namespace ichol::symbolic
 {
     Permutation identity_permutation(int n);
 
+    /**
+     * Obtain a permutation reordering using AMD from Suitesparse.
+     */
     Permutation amd_from_csr(int n,
                              const std::vector<int> &row_ptr,
                              const std::vector<int> &col_ind);
+
+    template <typename T>
+    std::vector<T> apply_permutation_vec(const std::vector<T> &v,
+                                         const Permutation &P);
 
     /**
      * In-place permutation of CSR matrix: A := P * A * P^T
