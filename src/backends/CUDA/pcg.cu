@@ -91,184 +91,6 @@ __global__ void diag_sub_from_diag(int n,
         }                                                               \
     } while (0)
 
-static void debug_check_and_extract_diagA(
-    int n,
-    const std::vector<int> &rowPtr,
-    const std::vector<int> &colInd,
-    const std::vector<double> &val,
-    std::vector<double> &diagA_out,
-    int max_print = 20)
-{
-    diagA_out.assign(n, 0.0);
-
-    int bad_last = 0;
-    int missing = 0;
-
-    for (int i = 0; i < n; ++i)
-    {
-        int row_start = rowPtr[i];
-        int row_end = rowPtr[i + 1];
-        if (row_end <= row_start)
-        {
-            ++missing;
-            continue;
-        }
-
-        int last_p = row_end - 1;
-        int last_j = colInd[last_p];
-
-        if (last_j == i)
-        {
-            diagA_out[i] = val[last_p];
-            continue;
-        }
-
-        // If the last one is not the diag, look for the diag
-        ++bad_last;
-        bool found = false;
-        for (int p = row_start; p < row_end; ++p)
-        {
-            if (colInd[p] == i)
-            {
-                diagA_out[i] = val[p];
-                found = true;
-                break;
-            }
-        }
-        if (!found)
-            ++missing;
-
-        if (bad_last <= max_print)
-        {
-            std::cerr << "[diag-check] row " << i
-                      << ": last col = " << last_j
-                      << ", scanned diag " << (found ? "FOUND" : "MISSING")
-                      << " (row nnz=" << (row_end - row_start) << ")\n";
-        }
-    }
-
-    if (bad_last > 0)
-        std::cerr << "[diag-check] rows with diag not last: " << bad_last << " / " << n << "\n";
-    if (missing > 0)
-        std::cerr << "[diag-check] rows missing diagonal entry: " << missing << " / " << n << "\n";
-}
-
-// ---------------------- GPU CHECKS (abort-on-fail) ----------------------
-namespace test_checks
-{
-
-    inline double host_l2_norm(const std::vector<double> &v)
-    {
-        long double s = 0.0L;
-        for (double a : v)
-            s += (long double)a * (long double)a;
-        return std::sqrt((double)s);
-    }
-
-    inline void symm_lower_csr_matvec_raw(int n,
-                                          const std::vector<int> &rowPtr,
-                                          const std::vector<int> &colInd,
-                                          const std::vector<double> &val,
-                                          const std::vector<double> &x,
-                                          std::vector<double> &y)
-    {
-        y.assign(n, 0.0);
-        for (int i = 0; i < n; ++i)
-        {
-            for (int p = rowPtr[i]; p < rowPtr[i + 1]; ++p)
-            {
-                const int j = colInd[p];
-                const double aij = val[p];
-                y[i] += aij * x[j];
-                if (j != i)
-                    y[j] += aij * x[i];
-            }
-        }
-    }
-
-    inline void abort_fail(const char *msg)
-    {
-        std::cerr << "CHECK FAILED: " << msg << "\n";
-        std::abort();
-    }
-
-    // Verifies the GPU matvec used by CG matches the CPU symmetric matvec for a deterministic p.
-    // Call this ONCE after spMatA + vec descriptors + spmv buffer are ready.
-    inline void check_gpu_matvec_matches_cpu(cusparseHandle_t cusparseHandle,
-                                             cusparseSpMatDescr_t spMatA,
-                                             cusparseDnVecDescr_t vecP,
-                                             cusparseDnVecDescr_t vecQ,
-                                             void *d_spmvBuf,
-                                             int n,
-                                             const std::vector<int> &h_rowPtrA,
-                                             const std::vector<int> &h_colIndA,
-                                             const std::vector<double> &h_valA,
-                                             const double *d_diagA,
-                                             double *d_p,
-                                             double *d_q)
-    {
-        // deterministic p
-        std::mt19937 gen(0);
-        std::uniform_real_distribution<double> dist(-1.0, 1.0);
-        std::vector<double> p(n);
-        for (int i = 0; i < n; ++i)
-            p[i] = dist(gen);
-
-        CUDA_CHECK(cudaMemcpy(d_p, p.data(), n * sizeof(double), cudaMemcpyHostToDevice));
-
-        // q = A p
-        double alpha = 1.0, beta0 = 0.0, beta1 = 1.0;
-        CUSPARSE_CHECK(cusparseDnVecSetValues(vecP, d_p));
-        CUSPARSE_CHECK(cusparseDnVecSetValues(vecQ, d_q));
-        CUSPARSE_CHECK(cusparseSpMV(cusparseHandle, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                    &alpha, spMatA, vecP,
-                                    &beta0, vecQ,
-                                    CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, d_spmvBuf));
-        // q += A^T p
-        CUSPARSE_CHECK(cusparseSpMV(cusparseHandle, CUSPARSE_OPERATION_TRANSPOSE,
-                                    &alpha, spMatA, vecP,
-                                    &beta1, vecQ,
-                                    CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, d_spmvBuf));
-        // q -= diag(A) * p  (remove the duplicated diagonal)
-        int block = 256;
-        int grid = (n + block - 1) / block;
-        diag_sub_from_diag<<<grid, block>>>(n, d_diagA, d_p, d_q);
-        CUDA_CHECK(cudaGetLastError());
-        CUDA_CHECK(cudaDeviceSynchronize());
-
-        std::vector<double> q_gpu(n);
-        CUDA_CHECK(cudaMemcpy(q_gpu.data(), d_q, n * sizeof(double), cudaMemcpyDeviceToHost));
-
-        // CPU reference: symmetric matvec on lower+diag CSR
-        std::vector<double> q_cpu;
-        symm_lower_csr_matvec_raw(n, h_rowPtrA, h_colIndA, h_valA, p, q_cpu);
-
-        // relative error
-        std::vector<double> diff(n);
-        for (int i = 0; i < n; ++i)
-            diff[i] = q_gpu[i] - q_cpu[i];
-        const double nd = host_l2_norm(diff);
-        const double nr = host_l2_norm(q_cpu);
-        const double rel = (nr == 0.0) ? nd : nd / nr;
-
-        if (!(std::isfinite(rel) && rel <= 1e-12))
-        {
-            std::cerr << "GPU matvec mismatch: rel_err=" << rel << "\n";
-            abort_fail("GPU matvec != CPU matvec (format/dup/diag handling bug)");
-        }
-    }
-
-    inline void check_cg_scalar_pos_finite(const char *name, double v, int k)
-    {
-        if (!(std::isfinite(v) && v > 0.0))
-        {
-            std::cerr << "CG invariant failed: " << name << " = " << v << " at iter " << k << "\n";
-            abort_fail("CG saw non-positive/invalid scalar (operator/preconditioner application bug)");
-        }
-    }
-
-} // namespace test_checks
-
 namespace ichol
 {
     template <typename T_L>
@@ -299,12 +121,10 @@ namespace ichol
         const int nnzL = static_cast<int>(h_valL.size());
 
         std::vector<double> h_diagA(n, 0.0);
-        // for (int i = 0; i < n; ++i)
-        // {
-        //     h_diagA[i] = h_valA[h_csrRowPtrA[i + 1] - 1];
-        // }
-        debug_check_and_extract_diagA(
-            n, h_csrRowPtrA, h_csrColIndA, h_valA, h_diagA);
+        for (int i = 0; i < n; ++i)
+        {
+            h_diagA[i] = h_valA[h_csrRowPtrA[i + 1] - 1];
+        }
         double *d_diagA = nullptr;
         CUDA_CHECK(cudaMalloc((void **)&d_diagA, n * sizeof(double)));
         CUDA_CHECK(cudaMemcpy(d_diagA, h_diagA.data(), n * sizeof(double), cudaMemcpyHostToDevice));
@@ -509,15 +329,6 @@ namespace ichol
             {
                 d_spmvBuf = nullptr;
             }
-
-            test_checks::check_gpu_matvec_matches_cpu(
-                cusparseHandle, spMatA,
-                vecP_dev, vecQ_dev,
-                d_spmvBuf,
-                n,
-                h_csrRowPtrA, h_csrColIndA, h_valA,
-                d_diagA,
-                d_p, d_q);
         }
 
         // Preconditioner work vectors (PrecWork precision). No per-iteration allocations.
@@ -662,9 +473,6 @@ namespace ichol
             // (5) alpha = rho / (p^T q)
             double denom = 0.0;
             cublasDdot(cublasHandle, n, d_p, 1, d_q, 1, &denom);
-
-            test_checks::check_cg_scalar_pos_finite("rho = r^T z", rho, k);
-            test_checks::check_cg_scalar_pos_finite("denom = p^T A p", denom, k);
 
             if (denom <= 0.0 || std::isnan(denom) || std::isinf(denom))
             {
