@@ -86,6 +86,8 @@ namespace ichol::symbolic
      */
     ichol::symbolic::LevelSets build_level_sets(const ichol::symbolic::FactorPattern &factor_pattern);
 
+    ichol::symbolic::LevelSets build_level_sets_upper_csr(const ichol::symbolic::FactorPattern &U_pattern);
+
     SnodeLevelSets build_snode_level_sets(const LevelSets &col_level_sets,
                                           const std::vector<std::pair<int, int>> &snodes);
     /**

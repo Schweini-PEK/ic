@@ -1,13 +1,20 @@
 #include <cuda_runtime.h>
 #include <cusparse.h>
 #include <cublas_v2.h>
+#include <cuda_fp16.h>
+
 #include <cmath>
 #include <limits>
 #include <vector>
 #include <iostream>
 #include <random>
 #include <type_traits>
+#include <numeric>
+#include <algorithm>
+#include <cstring>
+
 #include "ichol/half.hpp"
+#include "solve/sptrsv/cuda/sptrsv_level.cuh"
 
 // ---------------------- mixed-precision helpers ----------------------
 template <typename To, typename From>
@@ -15,7 +22,20 @@ __global__ void cast_vec(int n, const From *__restrict__ in, To *__restrict__ ou
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n)
-        out[i] = static_cast<To>(in[i]);
+    {
+        if constexpr (std::is_same_v<To, __half>)
+        {
+            out[i] = __float2half(static_cast<float>(in[i]));
+        }
+        else if constexpr (std::is_same_v<From, __half>)
+        {
+            out[i] = static_cast<To>(__half2float(in[i]));
+        }
+        else
+        {
+            out[i] = static_cast<To>(in[i]);
+        }
+    }
 }
 
 /**
@@ -26,20 +46,6 @@ __global__ void ew_mul(int n, const double *a, const double *b, double *out)
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n)
         out[i] = a[i] * b[i];
-}
-
-__global__ void diag_sub(int n,
-                         const int *__restrict__ rowPtr,
-                         const double *__restrict__ val,
-                         const double *__restrict__ p,
-                         double *__restrict__ q)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n)
-    {
-        double di = val[rowPtr[i + 1] - 1]; // last entry in row = diagonal
-        q[i] -= di * p[i];
-    }
 }
 
 /**
@@ -91,6 +97,157 @@ __global__ void diag_sub_from_diag(int n,
         }                                                               \
     } while (0)
 
+// ---------------------- host helpers: CSR transpose + level sets ----------------------
+template <typename ValueT>
+static void build_csr_transpose_diag_last(
+    int n,
+    const std::vector<int> &row_ptr,
+    const std::vector<int> &col_ind,
+    const std::vector<ValueT> &val,
+    std::vector<int> &row_ptr_T,
+    std::vector<int> &col_ind_T,
+    std::vector<ValueT> &val_T)
+{
+    const int nnz = static_cast<int>(val.size());
+    row_ptr_T.assign(n + 1, 0);
+    col_ind_T.resize(nnz);
+    val_T.resize(nnz);
+
+    // Count nnz per row in transpose (i.e., per column of original).
+    for (int i = 0; i < n; ++i)
+    {
+        for (int p = row_ptr[i]; p < row_ptr[i + 1]; ++p)
+        {
+            int j = col_ind[p];
+            row_ptr_T[j + 1]++;
+        }
+    }
+
+    std::partial_sum(row_ptr_T.begin(), row_ptr_T.end(), row_ptr_T.begin());
+    std::vector<int> next = row_ptr_T;
+
+    // Fill transpose. Within each transpose row j, the inserted columns are i in increasing order.
+    for (int i = 0; i < n; ++i)
+    {
+        for (int p = row_ptr[i]; p < row_ptr[i + 1]; ++p)
+        {
+            int j = col_ind[p];
+            int dst = next[j]++;
+            col_ind_T[dst] = i;
+            val_T[dst] = val[p];
+        }
+    }
+
+    // Move diagonal to last position per row (keep off-diagonals sorted).
+    for (int r = 0; r < n; ++r)
+    {
+        int s = row_ptr_T[r];
+        int e = row_ptr_T[r + 1];
+        // assume diagonal exists
+        int d = -1;
+        for (int k = s; k < e; ++k)
+        {
+            if (col_ind_T[k] == r)
+            {
+                d = k;
+                break;
+            }
+        }
+        if (d < 0)
+        {
+            // no diagonal: leave as-is (SpTRSV will flag -2 later)
+            continue;
+        }
+        if (d == e - 1)
+            continue;
+
+        int diag_col = col_ind_T[d];
+        ValueT diag_val = val_T[d];
+
+        int move_count = (e - 1) - d;
+        std::memmove(&col_ind_T[d], &col_ind_T[d + 1], sizeof(int) * move_count);
+        std::memmove(&val_T[d], &val_T[d + 1], sizeof(ValueT) * move_count);
+
+        col_ind_T[e - 1] = diag_col; // == r
+        val_T[e - 1] = diag_val;
+    }
+}
+
+static ichol::symbolic::LevelSets build_level_sets_lower_csr_diag_last(
+    int n, const std::vector<int> &row_ptr, const std::vector<int> &col_ind)
+{
+    int max_level = -1;
+    std::vector<int> level_of(n, -1);
+
+    for (int i = 0; i < n; ++i)
+    {
+        int best = -1;
+        for (int p = row_ptr[i]; p < row_ptr[i + 1] - 1; ++p) // skip last (diag)
+        {
+            best = std::max(best, level_of[col_ind[p]]);
+        }
+        level_of[i] = best + 1;
+        max_level = std::max(max_level, level_of[i]);
+    }
+
+    const int num_levels = max_level + 1;
+    std::vector<int> counts(num_levels, 0);
+    for (int i = 0; i < n; ++i)
+        counts[level_of[i]]++;
+
+    ichol::symbolic::LevelSets out;
+    out.level_ptr.resize(num_levels + 1);
+    out.level_ptr[0] = 0;
+    std::partial_sum(counts.begin(), counts.end(), out.level_ptr.begin() + 1);
+
+    out.levels.resize(n);
+    std::vector<int> next(out.level_ptr.begin(), out.level_ptr.end() - 1);
+    for (int i = 0; i < n; ++i)
+    {
+        int L = level_of[i];
+        out.levels[next[L]++] = i;
+    }
+    return out;
+}
+
+static ichol::symbolic::LevelSets build_level_sets_upper_csr_diag_last(
+    int n, const std::vector<int> &row_ptr, const std::vector<int> &col_ind)
+{
+    int max_level = -1;
+    std::vector<int> level_of(n, -1);
+
+    for (int ii = 0; ii < n; ++ii)
+    {
+        int i = n - 1 - ii;
+        int best = -1;
+        for (int p = row_ptr[i]; p < row_ptr[i + 1] - 1; ++p) // skip last (diag)
+        {
+            best = std::max(best, level_of[col_ind[p]]);
+        }
+        level_of[i] = best + 1;
+        max_level = std::max(max_level, level_of[i]);
+    }
+
+    const int num_levels = max_level + 1;
+    std::vector<int> counts(num_levels, 0);
+    for (int i = 0; i < n; ++i)
+        counts[level_of[i]]++;
+
+    ichol::symbolic::LevelSets out;
+    out.level_ptr.resize(num_levels + 1);
+    out.level_ptr[0] = 0;
+    std::partial_sum(counts.begin(), counts.end(), out.level_ptr.begin() + 1);
+
+    out.levels.resize(n);
+    std::vector<int> next(out.level_ptr.begin(), out.level_ptr.end() - 1);
+    for (int i = 0; i < n; ++i)
+    {
+        int L = level_of[i];
+        out.levels[next[L]++] = i;
+    }
+    return out;
+}
+
 namespace ichol
 {
     template <typename T_L>
@@ -120,6 +277,45 @@ namespace ichol
         const int nnzA = static_cast<int>(h_valA.size());
         const int nnzL = static_cast<int>(h_valL.size());
 
+        // ---------------------- Preconditioner value type selection for YOUR SpTRSV ----------------------
+        constexpr bool L_is_fp64 = std::is_same<T_L, double>::value;
+        constexpr bool L_is_fp32 = std::is_same<T_L, float>::value;
+        constexpr bool L_is_fp16 = !L_is_fp64 && !L_is_fp32; // (half_float::half)
+
+        using SolveT = std::conditional_t<L_is_fp64, double, std::conditional_t<L_is_fp32, float, __half>>;
+
+        // Build host SolveT values for L
+        std::vector<SolveT> h_valL_solve(nnzL);
+        if constexpr (L_is_fp64)
+        {
+            for (int i = 0; i < nnzL; ++i)
+                h_valL_solve[i] = static_cast<double>(h_valL[i]);
+        }
+        else if constexpr (L_is_fp32)
+        {
+            for (int i = 0; i < nnzL; ++i)
+                h_valL_solve[i] = static_cast<float>(h_valL[i]);
+        }
+        else
+        {
+            for (int i = 0; i < nnzL; ++i)
+                h_valL_solve[i] = __float2half_rn(static_cast<float>(h_valL[i]));
+        }
+
+        // Build CSR(L^T) on host with diag-last.
+        std::vector<int> h_csrRowPtrLt, h_csrColIndLt;
+        std::vector<SolveT> h_valLt_solve;
+        build_csr_transpose_diag_last<SolveT>(
+            n, h_csrRowPtrL, h_csrColIndL, h_valL_solve,
+            h_csrRowPtrLt, h_csrColIndLt, h_valLt_solve);
+
+        // Build level sets for L (lower) and L^T (upper).
+        const ichol::symbolic::LevelSets levelsets_L =
+            build_level_sets_lower_csr_diag_last(n, h_csrRowPtrL, h_csrColIndL);
+
+        const ichol::symbolic::LevelSets levelsets_Lt =
+            build_level_sets_upper_csr_diag_last(n, h_csrRowPtrLt, h_csrColIndLt);
+
         std::vector<double> h_diagA(n, 0.0);
         for (int i = 0; i < n; ++i)
         {
@@ -145,53 +341,25 @@ namespace ichol
                                          CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
                                          CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F));
 
-        // Copy L to device
+        // Copy L (CSR) to device (indices + values in SolveT)
         int *d_csrRowPtrL = nullptr, *d_csrColIndL = nullptr;
+        SolveT *d_valL = nullptr;
         CUDA_CHECK(cudaMalloc((void **)&d_csrRowPtrL, (n + 1) * sizeof(int)));
         CUDA_CHECK(cudaMalloc((void **)&d_csrColIndL, nnzL * sizeof(int)));
+        CUDA_CHECK(cudaMalloc((void **)&d_valL, nnzL * sizeof(SolveT)));
         CUDA_CHECK(cudaMemcpy(d_csrRowPtrL, h_csrRowPtrL.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_csrColIndL, h_csrColIndL.data(), nnzL * sizeof(int), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_valL, h_valL_solve.data(), nnzL * sizeof(SolveT), cudaMemcpyHostToDevice));
 
-        // ---------------------- Preconditioner precision selection ----------------------
-        // Outer PCG stays FP64; only the preconditioner application (SpSV) uses the selected work precision.
-        constexpr bool L_is_fp64 = std::is_same<T_L, double>::value;
-        constexpr bool L_is_fp32 = std::is_same<T_L, float>::value;
-        constexpr bool L_is_fp16 = !L_is_fp64 && !L_is_fp32; // (half_float::half)
-
-        using PrecWork = typename std::conditional<L_is_fp64, double, float>::type;
-        const cudaDataType precWork_dataType = L_is_fp64 ? CUDA_R_64F : CUDA_R_32F;
-
-        // For FP16 storage, cuSPARSE SpSV does not support FP16. Convert L once at setup to FP32.
-        void *d_valL_storage = nullptr; // optional: original L values, if we keep them
-        void *d_valLptr = nullptr;      // L values used by SpSV (PrecWork)
-
-        if constexpr (L_is_fp64 || L_is_fp32)
-        {
-            CUDA_CHECK(cudaMalloc(&d_valLptr, nnzL * sizeof(T_L)));
-            CUDA_CHECK(cudaMemcpy(d_valLptr, h_valL.data(), nnzL * sizeof(T_L), cudaMemcpyHostToDevice));
-            d_valL_storage = d_valLptr;
-        }
-        else
-        {
-            std::vector<float> h_valL32(nnzL);
-            for (int i = 0; i < nnzL; ++i)
-                h_valL32[i] = static_cast<float>(h_valL[i]);
-            CUDA_CHECK(cudaMalloc(&d_valLptr, nnzL * sizeof(float)));
-            CUDA_CHECK(cudaMemcpy(d_valLptr, h_valL32.data(), nnzL * sizeof(float), cudaMemcpyHostToDevice));
-            d_valL_storage = nullptr; // not needed on device for SpSV
-        }
-
-        cusparseSpMatDescr_t spMatL = nullptr;
-        CUSPARSE_CHECK(cusparseCreateCsr(&spMatL, n, n, nnzL,
-                                         d_csrRowPtrL, d_csrColIndL, d_valLptr,
-                                         CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
-                                         CUSPARSE_INDEX_BASE_ZERO, precWork_dataType));
-
-        // Tell cuSPARSE that L is triangular, lower fill, with a non-unit diagonal
-        cusparseFillMode_t fillMode = CUSPARSE_FILL_MODE_LOWER;
-        cusparseDiagType_t diagType = CUSPARSE_DIAG_TYPE_NON_UNIT;
-        CUSPARSE_CHECK(cusparseSpMatSetAttribute(spMatL, CUSPARSE_SPMAT_FILL_MODE, &fillMode, sizeof(fillMode)));
-        CUSPARSE_CHECK(cusparseSpMatSetAttribute(spMatL, CUSPARSE_SPMAT_DIAG_TYPE, &diagType, sizeof(diagType)));
+        // Copy L^T (CSR) to device (indices + values in SolveT)
+        int *d_csrRowPtrLt = nullptr, *d_csrColIndLt = nullptr;
+        SolveT *d_valLt = nullptr;
+        CUDA_CHECK(cudaMalloc((void **)&d_csrRowPtrLt, (n + 1) * sizeof(int)));
+        CUDA_CHECK(cudaMalloc((void **)&d_csrColIndLt, nnzL * sizeof(int)));
+        CUDA_CHECK(cudaMalloc((void **)&d_valLt, nnzL * sizeof(SolveT)));
+        CUDA_CHECK(cudaMemcpy(d_csrRowPtrLt, h_csrRowPtrLt.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_csrColIndLt, h_csrColIndLt.data(), nnzL * sizeof(int), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_valLt, h_valLt_solve.data(), nnzL * sizeof(SolveT), cudaMemcpyHostToDevice));
 
         // 3) Allocate vectors x, b, etc. in double
         double *d_x = nullptr, *d_b = nullptr;
@@ -224,65 +392,8 @@ namespace ichol
 
         cudaFree(d_b_orig);
 
-        // 4) Setup Triangular Solve descriptors for L & L^T
-        cusparseSpSVDescr_t spSVDescrFwd = nullptr, spSVDescrBwd = nullptr;
-        CUSPARSE_CHECK(cusparseSpSV_createDescr(&spSVDescrFwd));
-        CUSPARSE_CHECK(cusparseSpSV_createDescr(&spSVDescrBwd));
-
-        // Dummy dense vectors to measure buffer sizes / run analysis in the same precision used by SpSV.
-        PrecWork *d_dummyVec_spsv = nullptr;
-        CUDA_CHECK(cudaMalloc(&d_dummyVec_spsv, n * sizeof(PrecWork)));
-        cusparseDnVecDescr_t dummyVecR = nullptr, dummyVecSol = nullptr;
-        CUSPARSE_CHECK(cusparseCreateDnVec(&dummyVecR, n, (void *)d_dummyVec_spsv, precWork_dataType));
-        CUSPARSE_CHECK(cusparseCreateDnVec(&dummyVecSol, n, (void *)d_dummyVec_spsv, precWork_dataType));
-
-        size_t bufSizeFwd = 0, bufSizeBwd = 0;
-        void *d_solveBufFwd = nullptr, *d_solveBufBwd = nullptr;
-        const PrecWork alpha_one = static_cast<PrecWork>(1);
-
-        CUSPARSE_CHECK(cusparseSpSV_bufferSize(
-            cusparseHandle,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &alpha_one, spMatL,
-            dummyVecR, dummyVecSol,
-            precWork_dataType,
-            CUSPARSE_SPSV_ALG_DEFAULT,
-            spSVDescrFwd, &bufSizeFwd));
-        CUDA_CHECK(cudaMalloc(&d_solveBufFwd, bufSizeFwd));
-
-        CUSPARSE_CHECK(cusparseSpSV_analysis(
-            cusparseHandle,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &alpha_one, spMatL,
-            dummyVecR, dummyVecSol,
-            precWork_dataType, CUSPARSE_SPSV_ALG_DEFAULT,
-            spSVDescrFwd, d_solveBufFwd));
-
-        CUSPARSE_CHECK(cusparseSpSV_bufferSize(
-            cusparseHandle,
-            CUSPARSE_OPERATION_TRANSPOSE,
-            &alpha_one, spMatL,
-            dummyVecR, dummyVecSol,
-            precWork_dataType,
-            CUSPARSE_SPSV_ALG_DEFAULT,
-            spSVDescrBwd, &bufSizeBwd));
-        CUDA_CHECK(cudaMalloc(&d_solveBufBwd, bufSizeBwd));
-
-        CUSPARSE_CHECK(cusparseSpSV_analysis(
-            cusparseHandle,
-            CUSPARSE_OPERATION_TRANSPOSE,
-            &alpha_one, spMatL,
-            dummyVecR, dummyVecSol,
-            precWork_dataType, CUSPARSE_SPSV_ALG_DEFAULT,
-            spSVDescrBwd, d_solveBufBwd));
-
-        CUSPARSE_CHECK(cusparseDestroyDnVec(dummyVecR));
-        CUSPARSE_CHECK(cusparseDestroyDnVec(dummyVecSol));
-        CUDA_CHECK(cudaFree(d_dummyVec_spsv));
-
         // For A * p
         cusparseDnVecDescr_t vecP_dev = nullptr, vecQ_dev = nullptr;
-        void *d_dummyVec = nullptr; // (kept for backward compatibility with existing cleanup)
         double *d_p = nullptr, *d_q = nullptr, *d_r = nullptr, *d_z = nullptr;
         CUDA_CHECK(cudaMalloc(&d_p, n * sizeof(double)));
         CUDA_CHECK(cudaMalloc(&d_q, n * sizeof(double)));
@@ -301,7 +412,6 @@ namespace ichol
             double alpha1 = 1.0;
             double beta0 = 0.0;
 
-            // NON_TRANSPOSE buffer
             CUSPARSE_CHECK(cusparseSpMV_bufferSize(
                 cusparseHandle,
                 CUSPARSE_OPERATION_NON_TRANSPOSE,
@@ -310,7 +420,6 @@ namespace ichol
                 CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT,
                 &spmvBufSizeNT));
 
-            // TRANSPOSE buffer
             CUSPARSE_CHECK(cusparseSpMV_bufferSize(
                 cusparseHandle,
                 CUSPARSE_OPERATION_TRANSPOSE,
@@ -319,101 +428,100 @@ namespace ichol
                 CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT,
                 &spmvBufSizeT));
 
-            // assign to outer variable (no shadowing)
             spmvBufSize = (spmvBufSizeNT > spmvBufSizeT) ? spmvBufSizeNT : spmvBufSizeT;
             if (spmvBufSize > 0)
-            {
                 CUDA_CHECK(cudaMalloc(&d_spmvBuf, spmvBufSize));
-            }
-            else
-            {
-                d_spmvBuf = nullptr;
-            }
         }
 
-        // Preconditioner work vectors (PrecWork precision). No per-iteration allocations.
-        // r_work is the (possibly casted) copy of r for the triangular solves.
-        // w_work holds the intermediate solve, and z_work is the preconditioned result in PrecWork.
-        PrecWork *d_r_work = nullptr, *d_w_work = nullptr, *d_z_work = nullptr;
-        if constexpr (L_is_fp64)
+        // Preconditioner work vectors (SolveT precision). No per-iteration allocations.
+        SolveT *d_r_work = nullptr, *d_w_work = nullptr, *d_z_work = nullptr;
+        if constexpr (std::is_same_v<SolveT, double>)
         {
-            d_r_work = reinterpret_cast<PrecWork *>(d_r); // alias (FP64)
-            d_z_work = reinterpret_cast<PrecWork *>(d_z); // alias (FP64)
-            CUDA_CHECK(cudaMalloc(&d_w_work, n * sizeof(PrecWork)));
+            d_r_work = reinterpret_cast<SolveT *>(d_r); // alias
+            d_z_work = reinterpret_cast<SolveT *>(d_z); // alias
+            CUDA_CHECK(cudaMalloc(&d_w_work, n * sizeof(SolveT)));
         }
         else
         {
-            CUDA_CHECK(cudaMalloc(&d_r_work, n * sizeof(PrecWork)));
-            CUDA_CHECK(cudaMalloc(&d_w_work, n * sizeof(PrecWork)));
-            CUDA_CHECK(cudaMalloc(&d_z_work, n * sizeof(PrecWork)));
+            CUDA_CHECK(cudaMalloc(&d_r_work, n * sizeof(SolveT)));
+            CUDA_CHECK(cudaMalloc(&d_w_work, n * sizeof(SolveT)));
+            CUDA_CHECK(cudaMalloc(&d_z_work, n * sizeof(SolveT)));
         }
 
         //======================================================
         // PHASE 2: CG Initialization
         //======================================================
-        // r = b - A*x => but x=0, so r=b
         cudaMemcpy(d_r, d_b, n * sizeof(double), cudaMemcpyDeviceToDevice);
 
-        // Norm of r
         double nrmr0 = 0.0;
         CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_r, 1, &nrmr0));
 
-        // Stopping criteria
         double tol = 1e-6;
 
         //======================================================
         // PHASE 3: CG iteration
         //======================================================
         double rho = 0.0, rhoOld = 0.0;
-        int maxIters = 1000; // or some big
+        int maxIters = 1000;
         iterations = 0;
 
-        cusparseDnVecDescr_t vecR_work = nullptr, vecW_work = nullptr;
-        cusparseDnVecDescr_t vecR2_work = nullptr, vecZ_work = nullptr;
-        CUSPARSE_CHECK(cusparseCreateDnVec(&vecR_work, n, (void *)d_r_work, precWork_dataType));
-        CUSPARSE_CHECK(cusparseCreateDnVec(&vecW_work, n, (void *)d_w_work, precWork_dataType));
-        CUSPARSE_CHECK(cusparseCreateDnVec(&vecR2_work, n, (void *)d_w_work, precWork_dataType));
-        CUSPARSE_CHECK(cusparseCreateDnVec(&vecZ_work, n, (void *)d_z_work, precWork_dataType));
+        cudaStream_t stream = 0;
 
         for (int k = 1; k <= maxIters; k++)
         {
             // (1) z = M^-1 r
-            //   L * w = r => w = L^-1 r
-            //   L^T z = w => z = L^-T w
+            //   L * w = r
+            //   L^T * z = w
             {
-                if constexpr (!L_is_fp64)
+                if constexpr (!std::is_same_v<SolveT, double>)
                 {
-                    // Cast r (FP64) -> r_work (PrecWork=FP32) once per iteration.
-                    cast_vec<PrecWork, double><<<grid, block>>>(n, d_r, d_r_work);
+                    cast_vec<SolveT, double><<<grid, block>>>(n, d_r, d_r_work);
                     CUDA_CHECK(cudaGetLastError());
                 }
 
-                // forward: L * w_work = r_work
-                CUSPARSE_CHECK(cusparseSpSV_solve(
-                    cusparseHandle,
-                    CUSPARSE_OPERATION_NON_TRANSPOSE,
-                    &alpha_one,
-                    spMatL,
-                    vecR_work, vecW_work,
-                    precWork_dataType,
-                    CUSPARSE_SPSV_ALG_DEFAULT,
-                    spSVDescrFwd));
+                int rc1 = SpTRSV_solve_levelsets<int, SolveT>(
+                    n,
+                    d_csrRowPtrL,
+                    d_csrColIndL,
+                    d_valL,
+                    d_r_work,
+                    d_w_work,
+                    FillMode::LOWER,
+                    /*unit_diag=*/false,
+                    levelsets_L,
+                    stream);
 
-                // backward: L^T * z_work = w_work
-                CUSPARSE_CHECK(cusparseSpSV_solve(
-                    cusparseHandle,
-                    CUSPARSE_OPERATION_TRANSPOSE,
-                    &alpha_one,
-                    spMatL,
-                    vecR2_work, vecZ_work,
-                    precWork_dataType,
-                    CUSPARSE_SPSV_ALG_DEFAULT,
-                    spSVDescrBwd));
-
-                if constexpr (!L_is_fp64)
+                if (rc1 != 0)
                 {
-                    // Cast z_work (PrecWork=FP32) -> z (FP64) for outer FP64 dot products and updates.
-                    cast_vec<double, PrecWork><<<grid, block>>>(n, d_z_work, d_z);
+                    std::cerr << "ERROR: SpTRSV(L) failed with code " << rc1 << " at iter " << k << "\n";
+                    iterations = k;
+                    finalRes = std::numeric_limits<double>::infinity();
+                    break;
+                }
+
+                int rc2 = SpTRSV_solve_levelsets<int, SolveT>(
+                    n,
+                    d_csrRowPtrLt,
+                    d_csrColIndLt,
+                    d_valLt,
+                    d_w_work,
+                    d_z_work,
+                    FillMode::UPPER,
+                    /*unit_diag=*/false,
+                    levelsets_Lt,
+                    stream);
+
+                if (rc2 != 0)
+                {
+                    std::cerr << "ERROR: SpTRSV(L^T) failed with code " << rc2 << " at iter " << k << "\n";
+                    iterations = k;
+                    finalRes = std::numeric_limits<double>::infinity();
+                    break;
+                }
+
+                if constexpr (!std::is_same_v<SolveT, double>)
+                {
+                    cast_vec<double, SolveT><<<grid, block>>>(n, d_z_work, d_z);
                     CUDA_CHECK(cudaGetLastError());
                 }
             }
@@ -422,7 +530,7 @@ namespace ichol
             rhoOld = rho;
             cublasDdot(cublasHandle, n, d_r, 1, d_z, 1, &rho);
 
-            // (3) if k==1 => p=z else => p=z + beta p
+            // (3) p update
             if (k == 1)
             {
                 cudaMemcpy(d_p, d_z, n * sizeof(double), cudaMemcpyDeviceToDevice);
@@ -445,7 +553,6 @@ namespace ichol
                 double beta0 = 0.0;
                 double beta1 = 1.0;
 
-                // q = (L+D) * p
                 CUSPARSE_CHECK(cusparseSpMV(
                     cusparseHandle,
                     CUSPARSE_OPERATION_NON_TRANSPOSE,
@@ -454,7 +561,6 @@ namespace ichol
                     CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT,
                     d_spmvBuf));
 
-                // q += (L+D)^T * p   (adds diag again too)
                 CUSPARSE_CHECK(cusparseSpMV(
                     cusparseHandle,
                     CUSPARSE_OPERATION_TRANSPOSE,
@@ -463,10 +569,7 @@ namespace ichol
                     CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT,
                     d_spmvBuf));
 
-                // remove one diag
-                // diag_sub<<<grid, block>>>(n, d_csrRowPtrA, d_valA, d_p, d_q);
                 diag_sub_from_diag<<<grid, block>>>(n, d_diagA, d_p, d_q);
-
                 CUDA_CHECK(cudaGetLastError());
             }
 
@@ -492,7 +595,7 @@ namespace ichol
             cublasDaxpy(cublasHandle, n, &negAlpha, d_q, 1, d_r, 1);
 
             // (8) check convergence
-            ew_mul<<<grid, block>>>(n, d_D, d_r, d_Dr); // d_Dr = D .* r
+            ew_mul<<<grid, block>>>(n, d_D, d_r, d_Dr);
 
             double nrmDr = 0.0;
             cublasDnrm2(cublasHandle, n, d_Dr, 1, &nrmDr);
@@ -504,24 +607,17 @@ namespace ichol
                 break;
             }
 
-            // Example 2: Check intermediate values during CG iterations
             if (std::isnan(nrmDr) || std::isinf(nrmDr))
             {
                 std::cerr << "ERROR: nrmDr is NaN or Inf in iteration " << k << ": " << nrmDr << std::endl;
+                iterations = k;
+                finalRes = std::numeric_limits<double>::infinity();
                 break;
             }
         }
 
-        // If never converges
         if (iterations == 0)
-        {
             iterations = maxIters;
-        }
-
-        CUSPARSE_CHECK(cusparseDestroyDnVec(vecR_work));
-        CUSPARSE_CHECK(cusparseDestroyDnVec(vecW_work));
-        CUSPARSE_CHECK(cusparseDestroyDnVec(vecR2_work));
-        CUSPARSE_CHECK(cusparseDestroyDnVec(vecZ_work));
 
         // copy x back
         h_x.resize(n);
@@ -535,26 +631,13 @@ namespace ichol
         if (d_spmvBuf)
             cudaFree(d_spmvBuf);
 
-        if (d_solveBufFwd)
-            cudaFree(d_solveBufFwd);
-        if (d_solveBufBwd)
-            cudaFree(d_solveBufBwd);
-
-        if (spSVDescrFwd)
-            CUSPARSE_CHECK(cusparseSpSV_destroyDescr(spSVDescrFwd));
-        if (spSVDescrBwd)
-            CUSPARSE_CHECK(cusparseSpSV_destroyDescr(spSVDescrBwd));
-
-        // Preconditioner work buffers
-        if constexpr (!L_is_fp64)
+        if constexpr (!std::is_same_v<SolveT, double>)
         {
             CUDA_CHECK(cudaFree(d_r_work));
             CUDA_CHECK(cudaFree(d_z_work));
         }
         CUDA_CHECK(cudaFree(d_w_work));
 
-        if (d_dummyVec)
-            CUDA_CHECK(cudaFree(d_dummyVec));
         CUDA_CHECK(cudaFree(d_p));
         CUDA_CHECK(cudaFree(d_q));
         CUDA_CHECK(cudaFree(d_r));
@@ -565,18 +648,20 @@ namespace ichol
         CUDA_CHECK(cudaFree(d_csrRowPtrA));
         CUDA_CHECK(cudaFree(d_csrColIndA));
         CUDA_CHECK(cudaFree(d_valA));
+
         CUDA_CHECK(cudaFree(d_csrRowPtrL));
         CUDA_CHECK(cudaFree(d_csrColIndL));
-        if (d_valL_storage && d_valL_storage != d_valLptr)
-            CUDA_CHECK(cudaFree(d_valL_storage));
-        CUDA_CHECK(cudaFree(d_valLptr));
+        CUDA_CHECK(cudaFree(d_valL));
+
+        CUDA_CHECK(cudaFree(d_csrRowPtrLt));
+        CUDA_CHECK(cudaFree(d_csrColIndLt));
+        CUDA_CHECK(cudaFree(d_valLt));
 
         CUDA_CHECK(cudaFree(d_diagA));
         CUDA_CHECK(cudaFree(d_D));
         CUDA_CHECK(cudaFree(d_Dr));
 
         CUSPARSE_CHECK(cusparseDestroySpMat(spMatA));
-        CUSPARSE_CHECK(cusparseDestroySpMat(spMatL));
 
         CUBLAS_CHECK(cublasDestroy(cublasHandle));
         CUSPARSE_CHECK(cusparseDestroy(cusparseHandle));
