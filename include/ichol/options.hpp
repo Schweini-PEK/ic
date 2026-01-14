@@ -9,7 +9,8 @@ namespace ichol
     {
         Identity,
         AMD,
-        NestedDissection
+        NestedDissection,
+        RCM
     };
 
     enum class Scaling

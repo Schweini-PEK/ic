@@ -16,9 +16,18 @@ namespace ichol::symbolic
 
         case ichol::Ordering::AMD:
             plan.perm = amd_from_csr(A.num_rows, A.row_ptr, A.col_ind);
-            ichol::symbolic::apply_permutation_csr<T>(A, plan.perm);
+            break;
+
+        case ichol::Ordering::NestedDissection:
+            plan.perm = nd_from_csr(A.num_rows, A.row_ptr, A.col_ind);
+            break;
+
+        case ichol::Ordering::RCM:
+            plan.perm = rcm_from_csr(A.num_rows, A.row_ptr, A.col_ind);
             break;
         }
+
+        ichol::symbolic::apply_permutation_csr<T>(A, plan.perm);
 
         if (options.level_k == -1) // Complete Cholesky
         {
@@ -54,19 +63,18 @@ namespace ichol::symbolic
             plan.snodes = detect_supernodes_approx(
                 plan.factor_pattern,
                 plan.etree,
-                sn_options.overlap_threshold
-            );
+                sn_options.overlap_threshold);
         }
         else
         {
             // By default: CHOLMOD super_symbolic behavior (relaxed amalgamation)
             // If you want to compare fundamental supernodes (relax=off),
             // compile with -DICHOL_SUPERNODES_FUNDAMENTAL
-        #ifdef ICHOL_SUPERNODES_FUNDAMENTAL
-                    plan.snodes = detect_supernodes_fundamental(plan.etree);
-        #else
-                    plan.snodes = detect_supernodes(plan.factor_pattern, plan.etree);
-        #endif
+#ifdef ICHOL_SUPERNODES_FUNDAMENTAL
+            plan.snodes = detect_supernodes_fundamental(plan.etree);
+#else
+            plan.snodes = detect_supernodes(plan.factor_pattern, plan.etree);
+#endif
         }
 
         // 4) Column -> supernode mapping

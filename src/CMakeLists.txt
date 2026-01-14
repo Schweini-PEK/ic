@@ -18,7 +18,12 @@ target_compile_options(ichol PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 
 find_package(CUDAToolkit REQUIRED)
-find_package(PkgConfig REQUIRED)
+
+find_package(MPI REQUIRED)
+
+target_link_libraries(ichol PUBLIC
+  MPI::MPI_CXX
+)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(CHOLMOD REQUIRED IMPORTED_TARGET CHOLMOD)
@@ -29,8 +34,14 @@ find_library(AMD_LIB amd
     REQUIRED
 )
 
+pkg_check_modules(PETSC REQUIRED IMPORTED_TARGET petsc)
+if (NOT TARGET PkgConfig::PETSC)
+  pkg_check_modules(PETSC REQUIRED IMPORTED_TARGET PETSc)
+endif()
+
 target_link_libraries(ichol PUBLIC
     PkgConfig::CHOLMOD
+    PkgConfig::PETSC
     ${AMD_LIB}
 )
 
@@ -52,6 +63,8 @@ target_link_libraries(ichol PUBLIC
     CUDA::cusparse
     CUDA::cublas
 )
+
+target_link_libraries(ichol PUBLIC PkgConfig::PETSC)
 
 add_executable(ict_pcg
     apps/ict_pcg_main.cpp
