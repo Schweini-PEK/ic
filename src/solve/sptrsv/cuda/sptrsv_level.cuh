@@ -27,6 +27,86 @@ enum class FillMode
     UPPER
 };
 
+struct DeviceLevelSets
+{
+    std::vector<int> level_ptr;
+    int *d_level_ptr = nullptr;
+    int *d_levels = nullptr;
+    int n = 0;
+    int num_levels = 0;
+
+    DeviceLevelSets() = default;
+    DeviceLevelSets(const DeviceLevelSets &) = delete;
+    DeviceLevelSets &operator=(const DeviceLevelSets &) = delete;
+
+    ~DeviceLevelSets()
+    {
+        reset();
+    }
+
+    void reset()
+    {
+        if (d_level_ptr)
+            cudaFree(d_level_ptr);
+        if (d_levels)
+            cudaFree(d_levels);
+        d_level_ptr = nullptr;
+        d_levels = nullptr;
+        level_ptr.clear();
+        n = 0;
+        num_levels = 0;
+    }
+
+    int init(const ichol::symbolic::LevelSets &host, cudaStream_t stream)
+    {
+        reset();
+        level_ptr = host.level_ptr;
+        n = static_cast<int>(host.levels.size());
+        num_levels = static_cast<int>(level_ptr.size()) - 1;
+
+        if (n == 0)
+            return 0;
+
+        auto e = cudaMalloc((void **)&d_level_ptr, sizeof(int) * level_ptr.size());
+        if (e != cudaSuccess)
+        {
+            reset();
+            return -3;
+        }
+        e = cudaMalloc((void **)&d_levels, sizeof(int) * n);
+        if (e != cudaSuccess)
+        {
+            reset();
+            return -3;
+        }
+
+        e = cudaMemcpyAsync(d_level_ptr, level_ptr.data(),
+                            sizeof(int) * level_ptr.size(), cudaMemcpyHostToDevice, stream);
+        if (e != cudaSuccess)
+        {
+            reset();
+            return -3;
+        }
+
+        e = cudaMemcpyAsync(d_levels, host.levels.data(),
+                            sizeof(int) * n, cudaMemcpyHostToDevice, stream);
+        if (e != cudaSuccess)
+        {
+            reset();
+            return -3;
+        }
+
+        e = cudaStreamSynchronize(stream);
+        if (e != cudaSuccess)
+        {
+            reset();
+            return -3;
+        }
+
+        return 0;
+    }
+};
+
 /* Device finite check for float/double scalars. */
 template <typename ValueT>
 __device__ __forceinline__ bool sptrsv_device_isfinite(ValueT v)
@@ -245,6 +325,103 @@ int SpTRSV_solve_levelsets(
 
     cudaFree(d_status);
     cudaFree(d_levels);
+
+    return (h_status != 0) ? -2 : 0;
+}
+
+template <typename IndexT, typename ValueT>
+int SpTRSV_solve_levelsets_device(
+    int n,
+    const IndexT *d_rowPtr,
+    const IndexT *d_colInd,
+    const ValueT *d_val,
+    const ValueT *d_b,
+    ValueT *d_x,
+    FillMode /*fill_mode*/,
+    bool unit_diag,
+    const DeviceLevelSets &levelsets,
+    cudaStream_t stream)
+{
+    if (n < 0)
+        return -1;
+    if (n == 0)
+        return 0;
+    if (!d_rowPtr || !d_colInd || !d_val || !d_b || !d_x)
+        return -1;
+    if (levelsets.n != n)
+        return -1;
+    if (!levelsets.d_levels || !levelsets.d_level_ptr)
+        return -1;
+    if (levelsets.level_ptr.size() < 2)
+        return -1;
+    if (levelsets.level_ptr.front() != 0)
+        return -1;
+    if (levelsets.level_ptr.back() != n)
+        return -1;
+
+    (void)levelsets.d_level_ptr;
+
+    auto e = cudaMemsetAsync(d_x, 0, sizeof(ValueT) * n, stream);
+    if (e != cudaSuccess)
+        return -3;
+
+    int *d_status = nullptr;
+    e = cudaMalloc((void **)&d_status, sizeof(int));
+    if (e != cudaSuccess)
+        return -3;
+
+    e = cudaMemsetAsync(d_status, 0, sizeof(int), stream);
+    if (e != cudaSuccess)
+    {
+        cudaFree(d_status);
+        return -3;
+    }
+
+    constexpr int THREADS = 128;
+    int num_levels = levelsets.num_levels;
+
+    for (int lvl = 0; lvl < num_levels; ++lvl)
+    {
+        int start = levelsets.level_ptr[lvl];
+        int end = levelsets.level_ptr[lvl + 1];
+        int level_size = end - start;
+        if (level_size <= 0)
+            continue;
+
+        int blocks = (level_size + THREADS - 1) / THREADS;
+
+        sptrsv_trsv_level_kernel<IndexT, ValueT><<<blocks, THREADS, 0, stream>>>(
+            level_size,
+            levelsets.d_levels + start,
+            d_rowPtr, d_colInd, d_val,
+            d_b, d_x,
+            unit_diag,
+            d_status);
+
+        e = cudaGetLastError();
+        if (e != cudaSuccess)
+        {
+            cudaFree(d_status);
+            return -3;
+        }
+    }
+
+    int h_status = 0;
+    e = cudaMemcpyAsync(&h_status, d_status, sizeof(int),
+                        cudaMemcpyDeviceToHost, stream);
+    if (e != cudaSuccess)
+    {
+        cudaFree(d_status);
+        return -3;
+    }
+    e = cudaStreamSynchronize(stream);
+    if (e != cudaSuccess)
+    {
+        cudaFree(d_status);
+        return -3;
+    }
+
+    cudaFree(d_status);
 
     return (h_status != 0) ? -2 : 0;
 }

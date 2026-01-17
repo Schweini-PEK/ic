@@ -3,7 +3,7 @@
 
 #include <vector>
 
-namespace ichol
+namespace ichol::solver
 {
     /**
      * @brief Solves a linear system with PCG on GPU.
@@ -28,7 +28,7 @@ namespace ichol
      * @param finalRes     Final residual norm (output).
      */
     template <typename T_L>
-    void icPreconditionedCG_GPU(
+    void pcg(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
         const std::vector<double> &h_valA,
@@ -41,6 +41,6 @@ namespace ichol
         int &iterations,
         double &finalRes);
 
-} // namespace ichol
+} // namespace ichol::solver
 
 #endif // ICHOL_PCG_HPP
