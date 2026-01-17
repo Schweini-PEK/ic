@@ -16,8 +16,21 @@ namespace ichol::io
     template <typename T>
     ichol::matrix::CscMatrix<T> mtx_to_csc(const std::string &path, bool verify);
 
+    /**
+     * Generate a 2D Laplacian matrix in CSR format.
+     *
+     * @param n The number of grid points per dimension. The matrix is n^2 x n^2.
+     */
     template <typename T>
-    ichol::matrix::CsrMatrix<T> gen_laplacian_csr(int n);
+    ichol::matrix::CsrMatrix<T> gen_2dlap_csr(int n);
+
+    /**
+     * Generate a 3D Laplacian matrix in CSR format.
+     *
+     * @param n The number of grid points per dimension. The matrix is n^3 x n^3.
+     */
+    template <typename T>
+    ichol::matrix::CsrMatrix<T> gen_3dlap_csr(int n);
 } // namespace ichol::io
 
 #endif // ICHOL_MTX_READ_HPP
