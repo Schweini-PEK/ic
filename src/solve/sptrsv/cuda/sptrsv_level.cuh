@@ -1,7 +1,7 @@
 // sptrsv_levelsets.cuh
 //
 // CUDA 12 level-scheduled sparse triangular solve (SpTRSV) using precomputed level sets.
-// This header only handles the non-transpose solve; transpose handling is external.
+// Persistent-plan version: level rows live on device; status buffer is allocated once and reused.
 //
 // Return codes:
 //   0  success
@@ -20,18 +20,15 @@
 #include "factor/symbolic/symbolic.hpp"
 #include "backends/CUDA/util/gmath.cuh"
 
-/* Enum for fill mode (kept for API compatibility; not needed for correctness in this implementation). */
-enum class FillMode
-{
-    LOWER,
-    UPPER
-};
-
 struct DeviceLevelSets
 {
+    // Host copies (owned) to keep async H2D copies safe without requiring sync.
     std::vector<int> level_ptr;
+    std::vector<int> levels;
+
     int *d_level_ptr = nullptr;
     int *d_levels = nullptr;
+
     int n = 0;
     int num_levels = 0;
 
@@ -39,10 +36,7 @@ struct DeviceLevelSets
     DeviceLevelSets(const DeviceLevelSets &) = delete;
     DeviceLevelSets &operator=(const DeviceLevelSets &) = delete;
 
-    ~DeviceLevelSets()
-    {
-        reset();
-    }
+    ~DeviceLevelSets() { reset(); }
 
     void reset()
     {
@@ -52,7 +46,9 @@ struct DeviceLevelSets
             cudaFree(d_levels);
         d_level_ptr = nullptr;
         d_levels = nullptr;
+
         level_ptr.clear();
+        levels.clear();
         n = 0;
         num_levels = 0;
     }
@@ -60,8 +56,11 @@ struct DeviceLevelSets
     int init(const ichol::symbolic::LevelSets &host, cudaStream_t stream)
     {
         reset();
+
         level_ptr = host.level_ptr;
-        n = static_cast<int>(host.levels.size());
+        levels = host.levels;
+
+        n = static_cast<int>(levels.size());
         num_levels = static_cast<int>(level_ptr.size()) - 1;
 
         if (n == 0)
@@ -73,6 +72,7 @@ struct DeviceLevelSets
             reset();
             return -3;
         }
+
         e = cudaMalloc((void **)&d_levels, sizeof(int) * n);
         if (e != cudaSuccess)
         {
@@ -81,28 +81,25 @@ struct DeviceLevelSets
         }
 
         e = cudaMemcpyAsync(d_level_ptr, level_ptr.data(),
-                            sizeof(int) * level_ptr.size(), cudaMemcpyHostToDevice, stream);
+                            sizeof(int) * level_ptr.size(),
+                            cudaMemcpyHostToDevice, stream);
         if (e != cudaSuccess)
         {
             reset();
             return -3;
         }
 
-        e = cudaMemcpyAsync(d_levels, host.levels.data(),
-                            sizeof(int) * n, cudaMemcpyHostToDevice, stream);
+        e = cudaMemcpyAsync(d_levels, levels.data(),
+                            sizeof(int) * n,
+                            cudaMemcpyHostToDevice, stream);
         if (e != cudaSuccess)
         {
             reset();
             return -3;
         }
 
-        e = cudaStreamSynchronize(stream);
-        if (e != cudaSuccess)
-        {
-            reset();
-            return -3;
-        }
-
+        // No cudaStreamSynchronize: stream ordering guarantees correctness for later work
+        // enqueued on the same stream. Host copies are owned by this object.
         return 0;
     }
 };
@@ -133,18 +130,6 @@ LAST entry in each CSR row.
 
 Required invariant for the CSR passed to this kernel:
   - For every row i, the diagonal entry A(i,i) is stored at position rowPtr[i+1]-1.
-
-Math (A is CSR(op(L)) that satisfies the invariant above):
-  s := b_i - sum_{k=rowPtr[i]}^{rowPtr[i+1]-2} A(i, colInd[k]) * x[colInd[k]]
-  if unit_diag: x_i := s
-  else:         x_i := s / A(i,i)   where A(i,i) == val[rowPtr[i+1]-1]
-
-Numerical safeguard:
-  - Flag d_status if x_i is NaN/Inf or if diag==0 when unit_diag=false.
-
-Documented choice:
-  - No validation that the last entry is diagonal; the kernel assumes it unconditionally
-    per user-provided invariant.
 */
 template <typename IndexT, typename ValueT>
 __global__ void sptrsv_trsv_level_kernel(
@@ -162,27 +147,27 @@ __global__ void sptrsv_trsv_level_kernel(
     if (tid >= level_size)
         return;
 
-    int i = d_level_rows[tid];
+    // Optional cheap early abort after an error was flagged.
+    if (__ldg(d_status) != 0)
+        return;
 
-    IndexT p = d_rowPtr[i];
-    IndexT q = d_rowPtr[i + 1];
+    const int i = d_level_rows[tid];
+    const IndexT p = d_rowPtr[i];
+    const IndexT q = d_rowPtr[i + 1];
+    const IndexT end = q - 1; // last entry is diagonal by invariant
 
-    // s := b[i]
     ValueT s = d_b[i];
 
-    // Off-diagonals are all entries except the last one.
-    // s -= sum_{k=p}^{q-2} A(i, col[k]) * x[col[k]]
-    for (IndexT k = p; k + 1 < q; ++k)
+    for (IndexT k = p; k < end; ++k)
     {
-        IndexT j = d_colInd[k];
-        ValueT a = d_val[k];
+        const IndexT j = d_colInd[k];
+        const ValueT a = d_val[k];
         s = ichol::cuda::GMath<ValueT>::sub(s, ichol::cuda::GMath<ValueT>::mul(a, d_x[j]));
     }
 
     if (!unit_diag)
     {
-        // diag := A(i,i) assumed stored at last position.
-        ValueT diag = d_val[q - 1];
+        const ValueT diag = d_val[end];
         if (sptrsv_device_iszero(diag))
         {
             atomicExch(d_status, 1);
@@ -199,229 +184,146 @@ __global__ void sptrsv_trsv_level_kernel(
 }
 
 /*
-Level-scheduled sparse triangular solve using precomputed host-side level sets.
-
-Mechanism:
-  - Use CSR(L) directly.
-  - For each level (host loop over level_ptr):
-      launch sptrsv_trsv_level_kernel on the rows in that level
-    Stream ordering enforces level ordering (no additional sync needed between levels).
-
-Numerical safeguard:
-  - Uses a device status flag; if any row produces NaN/Inf or invalid diagonal, returns -2.
+Persistent plan: owns DeviceLevelSets + reusable device status flag + pinned host status.
+Call init() once, then solve() many times.
 */
-template <typename IndexT, typename ValueT>
-int SpTRSV_solve_levelsets(
-    int n,
-    const IndexT *d_rowPtr,
-    const IndexT *d_colInd,
-    const ValueT *d_val,
-    const ValueT *d_b,
-    ValueT *d_x,
-    FillMode /*fill_mode*/,
-    bool unit_diag,
-    const ichol::symbolic::LevelSets &levelsets,
-    cudaStream_t stream)
+struct SpTRSVLevelsetsPlan
 {
-    if (n < 0)
-        return -1;
-    if (n == 0)
-        return 0;
-    if (!d_rowPtr || !d_colInd || !d_val || !d_b || !d_x)
-        return -1;
+    DeviceLevelSets ls;
 
-    if ((int)levelsets.levels.size() != n)
-        return -1;
-    if (levelsets.level_ptr.size() < 2)
-        return -1;
-    if (levelsets.level_ptr.front() != 0)
-        return -1;
-    if (levelsets.level_ptr.back() != n)
-        return -1;
+    int *d_status = nullptr; // device flag (reused each solve)
+    int *h_status = nullptr; // pinned host flag (reused each solve)
 
-    // Deterministic initialization.
-    auto e = cudaMemsetAsync(d_x, 0, sizeof(ValueT) * n, stream);
-    if (e != cudaSuccess)
-        return -3;
+    int n = 0;
 
-    // Upload level rows (level_ptr stays on host; it only controls launches).
-    int *d_levels = nullptr;
-    e = cudaMalloc((void **)&d_levels, sizeof(int) * n);
-    if (e != cudaSuccess)
-        return -3;
+    SpTRSVLevelsetsPlan() = default;
+    SpTRSVLevelsetsPlan(const SpTRSVLevelsetsPlan &) = delete;
+    SpTRSVLevelsetsPlan &operator=(const SpTRSVLevelsetsPlan &) = delete;
 
-    e = cudaMemcpyAsync(d_levels, levelsets.levels.data(),
-                        sizeof(int) * n, cudaMemcpyHostToDevice, stream);
-    if (e != cudaSuccess)
+    ~SpTRSVLevelsetsPlan() { reset(); }
+
+    void reset()
     {
-        cudaFree(d_levels);
-        return -3;
+        if (d_status)
+            cudaFree(d_status);
+        if (h_status)
+            cudaFreeHost(h_status);
+        d_status = nullptr;
+        h_status = nullptr;
+
+        ls.reset();
+        n = 0;
     }
 
-    // Device status flag.
-    int *d_status = nullptr;
-    e = cudaMalloc((void **)&d_status, sizeof(int));
-    if (e != cudaSuccess)
+    int init(const ichol::symbolic::LevelSets &host, cudaStream_t stream)
     {
-        cudaFree(d_levels);
-        return -3;
-    }
+        reset();
 
-    e = cudaMemsetAsync(d_status, 0, sizeof(int), stream);
-    if (e != cudaSuccess)
-    {
-        cudaFree(d_status);
-        cudaFree(d_levels);
-        return -3;
-    }
+        int rc = ls.init(host, stream);
+        if (rc != 0)
+        {
+            reset();
+            return rc;
+        }
 
-    constexpr int THREADS = 128;
-    int num_levels = (int)levelsets.level_ptr.size() - 1;
+        n = ls.n;
+        if (n == 0)
+            return 0;
 
-    for (int lvl = 0; lvl < num_levels; ++lvl)
-    {
-        int start = levelsets.level_ptr[lvl];
-        int end = levelsets.level_ptr[lvl + 1];
-        int level_size = end - start;
-        if (level_size <= 0)
-            continue;
-
-        int blocks = (level_size + THREADS - 1) / THREADS;
-
-        sptrsv_trsv_level_kernel<IndexT, ValueT><<<blocks, THREADS, 0, stream>>>(
-            level_size,
-            d_levels + start,
-            d_rowPtr, d_colInd, d_val,
-            d_b, d_x,
-            unit_diag,
-            d_status);
-
-        e = cudaGetLastError();
+        auto e = cudaMalloc((void **)&d_status, sizeof(int));
         if (e != cudaSuccess)
         {
-            cudaFree(d_status);
-            cudaFree(d_levels);
+            reset();
             return -3;
         }
-    }
 
-    // Retrieve status and synchronize so the caller gets a definite result.
-    int h_status = 0;
-    e = cudaMemcpyAsync(&h_status, d_status, sizeof(int),
-                        cudaMemcpyDeviceToHost, stream);
-    if (e != cudaSuccess)
-    {
-        cudaFree(d_status);
-        cudaFree(d_levels);
-        return -3;
-    }
-    e = cudaStreamSynchronize(stream);
-    if (e != cudaSuccess)
-    {
-        cudaFree(d_status);
-        cudaFree(d_levels);
-        return -3;
-    }
-
-    cudaFree(d_status);
-    cudaFree(d_levels);
-
-    return (h_status != 0) ? -2 : 0;
-}
-
-template <typename IndexT, typename ValueT>
-int SpTRSV_solve_levelsets_device(
-    int n,
-    const IndexT *d_rowPtr,
-    const IndexT *d_colInd,
-    const ValueT *d_val,
-    const ValueT *d_b,
-    ValueT *d_x,
-    FillMode /*fill_mode*/,
-    bool unit_diag,
-    const DeviceLevelSets &levelsets,
-    cudaStream_t stream)
-{
-    if (n < 0)
-        return -1;
-    if (n == 0)
-        return 0;
-    if (!d_rowPtr || !d_colInd || !d_val || !d_b || !d_x)
-        return -1;
-    if (levelsets.n != n)
-        return -1;
-    if (!levelsets.d_levels || !levelsets.d_level_ptr)
-        return -1;
-    if (levelsets.level_ptr.size() < 2)
-        return -1;
-    if (levelsets.level_ptr.front() != 0)
-        return -1;
-    if (levelsets.level_ptr.back() != n)
-        return -1;
-
-    (void)levelsets.d_level_ptr;
-
-    auto e = cudaMemsetAsync(d_x, 0, sizeof(ValueT) * n, stream);
-    if (e != cudaSuccess)
-        return -3;
-
-    int *d_status = nullptr;
-    e = cudaMalloc((void **)&d_status, sizeof(int));
-    if (e != cudaSuccess)
-        return -3;
-
-    e = cudaMemsetAsync(d_status, 0, sizeof(int), stream);
-    if (e != cudaSuccess)
-    {
-        cudaFree(d_status);
-        return -3;
-    }
-
-    constexpr int THREADS = 128;
-    int num_levels = levelsets.num_levels;
-
-    for (int lvl = 0; lvl < num_levels; ++lvl)
-    {
-        int start = levelsets.level_ptr[lvl];
-        int end = levelsets.level_ptr[lvl + 1];
-        int level_size = end - start;
-        if (level_size <= 0)
-            continue;
-
-        int blocks = (level_size + THREADS - 1) / THREADS;
-
-        sptrsv_trsv_level_kernel<IndexT, ValueT><<<blocks, THREADS, 0, stream>>>(
-            level_size,
-            levelsets.d_levels + start,
-            d_rowPtr, d_colInd, d_val,
-            d_b, d_x,
-            unit_diag,
-            d_status);
-
-        e = cudaGetLastError();
+        e = cudaHostAlloc((void **)&h_status, sizeof(int), cudaHostAllocDefault);
         if (e != cudaSuccess)
         {
-            cudaFree(d_status);
+            reset();
             return -3;
         }
+
+        e = cudaMemsetAsync(d_status, 0, sizeof(int), stream);
+        if (e != cudaSuccess)
+        {
+            reset();
+            return -3;
+        }
+
+        // no sync required here
+        return 0;
     }
 
-    int h_status = 0;
-    e = cudaMemcpyAsync(&h_status, d_status, sizeof(int),
-                        cudaMemcpyDeviceToHost, stream);
-    if (e != cudaSuccess)
+    template <typename IndexT, typename ValueT>
+    int solve(
+        int n_,
+        const IndexT *d_rowPtr,
+        const IndexT *d_colInd,
+        const ValueT *d_val,
+        const ValueT *d_b,
+        ValueT *d_x,
+        bool unit_diag,
+        cudaStream_t stream)
     {
-        cudaFree(d_status);
-        return -3;
-    }
-    e = cudaStreamSynchronize(stream);
-    if (e != cudaSuccess)
-    {
-        cudaFree(d_status);
-        return -3;
-    }
+        if (n_ < 0)
+            return -1;
+        if (n_ == 0)
+            return 0;
+        if (n_ != n)
+            return -1;
 
-    cudaFree(d_status);
+        if (!d_rowPtr || !d_colInd || !d_val || !d_b || !d_x)
+            return -1;
+        if (!ls.d_levels)
+            return -1;
+        if (!d_status || !h_status)
+            return -1;
+        if (ls.level_ptr.size() < 2)
+            return -1;
+        if (ls.level_ptr.front() != 0)
+            return -1;
+        if (ls.level_ptr.back() != n)
+            return -1;
 
-    return (h_status != 0) ? -2 : 0;
-}
+        auto e = cudaMemsetAsync(d_status, 0, sizeof(int), stream);
+        if (e != cudaSuccess)
+            return -3;
+
+        constexpr int THREADS = 128;
+
+        for (int lvl = 0; lvl < ls.num_levels; ++lvl)
+        {
+            const int start = ls.level_ptr[lvl];
+            const int end = ls.level_ptr[lvl + 1];
+            const int level_size = end - start;
+            if (level_size <= 0)
+                continue;
+
+            const int blocks = (level_size + THREADS - 1) / THREADS;
+
+            sptrsv_trsv_level_kernel<IndexT, ValueT><<<blocks, THREADS, 0, stream>>>(
+                level_size,
+                ls.d_levels + start,
+                d_rowPtr, d_colInd, d_val,
+                d_b, d_x,
+                unit_diag,
+                d_status);
+        }
+
+        e = cudaPeekAtLastError();
+        if (e != cudaSuccess)
+            return -3;
+
+        e = cudaMemcpyAsync(h_status, d_status, sizeof(int),
+                            cudaMemcpyDeviceToHost, stream);
+        if (e != cudaSuccess)
+            return -3;
+
+        e = cudaStreamSynchronize(stream);
+        if (e != cudaSuccess)
+            return -3;
+
+        return (*h_status != 0) ? -2 : 0;
+    }
+};
