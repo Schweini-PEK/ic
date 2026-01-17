@@ -27,7 +27,15 @@ namespace ichol::symbolic
             break;
         }
 
-        ichol::symbolic::apply_permutation_csr<T>(A, plan.perm);
+        if (options.profile)
+        {
+            ichol::util::ScopedTimer timer("Apply permutation to CSR", options.timer_sink);
+            ichol::symbolic::apply_permutation_csr<T>(A, plan.perm);
+        }
+        else
+        {
+            ichol::symbolic::apply_permutation_csr<T>(A, plan.perm);
+        }
 
         if (options.level_k == -1) // Complete Cholesky
         {

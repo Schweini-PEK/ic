@@ -2,6 +2,7 @@
 #pragma once
 
 #include <string>
+#include "ichol/util/timer.hpp"
 
 namespace ichol
 {
@@ -40,6 +41,8 @@ namespace ichol
         bool use_etree = true;
         // IC(k)
         int level_k = -1; // -1 means complete Cholesky
+        bool profile = false;
+        ichol::util::TimeSink timer_sink = nullptr;
     };
 
     struct SuperNodeOptions

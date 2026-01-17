@@ -5,12 +5,15 @@
 #include <stdexcept>
 #include <algorithm>
 #include <utility>
+#include <numeric>
 #include <petscksp.h>
+#include <omp.h>
 
 #include "detail/symbolic_plan.hpp"
 #include "ichol/options.hpp"
 #include "ichol/matrix_formats.hpp"
 #include "ichol/half.hpp"
+#include "ichol/util/timer.hpp"
 
 extern "C"
 {
