@@ -381,20 +381,24 @@ namespace ichol::solver
             build_level_sets_csr_diag_last(n, h_csrRowPtrLt, h_csrColIndLt, true);
 
         cudaStream_t stream = 0;
-        DeviceLevelSets d_levelsets_L;
-        DeviceLevelSets d_levelsets_Lt;
-        int rc_levels = d_levelsets_L.init(levelsets_L, stream);
-        if (rc_levels != 0)
+
+        // Persistent plans
+        SpTRSVLevelsetsPlan sptrsv_plan_L;
+        SpTRSVLevelsetsPlan sptrsv_plan_Lt;
+
+        int rc_plan = sptrsv_plan_L.init(levelsets_L, stream);
+        if (rc_plan != 0)
         {
-            std::cerr << "ERROR: SpTRSV levelset upload (L) failed\n";
+            std::cerr << "ERROR: SpTRSV plan init (L) failed, code " << rc_plan << "\n";
             iterations = 0;
             finalRes = std::numeric_limits<double>::infinity();
             return;
         }
-        rc_levels = d_levelsets_Lt.init(levelsets_Lt, stream);
-        if (rc_levels != 0)
+
+        rc_plan = sptrsv_plan_Lt.init(levelsets_Lt, stream);
+        if (rc_plan != 0)
         {
-            std::cerr << "ERROR: SpTRSV levelset upload (L^T) failed\n";
+            std::cerr << "ERROR: SpTRSV plan init (L^T) failed, code " << rc_plan << "\n";
             iterations = 0;
             finalRes = std::numeric_limits<double>::infinity();
             return;
@@ -558,16 +562,14 @@ namespace ichol::solver
 
                 CUDA_CHECK(cudaEventRecord(sptrsv_start, stream));
 
-                int rc1 = SpTRSV_solve_levelsets_device<int, SolveT>(
+                int rc1 = sptrsv_plan_L.solve<int, SolveT>(
                     n,
                     d_csrRowPtrL.get(),
                     d_csrColIndL.get(),
                     d_valL.get(),
                     d_r_work,
                     d_w_work,
-                    FillMode::LOWER,
                     /*unit_diag=*/false,
-                    d_levelsets_L,
                     stream);
 
                 if (rc1 != 0)
@@ -583,16 +585,14 @@ namespace ichol::solver
                     break;
                 }
 
-                int rc2 = SpTRSV_solve_levelsets_device<int, SolveT>(
+                int rc2 = sptrsv_plan_Lt.solve<int, SolveT>(
                     n,
                     d_csrRowPtrLt.get(),
                     d_csrColIndLt.get(),
                     d_valLt.get(),
                     d_w_work,
                     d_z_work,
-                    FillMode::UPPER,
                     /*unit_diag=*/false,
-                    d_levelsets_Lt,
                     stream);
 
                 CUDA_CHECK(cudaEventRecord(sptrsv_stop, stream));
