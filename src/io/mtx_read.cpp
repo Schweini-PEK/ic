@@ -140,7 +140,7 @@ namespace
      * Expect at least the lower triangular is stored in mtx.
      */
     template <typename T>
-    ichol::matrix::CooMatrix<T> mtx_to_coo(const std::string &path, bool verify)
+    ichol::matrix::CooMatrix<T> mtx_to_coo(const std::string &path, bool verify, double alpha)
     {
         std::ifstream in(path);
         if (!in)
@@ -430,25 +430,25 @@ namespace
 namespace ichol::io
 {
     template <typename T>
-    matrix::CsrMatrix<T> mtx_to_csr(const std::string &path, bool verify)
+    matrix::CsrMatrix<T> mtx_to_csr(const std::string &path, bool verify, double alpha)
     {
-        auto coo = mtx_to_coo<T>(path, verify);
+        auto coo = mtx_to_coo<T>(path, verify, alpha);
         return coo_to_csr(std::move(coo));
     }
 
     template <typename T>
-    matrix::CscMatrix<T> mtx_to_csc(const std::string &path, bool verify)
+    matrix::CscMatrix<T> mtx_to_csc(const std::string &path, bool verify, double alpha)
     {
-        auto coo = mtx_to_coo<T>(path, verify);
+        auto coo = mtx_to_coo<T>(path, verify, alpha);
         return coo_to_csc(std::move(coo));
     }
 
-    template matrix::CsrMatrix<double> mtx_to_csr<double>(const std::string &path, bool verify);
-    template matrix::CsrMatrix<float> mtx_to_csr<float>(const std::string &path, bool verify);
-    template matrix::CsrMatrix<half_float::half> mtx_to_csr<half_float::half>(const std::string &path, bool verify);
+    template matrix::CsrMatrix<double> mtx_to_csr<double>(const std::string &path, bool verify, double alpha);
+    template matrix::CsrMatrix<float> mtx_to_csr<float>(const std::string &path, bool verify, double alpha);
+    template matrix::CsrMatrix<half_float::half> mtx_to_csr<half_float::half>(const std::string &path, bool verify, double alpha);
 
-    template matrix::CscMatrix<double> mtx_to_csc<double>(const std::string &path, bool verify);
-    template matrix::CscMatrix<float> mtx_to_csc<float>(const std::string &path, bool verify);
-    template matrix::CscMatrix<half_float::half> mtx_to_csc<half_float::half>(const std::string &path, bool verify);
+    template matrix::CscMatrix<double> mtx_to_csc<double>(const std::string &path, bool verify, double alpha);
+    template matrix::CscMatrix<float> mtx_to_csc<float>(const std::string &path, bool verify, double alpha);
+    template matrix::CscMatrix<half_float::half> mtx_to_csc<half_float::half>(const std::string &path, bool verify, double alpha);
 
 } // namespace ichol::io

@@ -11,10 +11,10 @@ namespace ichol::io
      * Read a mtx file and store it to a lower tri + diag in CSR format.
      */
     template <typename T>
-    ichol::matrix::CsrMatrix<T> mtx_to_csr(const std::string &path, bool verify);
+    ichol::matrix::CsrMatrix<T> mtx_to_csr(const std::string &path, bool verify, double alpha = 1e-3);
 
     template <typename T>
-    ichol::matrix::CscMatrix<T> mtx_to_csc(const std::string &path, bool verify);
+    ichol::matrix::CscMatrix<T> mtx_to_csc(const std::string &path, bool verify, double alpha = 1e-3);
 
     /**
      * Generate a 2D Laplacian matrix in CSR format.
