@@ -1,7 +1,7 @@
 // test/unit/test_ic.cpp
 #include <gtest/gtest.h>
-// #include <vector>
-// #include <cmath>
+#include <petscsys.h>
+#include <chrono>
 
 #include "ichol/matrix_formats.hpp"
 #include "ichol/pcg.hpp"
@@ -15,26 +15,32 @@
 
 TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
 {
-    std::string path = "test/data/nasa2146.mtx";
-    ichol::matrix::CsrMatrix<double> A = ichol::io::mtx_to_csr<double>(path, false);
+    std::string path = "test/data/europe_osm.mtx";
+    // ichol::matrix::CsrMatrix<double> A = ichol::io::mtx_to_csr<double>(path, false);
+    ichol::matrix::CsrMatrix<double> A = ichol::io::gen_3dlap_csr<double>(100);
 
     const int n = A.num_rows;
 
     ichol::SymbolicOptions sym_options;
-    // sym_options.ordering = ichol::Ordering::AMD;
-    sym_options.level_k = 3; // IC(3)
+    sym_options.ordering = ichol::Ordering::AMD;
+    sym_options.level_k = 4; // IC(4)
 
     ichol::IncompleteCholeskyOptions ic_options;
     ic_options.scaling = ichol::Scaling::UnitSqrtDiag;
     ic_options.pivot_shift_strategy = ichol::PivotShiftStrategy::Static;
     ic_options.static_shift = 1e-5;
-    ic_options.lfil = 10;
+    ic_options.lfil = 100;
     ic_options.drop_tol = 0.0;
 
     auto sym_plan = ichol::symbolic::ic_analyze<double>(A, sym_options);
 
     ichol::numeric::NumericPlan num_plan;
+
+    auto fact_start = std::chrono::high_resolution_clock::now();
     auto L = ichol::numeric::incomplete_cholesky_preconditioner<double>(A, sym_plan, num_plan, ic_options);
+    auto fact_end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> fact_duration = fact_end - fact_start;
+    std::cout << "IC factorization time: " << fact_duration.count() << " seconds.\n";
 
     auto D = num_plan.prescaling.D;
 
@@ -43,14 +49,20 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
     B = A_scaled = D^{-1} A D^{-1},
     and b_tilde = D^{-1} b
     */
+    std::vector<double> b(n, 1.0);
+    std::vector<double> b_perm = (sym_options.ordering == ichol::Ordering::Identity)
+                                     ? b
+                                     : ichol::symbolic::apply_permutation_vec(b, sym_plan.perm);
     std::vector<double> b_tilde(n);
     for (int i = 0; i < n; ++i)
-        b_tilde[i] = 1.0 / D[i];
+        b_tilde[i] = b_perm[i] / D[i];
 
     // Prepare L for PCG
     std::vector<int> rowPtrL = L.row_ptr;
     std::vector<int> colIndL = L.col_ind;
-    std::vector<double> valL = ichol::util::to_double_vec(L.values);
+    std::cout << "nnzs of L" << size_t(L.values.size()) << "\n";
+    std::cout << "nnzs of predicted L: "
+              << sym_plan.factor_pattern.col_ind_L.size() << "\n";
 
     std::vector<double> y;
     int iters = 0;
@@ -60,13 +72,13 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
     Solve B y = b_tilde with preconditioner from L,
     where LL^T \approx D^{-1} A D^{-1} + \alpha I
     */
-    ichol::icPreconditionedCG_GPU<double>(
+    ichol::solver::pcg<double>(
         A.row_ptr,
         A.col_ind,
         A.values,
         rowPtrL,
         colIndL,
-        valL,
+        L.values,
         b_tilde,
         y,
         D,
@@ -81,8 +93,7 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
         return std::sqrt(s);
     };
 
-    // // Symmetric matvec for CSR storing lower-triangular + diagonal only.
-    // // Assumes diagonal entry exists in every row.
+    // Symmetric matvec for CSR storing lower-triangular + diagonal only.
     auto symm_lower_csr_matvec = [&](const ichol::matrix::CsrMatrix<double> &M,
                                      const std::vector<double> &x,
                                      std::vector<double> &y)
@@ -103,7 +114,7 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
         }
     };
 
-    // 1) Scaled system residual: rB = B*y - b_tilde
+    // Scaled system residual: rB = B*y - b_tilde
     std::vector<double> By(n), rB(n);
     symm_lower_csr_matvec(A, y, By);
     for (int i = 0; i < n; ++i)
@@ -119,23 +130,19 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
               << iters << "\n";
     std::cout << "Final residual from CG (reported ||r||_2): "
               << finalRes << "\n";
+}
 
-    // EXPECT_LT(relresB, 1e-6);
+int main(int argc, char **argv)
+{
+    PetscErrorCode ierr = PetscInitialize(&argc, &argv, nullptr, nullptr);
+    if (ierr)
+        return ierr;
 
-    // // 2) Original system residual: rA = A*x - b, with x = D^{-1} y
-    // std::vector<double> x(n);
-    // for (int i = 0; i < n; ++i)
-    //     x[i] = y[i] / D[i];
+    ::testing::InitGoogleTest(&argc, argv);
+    int rc = RUN_ALL_TESTS();
 
-    // std::vector<double> Ax(n), rA(n);
-    // symm_lower_csr_matvec(Ahost, x, Ax);
-    // for (int i = 0; i < n; ++i)
-    //     rA[i] = Ax[i] - b[i];
-
-    // double rAnorm = vec_norm(rA);
-    // double bnorm = vec_norm(b);
-    // double relresA = (bnorm == 0.0) ? rAnorm : rAnorm / bnorm;
-
-    // std::cout << "Original-system relative residual (A x = b): "
-    //           << relresA << "\n";
+    ierr = PetscFinalize();
+    if (ierr)
+        return ierr;
+    return rc;
 }

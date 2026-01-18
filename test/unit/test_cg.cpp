@@ -39,7 +39,7 @@ TEST(ICPCG, Solves2x2_Double)
 
     std::vector<double> D = {1.0, 1.0}; // No scaling
 
-    ichol::icPreconditionedCG_GPU<double>(
+    ichol::solver::pcg<double>(
         rowPtrA,
         colIndA,
         valA,
