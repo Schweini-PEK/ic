@@ -3,6 +3,8 @@
 
 #include <vector>
 
+#include "factor/symbolic/super_sym.hpp"
+
 namespace ichol::symbolic
 {
     struct Permutation
@@ -23,11 +25,18 @@ namespace ichol::symbolic
         std::vector<int> level_ptr; // size num_levels + 1
         std::vector<int> levels;    // size n
     };
-
+    // Scheduling information for supernodes.
+    //
+    // NOTE: For the LL supernodal numeric path, the canonical schedule is
+    // derived from the SuperSym rowlist (CHOLMOD-style). For other algorithms,
+    // a simpler level-set scheduling based on column dependencies can also be used.
     struct SnodeLevelSets {
-        std::vector<int> snode_level;
-        LevelSets level_sets; // level_sets.levels are snode ids
+        std::vector<int> levels;                    // per-snode level
+        std::vector<int> parent;                    // per-snode parent (optional)
+        std::vector<std::vector<int>> children;     // adjacency list (optional)
+        std::vector<std::vector<int>> buckets;      // buckets[level] = snode ids
     };
+
 
     struct FactorPattern
     {
@@ -49,6 +58,10 @@ namespace ichol::symbolic
 
         std::vector<std::pair<int,int>> snodes; // [start_col, end_col)
         std::vector<int> col2snode;             // size = ncols
+
+        // CHOLMOD-like packed supernodal symbolic (consumed by numeric)
+        std::vector<std::vector<int>> snode_rows; // union rowlist per snode
+        SuperSym sym;
 
         SnodeLevelSets snode_level_sets;         // supernode DAG scheduling
     };

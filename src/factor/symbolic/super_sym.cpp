@@ -28,6 +28,11 @@ namespace ichol::symbolic
 
         // super
         for (int k = 0; k < nsuper; ++k) {
+            // 对于第 k 个 supernode：
+            //  - pivot 行固定为 [scol, ecol)
+            //  - update 行来自 snode_rows 的其余元素（去掉 pivots 后的集合）
+            // 这里会把 update 行排序 + 去重，并检查最小 update 行必须 >= ecol。
+
             sym.super[(size_t)k] = snodes[(size_t)k].first;
         }
         sym.super[(size_t)nsuper] = snodes.back().second;
@@ -38,6 +43,11 @@ namespace ichol::symbolic
         sym.s.reserve(1024);
 
         for (int k = 0; k < nsuper; ++k) {
+            // 对于第 k 个 supernode：
+            //  - pivot 行固定为 [scol, ecol)
+            //  - update 行来自 snode_rows 的其余元素（去掉 pivots 后的集合）
+            // 这里会把 update 行排序 + 去重，并检查最小 update 行必须 >= ecol。
+
             const int scol  = snodes[(size_t)k].first;
             const int ecol  = snodes[(size_t)k].second;
             const int nscol = ecol - scol;
@@ -74,9 +84,16 @@ namespace ichol::symbolic
             sym.pi[(size_t)k + 1] = (int)sym.s.size();
         }
 
-        // px
+        // px（数值阶段稠密块偏移）
+        // 对应 CHOLMOD 中每个 supernode 的 Lx 片段大小：nsrow * nscol。
+
         sym.px[0] = 0;
         for (int k = 0; k < nsuper; ++k) {
+            // 对于第 k 个 supernode：
+            //  - pivot 行固定为 [scol, ecol)
+            //  - update 行来自 snode_rows 的其余元素（去掉 pivots 后的集合）
+            // 这里会把 update 行排序 + 去重，并检查最小 update 行必须 >= ecol。
+
             const int scol  = sym.super[(size_t)k];
             const int ecol  = sym.super[(size_t)k + 1];
             const int nscol = ecol - scol;
