@@ -1,263 +1,249 @@
 // test_supernodal.cpp
 #include <gtest/gtest.h>
 
-#include <iostream>
-#include <iomanip>
 #include <algorithm>
-#include <numeric>
+#include <cmath>
+#include <iostream>
+#include <random>
 #include <string>
 #include <vector>
-#include <utility>
-#include <filesystem>
+#include <limits>
 
-// your project headers
 #include "ichol/mtx_read.hpp"
-#include "factor/symbolic/symbolic.hpp"
-#include "factor/symbolic/detail/symbolic_plan.hpp"
+#include "ichol/options.hpp"
+#include "factor/symbolic/supernodal_ll_plan.hpp"
+#include "factor/numerical/supernodal_numeric_ll.hpp"
 
-// ---- SuiteSparse / CHOLMOD ----
-extern "C" {
-#include <cholmod.h>
+namespace {
+
+static double l2norm_sq(const std::vector<double>& v)
+{
+    double s = 0.0;
+    for (double a : v) s += a * a;
+    return s;
 }
 
-using namespace ichol;
-using namespace ichol::symbolic;
-
-static void print_sn_range_list(const std::vector<std::pair<int,int>>& snodes, int limit = 20)
+static double l2norm(const std::vector<double>& v)
 {
-    int m = static_cast<int>(snodes.size());
-    std::cout << "  total supernodes = " << m << "\n";
-    int shown = std::min(m, limit);
-    std::cout << "  first " << shown << " supernodes [start,end):\n";
-    for (int i = 0; i < shown; ++i) {
-        std::cout << "    [" << snodes[i].first << "," << snodes[i].second << ")";
-        std::cout << " size=" << (snodes[i].second - snodes[i].first) << "\n";
+    return std::sqrt(l2norm_sq(v));
+}
+
+static double l2norm_diff(const std::vector<double>& a, const std::vector<double>& b)
+{
+    if (a.size() != b.size()) return std::numeric_limits<double>::quiet_NaN();
+    double s = 0.0;
+    for (size_t i = 0; i < a.size(); ++i) {
+        double d = a[i] - b[i];
+        s += d * d;
     }
-    if (m > shown) std::cout << "    ... (+" << (m - shown) << " more)\n";
+    return std::sqrt(s);
 }
 
-static std::vector<int> snode_size_histogram(const std::vector<std::pair<int,int>>& snodes, int max_bucket = 20)
+
+// Treat A as symmetric, stored in LOWER triangle CSC (i >= j).
+static void spmv_sym_lower_csc(const ichol::matrix::CscMatrix<double>& A,
+                               const std::vector<double>& x,
+                               std::vector<double>& y)
 {
-    std::vector<int> hist(max_bucket + 1, 0); // last bucket is ">= max_bucket"
-    for (auto &p : snodes) {
-        int sz = p.second - p.first;
-        if (sz >= max_bucket) hist[max_bucket]++;
-        else hist[sz]++;
-    }
-    return hist;
-}
-
-static void print_histogram(const std::vector<int>& hist)
-{
-    for (size_t i = 0; i + 1 < hist.size(); ++i) {
-        std::cout << "    size=" << std::setw(2) << i << " -> " << hist[i] << "\n";
-    }
-    std::cout << "    size>=" << (hist.size()-1) << " -> " << hist.back() << "\n";
-}
-
-// =============== CHOLMOD integration helpers ===============
-
-#ifdef ICHOL_CHOLMOD_LONG
-    using cholmod_idx_t = SuiteSparse_long;
-    #define CHM(name) cholmod_l_##name
-#else
-    using cholmod_idx_t = int;
-    #define CHM(name) cholmod_##name
-#endif
-
-static cholmod_sparse* csc_to_cholmod_pattern(
-    const ichol::matrix::CscMatrix<double>& A,
-    int stype,                 // 0=unsym, -1=lower(sym), +1=upper(sym)
-    cholmod_common* c)
-{
-    cholmod_sparse* S = CHM(allocate_sparse)(
-        (size_t)A.num_rows, (size_t)A.num_cols, (size_t)A.nnz,
-        /*sorted=*/1, /*packed=*/1,
-        stype, CHOLMOD_PATTERN, c);
-
-    auto* p = static_cast<cholmod_idx_t*>(S->p);
-    auto* i = static_cast<cholmod_idx_t*>(S->i);
-
-    for (int k = 0; k < (int)A.col_ptr.size(); ++k) p[k] = (cholmod_idx_t)A.col_ptr[k];
-    for (int k = 0; k < (int)A.row_ind.size(); ++k) i[k] = (cholmod_idx_t)A.row_ind[k];
-
-    return S;
-}
-
-static std::vector<std::pair<int,int>> cholmod_symbolic_supernodes_identity(
-    const ichol::matrix::CscMatrix<double>& A,
-    int stype,
-    bool disable_postorder,
-    bool disable_relax,
-    cholmod_common* cc_out
-)
-{
-    cholmod_common cc_local;
-    cholmod_common* cc = cc_out ? cc_out : &cc_local;
-
-    CHM(start)(cc);
-
-    cc->supernodal = CHOLMOD_SUPERNODAL;
-
-    if (disable_postorder) cc->postorder = 0;
-    if (disable_relax) {
-        cc->nrelax[0] = cc->nrelax[1] = cc->nrelax[2] = 0;
-        cc->zrelax[0] = cc->zrelax[1] = cc->zrelax[2] = 0.0;
-    }
-
-    cc->nmethods = 1;
-    cc->method[0].ordering = CHOLMOD_GIVEN;
-
     const int n = A.num_cols;
-    std::vector<cholmod_idx_t> perm((size_t)n);
-    for (int i = 0; i < n; ++i) perm[i] = (cholmod_idx_t)i;
+    y.assign((size_t)n, 0.0);
 
-    cholmod_sparse* S = csc_to_cholmod_pattern(A, stype, cc);
-    cholmod_factor* L = CHM(analyze_p)(S, perm.data(), nullptr, 0, cc);
+    for (int j = 0; j < n; ++j) {
+        for (int p = A.col_ptr[j]; p < A.col_ptr[j + 1]; ++p) {
+            const int i = A.row_ind[p];
+            const double v = A.values[p];
+            if (i < j) continue; // lower only
 
-    std::vector<std::pair<int,int>> sn_chol;
-
-    if (!L) {
-        std::cerr << "CHOLMOD analyze_p returned nullptr factor.\n";
-    } else if (!L->is_super) {
-        std::cerr << "CHOLMOD did not produce a supernodal factor (is_super = false).\n";
-    } else {
-        int nsuper = (int)L->nsuper;
-        auto* super = static_cast<cholmod_idx_t*>(L->super);
-
-        sn_chol.reserve((size_t)nsuper);
-        for (int s = 0; s < nsuper; ++s) {
-            int a = (int)super[s];
-            int b = (int)super[s + 1];
-            sn_chol.emplace_back(a, b);
+            y[(size_t)i] += v * x[(size_t)j];
+            if (i != j) y[(size_t)j] += v * x[(size_t)i];
         }
     }
-
-    CHM(free_factor)(&L, cc);
-    CHM(free_sparse)(&S, cc);
-
-    if (!cc_out) CHM(finish)(cc);
-    return sn_chol;
 }
 
-static void compare_partitions(
-    const std::vector<std::pair<int,int>>& ours,
-    const std::vector<std::pair<int,int>>& chol,
-    const char* tag_ours,
-    const char* tag_chol,
-    int max_print = 20
-)
+static double fro_norm_sym_lower_csc(const ichol::matrix::CscMatrix<double>& A)
 {
-    std::cout << "\n==== Partition compare: " << tag_ours << " vs " << tag_chol << " ====\n";
-    std::cout << "  " << tag_ours << " supernodes: " << ours.size() << "\n";
-    std::cout << "  " << tag_chol << " supernodes: " << chol.size() << "\n";
-
-    size_t m = std::min(ours.size(), chol.size());
-    size_t first_bad = m;
-    for (size_t k = 0; k < m; ++k) {
-        if (ours[k] != chol[k]) { first_bad = k; break; }
+    const int n = A.num_cols;
+    double s = 0.0;
+    for (int j = 0; j < n; ++j) {
+        for (int p = A.col_ptr[j]; p < A.col_ptr[j + 1]; ++p) {
+            const int i = A.row_ind[p];
+            const double v = A.values[p];
+            if (i < j) continue;
+            if (i == j) s += v * v;
+            else        s += 2.0 * v * v; // symmetric duplicate
+        }
     }
+    return std::sqrt(s);
+}
 
-    if (first_bad == m && ours.size() == chol.size()) {
-        std::cout << "  ✅ partitions identical\n";
-        return;
-    }
+// y = L * x, where L is stored in CHOLMOD-style packed supernodal blocks.
+static void apply_L(const ichol::numeric::SuperNumeric& num,
+                    const std::vector<double>& x,
+                    std::vector<double>& y)
+{
+    const auto& sym = num.sym;
+    const int n = (int)x.size();
+    y.assign((size_t)n, 0.0);
 
-    if (first_bad == m) {
-        std::cout << "  ⚠️ first " << m << " blocks match, but counts differ.\n";
-    } else {
-        std::cout << "  ❌ first mismatch at block k=" << first_bad << "\n";
-        std::cout << "     " << tag_ours << ": [" << ours[first_bad].first << "," << ours[first_bad].second << ")\n";
-        std::cout << "     " << tag_chol << ": [" << chol[first_bad].first << "," << chol[first_bad].second << ")\n";
-    }
+    const int nsuper = (int)sym.super.size() - 1;
+    for (int k = 0; k < nsuper; ++k) {
+        const int scol  = sym.super[(size_t)k];
+        const int ecol  = sym.super[(size_t)k + 1];
+        const int nscol = ecol - scol;
 
-    int shown = (int)std::min(m, (size_t)max_print);
-    std::cout << "  showing first " << shown << " blocks side-by-side:\n";
-    for (int k = 0; k < shown; ++k) {
-        std::cout << "    k=" << std::setw(3) << k
-                  << "  " << tag_ours << "=[" << ours[k].first << "," << ours[k].second << ")"
-                  << "  " << tag_chol << "=[" << chol[k].first << "," << chol[k].second << ")\n";
+        const int pi0   = sym.pi[(size_t)k];
+        const int pi1   = sym.pi[(size_t)k + 1];
+        const int nsrow = pi1 - pi0;
+
+        const int px0   = sym.px[(size_t)k];
+
+        for (int lc = 0; lc < nscol; ++lc) {
+            const int col = scol + lc;
+            const double alpha = x[(size_t)col];
+            if (alpha == 0.0) continue;
+
+            const size_t base = (size_t)px0 + (size_t)lc * (size_t)nsrow;
+            for (int t = 0; t < nsrow; ++t) {
+                const int row = sym.s[(size_t)(pi0 + t)];
+                y[(size_t)row] += num.x[base + (size_t)t] * alpha;
+            }
+        }
     }
 }
 
-// =============== Test ===============
-TEST(SupernodalIO, CompareConservativeAndApproxOnNasa_WithCHOLMOD)
+// y = L^T * x
+static void apply_LT(const ichol::numeric::SuperNumeric& num,
+                     const std::vector<double>& x,
+                     std::vector<double>& y)
 {
-    std::string path = "/tmp/ic/test/data/nasa2146.mtx";
-    auto A = ichol::io::mtx_to_csc<double>(path, false);
+    const auto& sym = num.sym;
+    const int n = (int)x.size();
+    y.assign((size_t)n, 0.0);
 
+    const int nsuper = (int)sym.super.size() - 1;
+    for (int k = 0; k < nsuper; ++k) {
+        const int scol  = sym.super[(size_t)k];
+        const int ecol  = sym.super[(size_t)k + 1];
+        const int nscol = ecol - scol;
+
+        const int pi0   = sym.pi[(size_t)k];
+        const int pi1   = sym.pi[(size_t)k + 1];
+        const int nsrow = pi1 - pi0;
+
+        const int px0   = sym.px[(size_t)k];
+
+        for (int lc = 0; lc < nscol; ++lc) {
+            const int col = scol + lc;
+            const size_t base = (size_t)px0 + (size_t)lc * (size_t)nsrow;
+
+            double sum = 0.0;
+            for (int t = 0; t < nsrow; ++t) {
+                const int row = sym.s[(size_t)(pi0 + t)];
+                sum += num.x[base + (size_t)t] * x[(size_t)row];
+            }
+            y[(size_t)col] += sum;
+        }
+    }
+}
+
+static double estimate_fro_norm_LLt(const ichol::numeric::SuperNumeric& num, int trials)
+{
+    const int n = (int)(num.sym.super.empty() ? 0 : num.sym.super.back());
+    std::mt19937 rng(12345);
+    std::bernoulli_distribution coin(0.5);
+
+    std::vector<double> g((size_t)n), t((size_t)n), v((size_t)n);
+    double acc = 0.0;
+
+    for (int k = 0; k < trials; ++k) {
+        for (int i = 0; i < n; ++i) g[(size_t)i] = coin(rng) ? 1.0 : -1.0;
+        apply_LT(num, g, t);
+        apply_L(num, t, v);
+        acc += l2norm_sq(v);
+    }
+
+    // Hutchinson: E ||M g||^2 = ||M||_F^2 for Rademacher / Gaussian g.
+    return std::sqrt(acc / std::max(1, trials));
+}
+
+static double worst_random_rel_residual(const ichol::matrix::CscMatrix<double>& A,
+                                       const ichol::numeric::SuperNumeric& num,
+                                       int trials)
+{
+    const int n = A.num_cols;
+    std::mt19937 rng(20240120);
+    std::bernoulli_distribution coin(0.5);
+
+    std::vector<double> x((size_t)n), yA, t, yL;
+
+    double worst = 0.0;
+    for (int k = 0; k < trials; ++k) {
+        for (int i = 0; i < n; ++i) x[(size_t)i] = coin(rng) ? 1.0 : -1.0;
+
+        spmv_sym_lower_csc(A, x, yA);
+        apply_LT(num, x, t);
+        apply_L(num, t, yL);
+
+        const double nume = l2norm_diff(yA, yL);
+        const double deno = std::max(l2norm(yA), 1e-30);
+        worst = std::max(worst, nume / deno);
+    }
+    return worst;
+}
+
+} // namespace
+
+TEST(SupernodalCPU, SymbolicThenNumeric_LL_Nasa2146)
+{
+    // Keep the same convention as the original project tests.
+    const std::string path = "/tmp/ic/test/data/nasa2146.mtx";
+
+    auto A = ichol::io::mtx_to_csc<double>(path, /*make_symmetric=*/false);
     ASSERT_GT(A.num_cols, 0);
-    std::cout << "Matrix: " << path << "  ncols=" << A.num_cols << " nnz=" << A.nnz << "\n";
+    ASSERT_EQ(A.num_rows, A.num_cols) << "This test expects a square matrix.";
 
-    // ---- your pipeline ----
-    auto etree = ichol::symbolic::build_etree<double>(A);
-    auto fp = ichol::symbolic::compute_complete_cholesky_pattern<double>(A, etree);
+    // 1) Symbolic phase: build ALL symbolic info needed by numeric.
+    ichol::SuperNodeOptions snopt;
+    snopt.approximate = false;
+    auto plan = ichol::symbolic::supernodal_ll_analyze(A, snopt);
 
-    ASSERT_EQ(fp.row_ptr_L.back(), static_cast<int>(fp.col_ind_L.size()));
+    // Basic sanity on the symbolic product.
+    ASSERT_GE((int)plan.sym.super.size(), 2);
+    ASSERT_EQ((int)plan.sym.super.size(), (int)plan.sym.pi.size());
+    ASSERT_EQ((int)plan.sym.super.size(), (int)plan.sym.px.size());
+    ASSERT_EQ((int)plan.sym.s.size(), plan.sym.pi.back());
 
-    auto col_ls = ichol::symbolic::build_level_sets(fp);
+    // 2) Numeric phase (CPU): consume the symbolic plan and factorize.
+    auto num = ichol::numeric::factorize_supernodal_ll(A, plan);
 
-    // (A) ours: relaxed (matches CHOLMOD default super_symbolic behavior)
-    auto sn_ours_relaxed = ichol::symbolic::detect_supernodes(fp, etree);
-    std::cout << "Ours detect (CHOLMOD-style relaxed amalgamation):\n";
-    print_sn_range_list(sn_ours_relaxed);
-    auto hist_relaxed = snode_size_histogram(sn_ours_relaxed, 16);
-    std::cout << "Ours(relaxed) size histogram:\n";
-    print_histogram(hist_relaxed);
+    ASSERT_TRUE(num.ok) << "Numeric factorization failed at snode="
+                        << num.fail_snode << ", col_in_snode=" << num.fail_col_in_snode;
 
-    // (B) ours: fundamental (relax=off), for strict comparison
-    auto sn_ours_fund = ichol::symbolic::detect_supernodes_fundamental(etree);
-    std::cout << "\nOurs detect (fundamental, relax=off):\n";
-    print_sn_range_list(sn_ours_fund);
-    auto hist_fund = snode_size_histogram(sn_ours_fund, 16);
-    std::cout << "Ours(fundamental) size histogram:\n";
-    print_histogram(hist_fund);
+    // Numeric output is CHOLMOD-style packed supernodal storage of L.
+    ASSERT_EQ((int)num.x.size(), plan.sym.px.back());
 
-    // Approx versions unchanged
-    auto sn_appx1 = ichol::symbolic::detect_supernodes_approx(fp, etree, 1.0);
-    std::cout << "\nApproximate detect (threshold=1.0):\n";
-    print_sn_range_list(sn_appx1);
+    // 3) Verification.
+    // The ratio ||L L^T|| / ||A|| alone is a weak check (it only checks scale),
+    // so we report it but also assert a meaningful relative residual.
+    const double A_fro = fro_norm_sym_lower_csc(A);
+    const double LLt_fro = estimate_fro_norm_LLt(num, /*trials=*/20);
+    const double ratio = LLt_fro / std::max(A_fro, 1e-30);
 
-    double thr = 0.8;
-    auto sn_appx08 = ichol::symbolic::detect_supernodes_approx(fp, etree, thr);
-    std::cout << "\nApproximate detect (threshold=" << thr << "):\n";
-    print_sn_range_list(sn_appx08);
+    const double worst_rel = worst_random_rel_residual(A, num, /*trials=*/10);
 
-    EXPECT_LE(sn_appx08.size(), sn_ours_relaxed.size());
+    std::cout << "[SupernodalCPU] n=" << A.num_cols
+              << " nsuper=" << (int)plan.sym.super.size() - 1
+              << " ||A||_F=" << A_fro
+              << " ||LL^T||_F~=" << LLt_fro
+              << " ratio=" << ratio
+              << " worst_rel_residual~=" << worst_rel
+              << "\n";
 
-    // ---- CHOLMOD symbolic supernodes ----
-    // MUST match our etree/colcount semantics: we use strict UPPER (prefer_upper).
-    // So use stype = +1.
-    // const int stype = +1;
-    const int stype = -1;
+    ASSERT_TRUE(std::isfinite(ratio));
+    ASSERT_TRUE(std::isfinite(worst_rel));
 
-    // (1) CHOLMOD default-ish: identity ordering, postorder ON, relax ON
-    auto sn_chol_default = cholmod_symbolic_supernodes_identity(
-        A, stype,
-        /*disable_postorder=*/false,
-        /*disable_relax=*/false,
-        /*cc_out=*/nullptr
-    );
-
-    std::cout << "\nCHOLMOD supernodes (identity perm, postorder=ON, relax=ON):\n";
-    print_sn_range_list(sn_chol_default);
-
-    // (2) CHOLMOD fundamental: identity ordering, postorder ON, relax OFF
-    auto sn_chol_fund = cholmod_symbolic_supernodes_identity(
-        A, stype,
-        /*disable_postorder=*/false,
-        /*disable_relax=*/true,
-        /*cc_out=*/nullptr
-    );
-
-    std::cout << "\nCHOLMOD supernodes (identity perm, postorder=ON, relax=OFF):\n";
-    print_sn_range_list(sn_chol_fund);
-
-    // ---- comparisons ----
-    compare_partitions(sn_ours_relaxed, sn_chol_default, "ours(relaxed)", "cholmod(relaxed)", 30);
-    compare_partitions(sn_ours_fund,    sn_chol_fund,    "ours(fund)",    "cholmod(fund)",    30);
-
-    // Optional strict asserts (enable only when you're confident everything aligned):
-    // EXPECT_EQ(sn_ours_relaxed, sn_chol_default);
-    // EXPECT_EQ(sn_ours_fund,    sn_chol_fund);
+    // Loose but meaningful default bound for double-precision Cholesky.
+    // If this fails, it usually means: wrong symmetry interpretation, wrong
+    // packed-block decoding, or numeric kernel bug.
+    ASSERT_LT(worst_rel, 1e-8);
 }

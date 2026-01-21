@@ -9,6 +9,20 @@
 namespace ichol::symbolic
 {
 
+    // ============================================================================
+    // Supernode 检测（symbolic, supernodal）
+    //
+    // 这里实现了与 CHOLMOD（cholmod_super_symbolic.c）一致的两阶段逻辑：
+    //   1) fundamental supernodes：只基于 etree/colcount 的“基本超节点”划分
+    //   2) relaxed amalgamation：按 (nrelax, zrelax) 阈值在消去树上做合并
+    //
+    // 备注：
+    //  - detect_supernodes_fundamental：仅执行步骤 1（方便对齐/调试）
+    //  - detect_supernodes（默认）：执行 1 + 2（与 CHOLMOD 默认行为一致）
+    //  - detect_supernodes_approx：之前的启发式方法，保留作对比
+    // ============================================================================
+
+
     //------------------------------------------------------------------------------
     // Fundamental supernodes (CHOLMOD/Supernodal/cholmod_super_symbolic.c)
     //------------------------------------------------------------------------------
@@ -229,7 +243,7 @@ namespace ichol::symbolic
     }
 
     //------------------------------------------------------------------------------
-    // Approx supernodes (your previous heuristic), unchanged
+    // Approx supernodes , unchanged
     //------------------------------------------------------------------------------
     std::vector<std::pair<int, int>> detect_supernodes_approx(const FactorPattern &pattern,
                                                               const ETree & /*etree*/,

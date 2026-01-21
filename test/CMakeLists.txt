@@ -22,6 +22,7 @@ function(add_unit_test name)
             ${PROJECT_SOURCE_DIR}/test
     )
 
+
     add_test(NAME ${name} COMMAND ${name})
 
 endfunction()
