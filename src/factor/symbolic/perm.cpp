@@ -16,6 +16,20 @@ namespace ichol::symbolic
     }
 
     template <typename T>
+    std::vector<T> apply_permutation_vec(const std::vector<T> &v,
+                                         const ichol::symbolic::Permutation &P)
+    {
+        const int n = static_cast<int>(v.size());
+        if (static_cast<int>(P.perm.size()) != n)
+            throw std::runtime_error("apply_permutation_vec: size mismatch.");
+
+        std::vector<T> out(n);
+        for (int k = 0; k < n; ++k)
+            out[static_cast<std::size_t>(k)] = v[static_cast<std::size_t>(P.perm[k])];
+        return out;
+    }
+
+    template <typename T>
     void apply_permutation_csr(ichol::matrix::CsrMatrix<T> &A,
                                const ichol::symbolic::Permutation &P)
     {
@@ -115,4 +129,12 @@ namespace ichol::symbolic
                                         const ichol::symbolic::Permutation &P);
     template void apply_permutation_csr(ichol::matrix::CsrMatrix<half_float::half> &A,
                                         const ichol::symbolic::Permutation &P);
+
+    template std::vector<double> apply_permutation_vec<double>(const std::vector<double> &v,
+                                                               const ichol::symbolic::Permutation &P);
+    template std::vector<float> apply_permutation_vec<float>(const std::vector<float> &v,
+                                                             const ichol::symbolic::Permutation &P);
+    template std::vector<half_float::half> apply_permutation_vec<half_float::half>(
+        const std::vector<half_float::half> &v,
+        const ichol::symbolic::Permutation &P);
 } // namespace ichol::symbolic

@@ -18,14 +18,44 @@ target_compile_options(ichol PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 
 find_package(CUDAToolkit REQUIRED)
-find_package(PkgConfig REQUIRED)
 
-pkg_check_modules(AMD REQUIRED IMPORTED_TARGET amd)
-pkg_check_modules(SUITESPARSECONFIG REQUIRED IMPORTED_TARGET suitesparseconfig)
+find_package(MPI REQUIRED)
 
 target_link_libraries(ichol PUBLIC
-    PkgConfig::AMD
-    PkgConfig::SUITESPARSECONFIG
+  MPI::MPI_CXX
+)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(CHOLMOD REQUIRED IMPORTED_TARGET CHOLMOD)
+
+# Prefer the AMD that matches the loaded SuiteSparse module
+find_library(AMD_LIB amd
+    HINTS "$ENV{EBROOTSUITESPARSE}/lib64" "$ENV{EBROOTSUITESPARSE}/lib"
+    REQUIRED
+)
+
+pkg_check_modules(PETSC REQUIRED IMPORTED_TARGET petsc)
+if (NOT TARGET PkgConfig::PETSC)
+  pkg_check_modules(PETSC REQUIRED IMPORTED_TARGET PETSc)
+endif()
+
+target_link_libraries(ichol PUBLIC
+    PkgConfig::CHOLMOD
+    PkgConfig::PETSC
+    ${AMD_LIB}
+)
+
+find_library(SPQR_CFG_LIB suitesparseconfig
+    HINTS "$ENV{EBROOTSUITESPARSE}/lib64" "$ENV{EBROOTSUITESPARSE}/lib"
+    REQUIRED
+)
+
+target_link_libraries(ichol PUBLIC
+    ${SPQR_CFG_LIB}
+)
+
+target_link_libraries(ichol PUBLIC
+    PkgConfig::CHOLMOD
 )
 
 target_link_libraries(ichol PUBLIC
@@ -33,6 +63,8 @@ target_link_libraries(ichol PUBLIC
     CUDA::cusparse
     CUDA::cublas
 )
+
+target_link_libraries(ichol PUBLIC PkgConfig::PETSC)
 
 add_executable(ict_pcg
     apps/ict_pcg_main.cpp

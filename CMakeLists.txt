@@ -1,5 +1,4 @@
 cmake_minimum_required(VERSION 3.20)
-project(ic LANGUAGES C CXX CUDA)
 project(ichol LANGUAGES CXX CUDA)
 
 set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)
