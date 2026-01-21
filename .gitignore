@@ -3,7 +3,7 @@ slurm*
 .vscode/
 archive/
 build/
-cuda-keyring_1.1-1_all.deb*
+cuda-keyring_1.1-1_all.*
 .idea/
 python/.idea/
 test/data/
