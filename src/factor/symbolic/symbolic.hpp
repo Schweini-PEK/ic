@@ -9,6 +9,11 @@
 #include <petscksp.h>
 #include <omp.h>
 
+#include <vector>
+#include <stdexcept>
+#include <algorithm>
+#include <utility>
+
 #include "detail/symbolic_plan.hpp"
 #include "ichol/options.hpp"
 #include "ichol/matrix_formats.hpp"

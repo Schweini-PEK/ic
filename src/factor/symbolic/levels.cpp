@@ -110,8 +110,15 @@ namespace ichol::symbolic
         }
 
         SnodeLevelSets out;
-        out.snode_level = std::move(snode_level);
-        out.level_sets = std::move(snode_sets);
+        out.levels = std::move(snode_level);
+        // This level-set builder does not derive a supernodal etree.
+        // Leave parent/children empty; buckets are enough for simple scheduling.
+        out.parent.assign((size_t)m, -1);
+        out.children.clear();
+
+        // Build buckets by level.
+        out.buckets.assign((size_t)max_level + 1, {});
+        for (int id = 0; id < m; ++id) out.buckets[(size_t)out.levels[(size_t)id]].push_back(id);
         return out;
     }
 
