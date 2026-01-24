@@ -12,17 +12,18 @@
 #include "factor/numerical/factorize.hpp"
 #include "backends/cpu/util/cast.hpp"
 #include "unit/test_utils.hpp"
+#include "linalg/norm.hpp"
 
 TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
 {
     std::string path = "test/data/europe_osm.mtx";
-    // ichol::matrix::CsrMatrix<double> A = ichol::io::mtx_to_csr<double>(path, false);
-    ichol::matrix::CsrMatrix<double> A = ichol::io::gen_3dlap_csr<double>(100);
+    // ichol::matrix::CsrMatrix<double> A = ichol::io::mtx_to_csr<double>(path, false, 1.0);
+    ichol::matrix::CsrMatrix<double> A = ichol::io::gen_3dlap_csr<double>(300);
 
     const int n = A.num_rows;
 
     ichol::SymbolicOptions sym_options;
-    sym_options.ordering = ichol::Ordering::AMD;
+    sym_options.ordering = ichol::Ordering::RCM;
     sym_options.level_k = 4; // IC(4)
 
     ichol::IncompleteCholeskyOptions ic_options;
@@ -37,7 +38,7 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
     ichol::numeric::NumericPlan num_plan;
 
     auto fact_start = std::chrono::high_resolution_clock::now();
-    auto L = ichol::numeric::incomplete_cholesky_preconditioner<double>(A, sym_plan, num_plan, ic_options);
+    auto L = ichol::numeric::incomplete_cholesky_preconditioner<half_float::half>(A, sym_plan, num_plan, ic_options);
     auto fact_end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> fact_duration = fact_end - fact_start;
     std::cout << "IC factorization time: " << fact_duration.count() << " seconds.\n";
@@ -72,7 +73,7 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
     Solve B y = b_tilde with preconditioner from L,
     where LL^T \approx D^{-1} A D^{-1} + \alpha I
     */
-    ichol::solver::pcg<double>(
+    ichol::solver::pcg<half_float::half>(
         A.row_ptr,
         A.col_ind,
         A.values,
