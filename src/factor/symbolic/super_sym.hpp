@@ -1,5 +1,16 @@
 #pragma once
+
 #include <vector>
+#include <utility>
+
+namespace ichol::matrix {
+    template <typename T>
+    struct CscMatrix;
+}
+
+namespace ichol::symbolic {
+    struct ETree;
+}
 
 namespace ichol::symbolic
 {
@@ -37,4 +48,17 @@ namespace ichol::symbolic
     SuperSym build_super_sym(
         const std::vector<std::pair<int,int>>& snodes,
         const std::vector<std::vector<int>>& snode_rows);
+
+    /**
+     * @brief 直接从 A + etree + snodes 构造 SuperSym（避免先构造完整 FactorPattern + snode_rows）。
+     *
+     * 该函数的目标是匹配 CHOLMOD(supernodal LL) 的 rowlist 语义，同时减少符号阶段的
+     * 中间结构开销（尤其是完整 L 的 column pattern）。
+     *
+     * 限制：目前仅用于 complete-Cholesky 的 supernodal LL 管线（无 IC(k) level）。
+     */
+    SuperSym build_super_sym_direct(
+        const ichol::matrix::CscMatrix<double>& A,
+        const ETree& etree,
+        const std::vector<std::pair<int,int>>& snodes);
 }

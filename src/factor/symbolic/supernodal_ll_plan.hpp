@@ -105,4 +105,43 @@ inline SupernodalLLPlan supernodal_ll_analyze(const ichol::matrix::CscMatrix<dou
     return plan;
 }
 
-} // namespace ichol::numeric
+// Faster variant: avoid building the full FactorPattern + snode_rows when you only need
+// CHOLMOD-style SuperSym (super, pi, px, s) and the supernode schedule.
+//
+// Notes:
+// - This is intended for complete-Cholesky supernodal LL (no IC(k) level).
+// - If sn_options.approximate is enabled, we fall back to the full pipeline because
+//   approximate supernode detection depends on the full L pattern.
+inline SupernodalLLPlan supernodal_ll_analyze_fast(const ichol::matrix::CscMatrix<double>& A,
+                                                  const SuperNodeOptions& sn_options)
+{
+    if (sn_options.approximate) {
+        return supernodal_ll_analyze(A, sn_options);
+    }
+
+    SupernodalLLPlan plan;
+
+    // 1) etree only
+    plan.etree = build_etree<double>(A);
+
+    // 2) supernodes (relaxed default). pattern is not used in this mode.
+#ifdef ICHOL_SUPERNODES_FUNDAMENTAL
+    plan.snodes = detect_supernodes_fundamental(plan.etree);
+#else
+    FactorPattern dummy_pattern;
+    plan.snodes = detect_supernodes(dummy_pattern, plan.etree);
+#endif
+
+    // 3) build SuperSym directly (pivots + update rows)
+    plan.sym = build_super_sym_direct(A, plan.etree, plan.snodes);
+
+    // 4) schedule from SuperSym
+    auto sched = ll_plan_from_sym(plan.sym, A.num_cols);
+    plan.parent   = std::move(sched.parent);
+    plan.children = std::move(sched.children);
+    plan.level    = std::move(sched.level);
+    plan.buckets  = std::move(sched.buckets);
+    return plan;
+}
+
+} // namespace ichol::symbolic

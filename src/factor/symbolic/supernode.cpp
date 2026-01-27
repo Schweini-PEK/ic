@@ -3,6 +3,7 @@
 #include <utility>
 #include <algorithm>
 #include <cassert>
+#include <limits>
 
 #include "symbolic.hpp"
 
@@ -308,23 +309,59 @@ namespace ichol::symbolic
     std::vector<std::vector<int>> compute_snode_rows(const FactorPattern &pat,
                                                      const std::vector<std::pair<int, int>> &snodes)
     {
+        // Fast union of row indices for each supernode without building a huge
+        // concat buffer + sort/unique (which is very costly).
+        //
+        // We use a stamping array to deduplicate on the fly, then sort once.
+        const int n = (int)pat.row_ptr_L.size() - 1;
+        std::vector<int> mark(n, -1);
+        int stamp = 0;
+
         std::vector<std::vector<int>> out;
         out.reserve(snodes.size());
+
         for (const auto &pr : snodes)
         {
-            int s = pr.first;
-            int e = pr.second;
+            const int s = pr.first;
+            const int e = pr.second;
+
+            // Handle pathological stamp overflow (extremely unlikely here).
+            if (stamp == std::numeric_limits<int>::max())
+            {
+                std::fill(mark.begin(), mark.end(), -1);
+                stamp = 0;
+            }
+            ++stamp;
+
+            // Heuristic reserve: total nnz of columns in this supernode.
+            // (unique set will be <= this.)
+            int reserve_hint = 0;
+            for (int c = s; c < e; ++c)
+                reserve_hint += (pat.row_ptr_L[c + 1] - pat.row_ptr_L[c]);
+
             std::vector<int> rows;
+            rows.reserve(std::max(16, reserve_hint));
+
             for (int c = s; c < e; ++c)
             {
-                int a = pat.row_ptr_L[c];
-                int b = pat.row_ptr_L[c + 1];
-                rows.insert(rows.end(), pat.col_ind_L.begin() + a, pat.col_ind_L.begin() + b);
+                const int a = pat.row_ptr_L[c];
+                const int b = pat.row_ptr_L[c + 1];
+                for (int p = a; p < b; ++p)
+                {
+                    const int r = pat.col_ind_L[p];
+                    if ((unsigned)r >= (unsigned)n) continue; // safety
+                    if (mark[r] != stamp)
+                    {
+                        mark[r] = stamp;
+                        rows.push_back(r);
+                    }
+                }
             }
+
             std::sort(rows.begin(), rows.end());
-            rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
             out.push_back(std::move(rows));
         }
+
         return out;
     }
 
