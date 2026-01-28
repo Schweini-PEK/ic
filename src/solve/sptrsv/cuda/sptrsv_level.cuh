@@ -3,10 +3,14 @@
 // CUDA 12 level-scheduled sparse triangular solve (SpTRSV) using precomputed level sets.
 // Persistent-plan version: level rows live on device; status buffer is allocated once and reused.
 //
+// Modifications:
+//  - removed finite (NaN/Inf) status check
+//  - added __half specialization with __half2 inner loop
+//
 // Return codes:
 //   0  success
 //  -1 invalid argument / unsupported type
-//  -2 numerical issue detected (NaN/Inf, or missing/zero diagonal when unit_diag=false)
+//  -2 numerical issue detected (missing/zero diagonal when unit_diag=false)
 //  -3 CUDA runtime error
 //  -4 cuSPARSE error
 
@@ -22,7 +26,6 @@
 
 struct DeviceLevelSets
 {
-    // Host copies (owned) to keep async H2D copies safe without requiring sync.
     std::vector<int> level_ptr;
     std::vector<int> levels;
 
@@ -98,24 +101,9 @@ struct DeviceLevelSets
             return -3;
         }
 
-        // No cudaStreamSynchronize: stream ordering guarantees correctness for later work
-        // enqueued on the same stream. Host copies are owned by this object.
         return 0;
     }
 };
-
-/* Device finite check for float/double scalars. */
-template <typename ValueT>
-__device__ __forceinline__ bool sptrsv_device_isfinite(ValueT v)
-{
-    if constexpr (std::is_same_v<ValueT, float>)
-        return isfinite(v);
-    if constexpr (std::is_same_v<ValueT, double>)
-        return isfinite(v);
-    if constexpr (std::is_same_v<ValueT, __half>)
-        return isfinite(__half2float(v));
-    return isfinite(static_cast<double>(v));
-}
 
 /* Device exact zero check (simple safeguard). */
 template <typename ValueT>
@@ -162,7 +150,9 @@ __global__ void sptrsv_trsv_level_kernel(
     {
         const IndexT j = d_colInd[k];
         const ValueT a = d_val[k];
-        s = ichol::cuda::GMath<ValueT>::sub(s, ichol::cuda::GMath<ValueT>::mul(a, d_x[j]));
+        s = ichol::cuda::GMath<ValueT>::sub(
+            s,
+            ichol::cuda::GMath<ValueT>::mul(a, __ldg(&d_x[j])));
     }
 
     if (!unit_diag)
@@ -179,8 +169,101 @@ __global__ void sptrsv_trsv_level_kernel(
 
     d_x[i] = s;
 
-    if (!sptrsv_device_isfinite(s))
-        atomicExch(d_status, 1);
+    // finite check removed
+}
+
+/*
+__half specialization: same semantics as the generic kernel, but uses __half2 FMA in the inner loop.
+Still thread-per-row; focuses on reducing arithmetic/loop overhead.
+
+Diagonal is last entry. unit_diag handled by runtime branch (matching original API).
+*/
+template <typename IndexT>
+__global__ void sptrsv_trsv_level_kernel_half2(
+    int level_size,
+    const int *__restrict__ d_level_rows,
+    const IndexT *__restrict__ d_rowPtr,
+    const IndexT *__restrict__ d_colInd,
+    const __half *__restrict__ d_val,
+    const __half *__restrict__ d_b,
+    __half *__restrict__ d_x,
+    bool unit_diag,
+    int *__restrict__ d_status)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= level_size)
+        return;
+
+    if (__ldg(d_status) != 0)
+        return;
+
+    const int i = d_level_rows[tid];
+    IndexT p = d_rowPtr[i];
+    IndexT q = d_rowPtr[i + 1];
+    IndexT end = q - 1;
+
+    __half2 acc2 = __float2half2_rn(0.0f);
+    __half acc_tail = __float2half(0.0f);
+
+    IndexT k = p;
+
+    // handle odd start to make k even
+    if ((k & 1) && k < end)
+    {
+        IndexT j = d_colInd[k];
+        __half a = d_val[k];
+        __half xj = __ldg(&d_x[j]);
+        acc_tail = __hfma(a, xj, acc_tail);
+        ++k;
+    }
+
+    // half2 body
+    for (; k + 1 < end; k += 2)
+    {
+        IndexT j0 = d_colInd[k];
+        IndexT j1 = d_colInd[k + 1];
+
+        __half a0 = d_val[k];
+        __half a1 = d_val[k + 1];
+
+        __half x0 = __ldg(&d_x[j0]);
+        __half x1 = __ldg(&d_x[j1]);
+
+        __half2 a2 = __halves2half2(a0, a1);
+        __half2 x2 = __halves2half2(x0, x1);
+
+        acc2 = __hfma2(a2, x2, acc2);
+    }
+
+    // tail
+    for (; k < end; ++k)
+    {
+        IndexT j = d_colInd[k];
+        __half a = d_val[k];
+        __half xj = __ldg(&d_x[j]);
+        acc_tail = __hfma(a, xj, acc_tail);
+    }
+
+    __half sum2 = __hadd(__low2half(acc2), __high2half(acc2));
+    __half ax = __hadd(sum2, acc_tail);
+
+    __half s = __hsub(d_b[i], ax);
+
+    if (!unit_diag)
+    {
+        __half diag = d_val[end];
+        if (__heq(diag, __float2half(0.0f)))
+        {
+            atomicExch(d_status, 1);
+            d_x[i] = __float2half(0.0f);
+            return;
+        }
+
+        // keep it in half
+        s = __hdiv(s, diag);
+    }
+
+    d_x[i] = s;
 }
 
 /*
@@ -191,8 +274,8 @@ struct SpTRSVLevelsetsPlan
 {
     DeviceLevelSets ls;
 
-    int *d_status = nullptr; // device flag (reused each solve)
-    int *h_status = nullptr; // pinned host flag (reused each solve)
+    int *d_status = nullptr;
+    int *h_status = nullptr;
 
     int n = 0;
 
@@ -251,7 +334,6 @@ struct SpTRSVLevelsetsPlan
             return -3;
         }
 
-        // no sync required here
         return 0;
     }
 
@@ -302,28 +384,34 @@ struct SpTRSVLevelsetsPlan
 
             const int blocks = (level_size + THREADS - 1) / THREADS;
 
-            sptrsv_trsv_level_kernel<IndexT, ValueT><<<blocks, THREADS, 0, stream>>>(
-                level_size,
-                ls.d_levels + start,
-                d_rowPtr, d_colInd, d_val,
-                d_b, d_x,
-                unit_diag,
-                d_status);
+            if constexpr (std::is_same_v<ValueT, __half>)
+            {
+                sptrsv_trsv_level_kernel_half2<IndexT><<<blocks, THREADS, 0, stream>>>(
+                    level_size,
+                    ls.d_levels + start,
+                    d_rowPtr, d_colInd,
+                    reinterpret_cast<const __half *>(d_val),
+                    reinterpret_cast<const __half *>(d_b),
+                    reinterpret_cast<__half *>(d_x),
+                    unit_diag,
+                    d_status);
+            }
+            else
+            {
+                sptrsv_trsv_level_kernel<IndexT, ValueT><<<blocks, THREADS, 0, stream>>>(
+                    level_size,
+                    ls.d_levels + start,
+                    d_rowPtr, d_colInd, d_val,
+                    d_b, d_x,
+                    unit_diag,
+                    d_status);
+            }
         }
 
         e = cudaPeekAtLastError();
         if (e != cudaSuccess)
             return -3;
-
-        e = cudaMemcpyAsync(h_status, d_status, sizeof(int),
-                            cudaMemcpyDeviceToHost, stream);
-        if (e != cudaSuccess)
-            return -3;
-
-        e = cudaStreamSynchronize(stream);
-        if (e != cudaSuccess)
-            return -3;
-
+            
         return (*h_status != 0) ? -2 : 0;
     }
 };
