@@ -3,7 +3,7 @@
 #define ICHOL_MTX_READ_HPP
 
 #include <string>
-#include "matrix_formats.hpp"
+#include "ichol/matrix_formats.hpp"
 
 namespace ichol::io
 {
@@ -11,21 +11,26 @@ namespace ichol::io
      * Read a mtx file and store it to a lower tri + diag in CSR format.
      */
     template <typename T>
-    ichol::matrix::CsrMatrix<T> mtx_to_csr(const std::string &path, bool verify);
+    ichol::matrix::CsrMatrix<T> mtx_to_csr(const std::string &path, bool verify, double alpha = 1e-3);
 
     template <typename T>
-    ichol::matrix::CscMatrix<T> mtx_to_csc(const std::string &path, bool verify);
+    ichol::matrix::CscMatrix<T> mtx_to_csc(const std::string &path, bool verify, double alpha = 1e-3);
 
-    // TODO: moved to another file
+    /**
+     * Generate a 2D Laplacian matrix in CSR format.
+     *
+     * @param n The number of grid points per dimension. The matrix is n^2 x n^2.
+     */
     template <typename T>
-    std::vector<double> toDoubleVector(const std::vector<T> &input)
-    {
-        std::vector<double> output;
-        output.reserve(input.size());
-        for (const auto &v : input)
-            output.push_back(static_cast<double>(v));
-        return output;
-    }
+    ichol::matrix::CsrMatrix<T> gen_2dlap_csr(int n);
+
+    /**
+     * Generate a 3D Laplacian matrix in CSR format.
+     *
+     * @param n The number of grid points per dimension. The matrix is n^3 x n^3.
+     */
+    template <typename T>
+    ichol::matrix::CsrMatrix<T> gen_3dlap_csr(int n);
 } // namespace ichol::io
 
 #endif // ICHOL_MTX_READ_HPP

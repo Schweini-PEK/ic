@@ -20,3 +20,7 @@ src/cmake_install.cmake
 src/libichol.a
 CMakeFiles
 .cmake
+command.md
+config/
+results/
+python/

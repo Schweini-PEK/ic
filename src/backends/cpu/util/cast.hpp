@@ -1,4 +1,4 @@
-//src/backends/cpu/util/cast.hpp
+// src/backends/cpu/util/cast.hpp
 #pragma once
 
 #include <type_traits>

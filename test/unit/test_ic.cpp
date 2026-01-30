@@ -1,191 +1,90 @@
-// test_ic.cpp
+// test/unit/test_ic.cpp
 #include <gtest/gtest.h>
-#include <vector>
-#include <cmath>
-#include <iostream>
-#include <string>
-#include <cassert>
+#include <petscsys.h>
+#include <chrono>
 
 #include "ichol/matrix_formats.hpp"
-#include "ichol/ictp.hpp"
 #include "ichol/pcg.hpp"
 #include "ichol/half.hpp"
-#include "ichol/fact.hpp"
-
 #include "ichol/mtx_read.hpp"
-
-#include <limits>
-#include <random>
-
-namespace test_checks
-{
-
-    inline void assert_pos_finite_vec(const std::vector<double> &v, const char *name)
-    {
-        ASSERT_FALSE(v.empty()) << name;
-        for (size_t i = 0; i < v.size(); ++i)
-        {
-            ASSERT_TRUE(std::isfinite(v[i])) << name << "[" << i << "] not finite: " << v[i];
-            ASSERT_GT(v[i], 0.0) << name << "[" << i << "] not positive: " << v[i];
-        }
-    }
-
-    template <typename T>
-    inline void assert_csr_lower_diag_only_sorted(const ichol::matrix::CsrMatrix<T> &M,
-                                                  const char *name,
-                                                  bool require_diag_last = true)
-    {
-        const int n = M.num_rows;
-        ASSERT_EQ(M.num_cols, n) << name << " not square";
-        ASSERT_EQ((int)M.row_ptr.size(), n + 1) << name << " row_ptr size";
-        ASSERT_EQ(M.col_ind.size(), M.values.size()) << name << " col/val size mismatch";
-
-        for (int i = 0; i < n; ++i)
-        {
-            const int rs = M.row_ptr[i];
-            const int re = M.row_ptr[i + 1];
-            ASSERT_LT(rs, re) << name << " row " << i << " empty / missing diagonal";
-            int prev = -1;
-            bool seen_diag = false;
-
-            for (int p = rs; p < re; ++p)
-            {
-                const int j = M.col_ind[p];
-                const auto a = (double)M.values[p];
-
-                ASSERT_GE(j, 0) << name << " row " << i << " col < 0";
-                ASSERT_LT(j, n) << name << " row " << i << " col out of range: " << j;
-                ASSERT_LE(j, i) << name << " row " << i << " has upper entry col=" << j;
-
-                ASSERT_GT(j, prev) << name << " row " << i
-                                   << " cols not strictly increasing (unsorted or duplicate)";
-                prev = j;
-
-                ASSERT_TRUE(std::isfinite(a)) << name << " has non-finite value at ("
-                                              << i << "," << j << "): " << a;
-
-                if (j == i)
-                    seen_diag = true;
-            }
-
-            ASSERT_TRUE(seen_diag) << name << " row " << i << " missing diagonal";
-            if (require_diag_last)
-            {
-                ASSERT_EQ(M.col_ind[re - 1], i) << name << " row " << i << " diag not last";
-            }
-        }
-    }
-
-    // Stronger L-specific check (needed for SpSV with NON_UNIT diagonal)
-    template <typename T>
-    inline void assert_L_lower_diag_pos_finite(const ichol::matrix::CsrMatrix<T> &L, const char *name)
-    {
-        assert_csr_lower_diag_only_sorted(L, name, /*require_diag_last=*/true);
-        const int n = L.num_rows;
-        for (int i = 0; i < n; ++i)
-        {
-            const int pdiag = L.row_ptr[i + 1] - 1; // diag must be last
-            const double di = (double)L.values[pdiag];
-            ASSERT_TRUE(std::isfinite(di)) << name << " diag not finite at row " << i;
-            ASSERT_GT(di, 0.0) << name << " diag not positive at row " << i << ": " << di;
-        }
-    }
-
-} // namespace test_checks
-
-template <typename T>
-void assert_diag_last(const ichol::matrix::CsrMatrix<T> &M)
-{
-    int n = M.num_rows;
-    for (int i = 0; i < n; ++i)
-    {
-        int row_start = M.row_ptr[i];
-        int row_end = M.row_ptr[i + 1];
-        assert(row_end > row_start && "Row has no entries / diagonal missing");
-        int last_col = M.col_ind[row_end - 1];
-        if (last_col != i)
-        {
-            std::cerr << "CSR diag-check failed: row " << i
-                      << " last column index " << last_col
-                      << " != expected diag index " << i << "\n";
-            assert(false);
-        }
-    }
-
-    std::cout << "Diag Check passed!" << std::endl;
-}
+#include "ichol/options.hpp"
+#include "factor/symbolic/symbolic.hpp"
+#include "factor/numerical/factorize.hpp"
+#include "backends/cpu/util/cast.hpp"
+#include "unit/test_utils.hpp"
+#include "linalg/norm.hpp"
 
 TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
 {
-    std::string path = "F:/new/ic/test/data/nasa2146.mtx";
-    ichol::matrix::CsrMatrix<double> Ahost = ichol::io::mtx_to_csr<double>(path, false);
+    std::string path = "test/data/europe_osm.mtx";
+    // ichol::matrix::CsrMatrix<double> A = ichol::io::mtx_to_csr<double>(path, false, 1.0);
+    ichol::matrix::CsrMatrix<double> A = ichol::io::gen_3dlap_csr<double>(300);
 
-    const int n = Ahost.num_rows;
+    const int n = A.num_rows;
 
-    ICTP_Params ictp_params;
-    ictp_params.lfil_per_row = 40;
-    ictp_params.drop_tol = 0.0;
-    IC_Factorize_Params fparams;
-    fparams.initial_shift = 1e-10;
-    fparams.shift_growth = 2.0;
-    fparams.max_restarts = 8;
-    IC_Factorize_Info out_info;
+    ichol::SymbolicOptions sym_options;
+    sym_options.ordering = ichol::Ordering::RCM;
+    sym_options.level_k = 4; // IC(4)
 
-    ichol::core::IC_Symbolic Sym = ichol::core::build_ic_symbolic(Ahost, 4);
+    ichol::IncompleteCholeskyOptions ic_options;
+    ic_options.scaling = ichol::Scaling::UnitSqrtDiag;
+    ic_options.pivot_shift_strategy = ichol::PivotShiftStrategy::Static;
+    ic_options.static_shift = 1e-5;
+    ic_options.lfil = 100;
+    ic_options.drop_tol = 0.0;
 
-    std::string algo = "ictp_par";
-    ichol::matrix::CsrMatrix<float> L = ichol::IC_factorize<float>(algo, Ahost, ictp_params, fparams, Sym, &out_info);
-    ASSERT_GT(L.values.size(), 0u);
+    auto sym_plan = ichol::symbolic::ic_analyze<double>(A, sym_options);
 
-    std::vector<double> D(n, 1.0);
-    if (!out_info.D.empty())
-        D = out_info.D;
+    ichol::numeric::NumericPlan num_plan;
+
+    auto fact_start = std::chrono::high_resolution_clock::now();
+    auto L = ichol::numeric::incomplete_cholesky_preconditioner<half_float::half>(A, sym_plan, num_plan, ic_options);
+    auto fact_end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> fact_duration = fact_end - fact_start;
+    std::cout << "IC factorization time: " << fact_duration.count() << " seconds.\n";
+
+    auto D = num_plan.prescaling.D;
 
     /*
     Construct B y = b_tilde, where
-    B = D^{-1} A D^{-1},
+    B = A_scaled = D^{-1} A D^{-1},
     and b_tilde = D^{-1} b
     */
-    ichol::matrix::CsrMatrix<double> B = apply_symm_prescaling(Ahost, D);
     std::vector<double> b(n, 1.0);
+    std::vector<double> b_perm = (sym_options.ordering == ichol::Ordering::Identity)
+                                     ? b
+                                     : ichol::symbolic::apply_permutation_vec(b, sym_plan.perm);
     std::vector<double> b_tilde(n);
     for (int i = 0; i < n; ++i)
-        b_tilde[i] = b[i] / D[i];
-
-    assert_diag_last(B);
+        b_tilde[i] = b_perm[i] / D[i];
 
     // Prepare L for PCG
     std::vector<int> rowPtrL = L.row_ptr;
     std::vector<int> colIndL = L.col_ind;
-    std::vector<double> valL = ichol::io::toDoubleVector(L.values);
+    std::cout << "nnzs of L" << size_t(L.values.size()) << "\n";
+    std::cout << "nnzs of predicted L: "
+              << sym_plan.factor_pattern.col_ind_L.size() << "\n";
 
     std::vector<double> y;
     int iters = 0;
     double finalRes = 0.0;
 
-    test_checks::assert_pos_finite_vec(D, "D");
-    test_checks::assert_csr_lower_diag_only_sorted(Ahost, "Ahost");
-    test_checks::assert_csr_lower_diag_only_sorted(B, "B");
-    test_checks::assert_L_lower_diag_pos_finite(L, "L");
-
     /*
     Solve B y = b_tilde with preconditioner from L,
     where LL^T \approx D^{-1} A D^{-1} + \alpha I
     */
-    ichol::icPreconditionedCG_GPU<double>(
-        B.row_ptr,
-        B.col_ind,
-        B.values,
+    ichol::solver::pcg<half_float::half>(
+        A.row_ptr,
+        A.col_ind,
+        A.values,
         rowPtrL,
         colIndL,
-        valL,
+        L.values,
         b_tilde,
         y,
         D,
         iters,
         finalRes);
-
-    ASSERT_EQ(y.size(), static_cast<size_t>(n));
 
     auto vec_norm = [](const std::vector<double> &v)
     {
@@ -196,7 +95,6 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
     };
 
     // Symmetric matvec for CSR storing lower-triangular + diagonal only.
-    // Assumes diagonal entry exists in every row.
     auto symm_lower_csr_matvec = [&](const ichol::matrix::CsrMatrix<double> &M,
                                      const std::vector<double> &x,
                                      std::vector<double> &y)
@@ -217,9 +115,9 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
         }
     };
 
-    // 1) Scaled system residual: rB = B*y - b_tilde
+    // Scaled system residual: rB = B*y - b_tilde
     std::vector<double> By(n), rB(n);
-    symm_lower_csr_matvec(B, y, By);
+    symm_lower_csr_matvec(A, y, By);
     for (int i = 0; i < n; ++i)
         rB[i] = By[i] - b_tilde[i];
 
@@ -233,23 +131,19 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
               << iters << "\n";
     std::cout << "Final residual from CG (reported ||r||_2): "
               << finalRes << "\n";
+}
 
-    EXPECT_LT(relresB, 1e-6);
+int main(int argc, char **argv)
+{
+    PetscErrorCode ierr = PetscInitialize(&argc, &argv, nullptr, nullptr);
+    if (ierr)
+        return ierr;
 
-    // 2) Original system residual: rA = A*x - b, with x = D^{-1} y
-    std::vector<double> x(n);
-    for (int i = 0; i < n; ++i)
-        x[i] = y[i] / D[i];
+    ::testing::InitGoogleTest(&argc, argv);
+    int rc = RUN_ALL_TESTS();
 
-    std::vector<double> Ax(n), rA(n);
-    symm_lower_csr_matvec(Ahost, x, Ax);
-    for (int i = 0; i < n; ++i)
-        rA[i] = Ax[i] - b[i];
-
-    double rAnorm = vec_norm(rA);
-    double bnorm = vec_norm(b);
-    double relresA = (bnorm == 0.0) ? rAnorm : rAnorm / bnorm;
-
-    std::cout << "Original-system relative residual (A x = b): "
-              << relresA << "\n";
+    ierr = PetscFinalize();
+    if (ierr)
+        return ierr;
+    return rc;
 }

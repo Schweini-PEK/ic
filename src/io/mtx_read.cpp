@@ -1,14 +1,13 @@
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <limits>
+#include <numeric>
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <type_traits>
-#include <utility>
-#include <numeric>
 #include <vector>
 
 #include "ichol/mtx_read.hpp"
@@ -16,10 +15,7 @@
 
 namespace
 {
-
-    /**
-     * Convert string to lowercase
-     */
+    // Lowercase helper for MatrixMarket tokens.
     inline std::string lower_copy(std::string s)
     {
         for (char &ch : s)
@@ -27,9 +23,7 @@ namespace
         return s;
     }
 
-    /**
-     * Check whether a line is blank or a comment line (starts with '%')
-     */
+    // Skip blank lines and '%' comments.
     inline bool is_blank_or_comment(const std::string &line)
     {
         for (char ch : line)
@@ -47,6 +41,7 @@ namespace
         Pattern,
         Complex
     };
+
     enum class Symmetry
     {
         General,
@@ -61,6 +56,7 @@ namespace
         Symmetry symmetry = Symmetry::General;
     };
 
+    // Parse the MatrixMarket header and map tokens to enums.
     inline Header parse_header_line(const std::string &line)
     {
         // %%MatrixMarket matrix coordinate {real|integer|complex|pattern} {general|symmetric|skew-symmetric|hermitian}
@@ -108,6 +104,7 @@ namespace
         return h;
     }
 
+    // Parse an integer from a line buffer (advances pointer).
     inline long long parse_ll(const char *&p, const char *end)
     {
         while (p < end && std::isspace(static_cast<unsigned char>(*p)))
@@ -120,6 +117,7 @@ namespace
         return v;
     }
 
+    // Parse a floating-point from a line buffer (advances pointer).
     inline long double parse_ld(const char *&p, const char *end)
     {
         while (p < end && std::isspace(static_cast<unsigned char>(*p)))
@@ -132,99 +130,110 @@ namespace
         return v;
     }
 
-    /**
-     * Save lower tri + diag into COO format, first row-sorted, then column sorted.
-     *
-     * DO NOT check for definiteness, duplicatation, numerical value.
-     * Check symmetry.
-     * Expect at least the lower triangular is stored in mtx.
-     */
-    template <typename T>
-    ichol::matrix::CooMatrix<T> mtx_to_coo(const std::string &path, bool verify)
+    struct SizeLine
     {
-        std::ifstream in(path);
-        if (!in)
-            throw std::invalid_argument("ichol::io::mtx_to_coo: failed to open file: " + path);
-        std::vector<char> io_buf(1u << 20);
-        in.rdbuf()->pubsetbuf(io_buf.data(), static_cast<std::streamsize>(io_buf.size()));
+        int n = 0;
+        long long nnz_file = 0;
+    };
 
+    // Scan until the first non-blank, non-comment line.
+    inline std::string read_first_noncomment_line(std::ifstream &in, int &line_num)
+    {
         std::string line;
-        int line_num = 0;
-        if (!std::getline(in, line))
-            throw std::invalid_argument("ichol::io::mtx_to_coo: empty file: " + path);
-        ++line_num;
-
-        Header hdr = parse_header_line(line);
-        if (hdr.field == Field::Complex || hdr.field == Field::Pattern)
-            throw std::invalid_argument("ichol::io::mtx_to_coo: real SPD reader supports only field {real, integer}");
-        if (hdr.symmetry == Symmetry::SkewSymmetric)
-            throw std::invalid_argument("ichol::io::mtx_to_coo: skew-symmetric not compatible with SPD requirement");
-        if (hdr.symmetry == Symmetry::Hermitian)
-            hdr.symmetry = Symmetry::Symmetric;
-
         while (std::getline(in, line))
         {
             ++line_num;
             if (!is_blank_or_comment(line))
-                break;
+                return line;
         }
-        if (!in)
-            throw std::invalid_argument("ichol::io::mtx_to_coo: missing size line: " + path);
+        return {};
+    }
 
-        int m = 0, n = 0;
-        long long nnz_file = 0;
+    // Parse the "rows cols nnz" size line and validate square dimensions.
+    inline SizeLine parse_size_line(const std::string &line, const std::string &path, int line_num)
+    {
+        const char *p = line.c_str();
+        const char *e = p + line.size();
+
+        long long mm = parse_ll(p, e);
+        long long nn = parse_ll(p, e);
+        long long z = parse_ll(p, e);
+
+        if (mm <= 0 || nn <= 0 || z < 0)
+            throw std::invalid_argument("ichol::io::mtx_to_coo: invalid size line at " + path + ":" + std::to_string(line_num));
+        if (mm != nn)
+            throw std::invalid_argument("ichol::io::mtx_to_coo: expected square matrix: " + path);
+
+        if (mm > std::numeric_limits<int>::max())
+            throw std::invalid_argument("ichol::io::mtx_to_coo: dimensions exceed int: " + path);
+
+        SizeLine s;
+        s.n = static_cast<int>(mm);
+        s.nnz_file = z;
+        return s;
+    }
+
+    // Keep only the lower triangle (and map symmetric entries into lower).
+    inline bool map_keep_lower(int &r, int &c, Symmetry sym)
+    {
+        if (sym == Symmetry::General)
         {
-            const char *p = line.c_str();
-            const char *e = p + line.size();
-            long long mm = parse_ll(p, e);
-            long long nn = parse_ll(p, e);
-            long long z = parse_ll(p, e);
-
-            if (mm <= 0 || nn <= 0 || z < 0)
-                throw std::invalid_argument("ichol::io::mtx_to_coo: invalid size line");
-            if (mm > std::numeric_limits<int>::max() || nn > std::numeric_limits<int>::max())
-                throw std::invalid_argument("ichol::io::mtx_to_coo: dimensions exceed int");
-            m = static_cast<int>(mm);
-            n = static_cast<int>(nn);
-            nnz_file = z;
-        }
-
-        if (m != n)
-            throw std::invalid_argument("ichol::io::mtx_to_coo: expected square matrix for lower-tri+diag storage");
-
-        std::size_t reserve_nnz = static_cast<std::size_t>(nnz_file);
-        if (hdr.symmetry == Symmetry::General)
-            reserve_nnz = static_cast<std::size_t>(nnz_file / 2 + n);
-
-        ichol::matrix::CooMatrix<T> out;
-        out.num_cols = n;
-        out.num_rows = n;
-        out.col_ind.reserve(reserve_nnz);
-        out.row_ind.reserve(reserve_nnz);
-        out.values.reserve(reserve_nnz);
-
-        // Make sure no diag is missing
-        std::vector<unsigned char> diag_seen(static_cast<std::size_t>(n), 0);
-
-        auto keep_and_map = [&](int &r, int &c) -> bool
-        {
-            if (hdr.symmetry == Symmetry::General)
-            {
-                if (r < c)
-                    return false; // keep only lower+diag
-                return true;
-            }
-            else
-            {
-                // symmetric: map to lower (robust if file stores upper)
-                if (r < c)
-                    std::swap(r, c);
-            }
-
+            if (r < c)
+                return false;
             return true;
+        }
+        // symmetric / hermitian: map to lower
+        if (r < c)
+            std::swap(r, c);
+        return true;
+    }
+
+    template <typename T>
+    // Stable row-major ordering for CSR conversion and deterministic output.
+    inline void sort_coo_by_row_then_col(ichol::matrix::CooMatrix<T> &coo)
+    {
+        const std::size_t nnz = coo.row_ind.size();
+        std::vector<std::size_t> perm(nnz);
+        std::iota(perm.begin(), perm.end(), 0);
+
+        std::sort(perm.begin(), perm.end(),
+                  [&](std::size_t a, std::size_t b)
+                  {
+                      if (coo.row_ind[a] != coo.row_ind[b])
+                          return coo.row_ind[a] < coo.row_ind[b];
+                      return coo.col_ind[a] < coo.col_ind[b];
+                  });
+
+        auto apply_perm = [&](auto &v)
+        {
+            using V = typename std::decay_t<decltype(v)>::value_type;
+            std::vector<V> tmp;
+            tmp.reserve(v.size());
+            for (std::size_t k : perm)
+                tmp.push_back(v[k]);
+            v.swap(tmp);
         };
 
-        // Read entries
+        apply_perm(coo.row_ind);
+        apply_perm(coo.col_ind);
+        apply_perm(coo.values);
+    }
+
+    template <typename T>
+    void read_numeric_lower_coo(std::ifstream &in,
+                                const std::string &path,
+                                const Header &hdr,
+                                int n,
+                                bool verify,
+                                ichol::matrix::CooMatrix<T> &out)
+    {
+        // Numeric MTX path: keep lower triangle and require explicit diagonal.
+        // Require diagonal to exist in-file (old behavior)
+        std::vector<unsigned char> diag_seen(static_cast<std::size_t>(n), 0);
+
+        std::string line;
+        int line_num = 0; // caller already consumed header/size; this is local-only for error context
+
         while (std::getline(in, line))
         {
             ++line_num;
@@ -242,21 +251,25 @@ namespace
             }
             catch (const std::exception &ex)
             {
-                throw std::invalid_argument("ichol::io::mtx_to_coo: parse error at line " + std::to_string(line_num) + ": " + ex.what());
+                throw std::invalid_argument("ichol::io::mtx_to_coo: parse error in " + path + ": " + ex.what());
             }
 
             if (rr_ll <= 0 || cc_ll <= 0)
-                throw std::invalid_argument("ichol::io::mtx_to_coo: indices must be 1-based positive (line " + std::to_string(line_num) + ")");
+                throw std::invalid_argument("ichol::io::mtx_to_coo: indices must be 1-based positive: " + path);
 
             if (rr_ll > n || cc_ll > n)
             {
                 if (verify)
-                    throw std::invalid_argument("ichol::io::mtx_to_coo: index out of range at line " + std::to_string(line_num));
+                    throw std::invalid_argument("ichol::io::mtx_to_coo: index out of range: " + path);
                 continue;
             }
 
             int r = static_cast<int>(rr_ll - 1);
             int c = static_cast<int>(cc_ll - 1);
+
+            // Drop upper-tri entries and map symmetric cases into lower.
+            if (!map_keep_lower(r, c, hdr.symmetry))
+                continue;
 
             T v{};
             try
@@ -267,18 +280,15 @@ namespace
                     v = static_cast<T>(iv);
                 }
                 else
-                { // real
+                {
                     long double dv = parse_ld(p, e);
                     v = static_cast<T>(dv);
                 }
             }
             catch (const std::exception &ex)
             {
-                throw std::invalid_argument("ichol::io::mtx_to_coo: value parse error at line " + std::to_string(line_num) + ": " + ex.what());
+                throw std::invalid_argument("ichol::io::mtx_to_coo: value parse error in " + path + ": " + ex.what());
             }
-
-            if (!keep_and_map(r, c))
-                continue;
 
             if (r == c)
                 diag_seen[static_cast<std::size_t>(r)] = 1;
@@ -288,111 +298,307 @@ namespace
             out.values.push_back(v);
         }
 
-        // Check if missing diag entry
         for (int i = 0; i < n; ++i)
         {
             if (!diag_seen[static_cast<std::size_t>(i)])
-                throw std::invalid_argument("ichol::io::mtx_to_coo: missing diagonal entry at i=i=" + std::to_string(i + 1) + " (1-based)");
+                throw std::invalid_argument("ichol::io::mtx_to_coo: missing diagonal entry at i=" + std::to_string(i + 1) + " (1-based) in " + path);
         }
+    }
+
+    struct PatternGraph
+    {
+        std::vector<std::uint64_t> edges_lower; // packed (row<<32)|col with row>col
+        std::vector<int> degree;                // undirected degree
+    };
+
+    inline std::uint64_t pack_edge_u32(int r, int c)
+    {
+        return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(r)) << 32) |
+               static_cast<std::uint64_t>(static_cast<std::uint32_t>(c));
+    }
+
+    inline int unpack_row(std::uint64_t key) { return static_cast<int>(static_cast<std::uint32_t>(key >> 32)); }
+    inline int unpack_col(std::uint64_t key) { return static_cast<int>(static_cast<std::uint32_t>(key & 0xffffffffu)); }
+
+    inline PatternGraph read_pattern_graph(std::ifstream &in,
+                                           const std::string &path,
+                                           const Header &hdr,
+                                           int n,
+                                           bool verify,
+                                           long long nnz_file)
+    {
+        // Pattern MTX path: treat entries as an unweighted undirected graph.
+        PatternGraph g;
+        g.degree.assign(static_cast<std::size_t>(n), 0);
+        g.edges_lower.reserve(static_cast<std::size_t>(nnz_file));
+
+        std::string line;
+        int line_num = 0;
+
+        while (std::getline(in, line))
+        {
+            ++line_num;
+            if (is_blank_or_comment(line))
+                continue;
+
+            const char *p = line.c_str();
+            const char *e = p + line.size();
+
+            long long rr_ll, cc_ll;
+            try
+            {
+                rr_ll = parse_ll(p, e);
+                cc_ll = parse_ll(p, e);
+            }
+            catch (const std::exception &ex)
+            {
+                throw std::invalid_argument("ichol::io::mtx_to_coo: parse error in " + path + ": " + ex.what());
+            }
+
+            if (rr_ll <= 0 || cc_ll <= 0)
+                throw std::invalid_argument("ichol::io::mtx_to_coo: indices must be 1-based positive: " + path);
+
+            if (rr_ll > n || cc_ll > n)
+            {
+                if (verify)
+                    throw std::invalid_argument("ichol::io::mtx_to_coo: index out of range: " + path);
+                continue;
+            }
+
+            int r = static_cast<int>(rr_ll - 1);
+            int c = static_cast<int>(cc_ll - 1);
+
+            if (!map_keep_lower(r, c, hdr.symmetry))
+                continue;
+
+            if (r == c)
+            {
+                // Self-loops cancel in L = D - A (diag adds w and subtracts w), ignore.
+                continue;
+            }
+
+            // r>c guaranteed after map_keep_lower except for General case where r<c is dropped
+            if (r < c)
+                continue;
+
+            // Treat as undirected adjacency edge with weight 1
+            ++g.degree[static_cast<std::size_t>(r)];
+            ++g.degree[static_cast<std::size_t>(c)];
+
+            g.edges_lower.push_back(pack_edge_u32(r, c));
+        }
+
+        return g;
+    }
+
+    template <typename T>
+    ichol::matrix::CooMatrix<T> build_shifted_laplacian_lower_coo(PatternGraph &&g,
+                                                                  int n,
+                                                                  double alpha)
+    {
+        // Collapse duplicates and build lower-tri COO for L = (D - A) + alpha I.
+        std::sort(g.edges_lower.begin(), g.edges_lower.end());
+
+        ichol::matrix::CooMatrix<T> out;
+        out.num_rows = n;
+        out.num_cols = n;
+
+        // Worst case: no duplicates -> nnz = |E_lower| + n(diag)
+        out.row_ind.reserve(g.edges_lower.size() + static_cast<std::size_t>(n));
+        out.col_ind.reserve(g.edges_lower.size() + static_cast<std::size_t>(n));
+        out.values.reserve(g.edges_lower.size() + static_cast<std::size_t>(n));
+
+        std::size_t idx = 0;
+        const std::size_t m = g.edges_lower.size();
+
+        for (int r = 0; r < n; ++r)
+        {
+            // Emit all off-diagonals in this row, compressed with multiplicity.
+            while (idx < m && unpack_row(g.edges_lower[idx]) == r)
+            {
+                const std::uint64_t key = g.edges_lower[idx];
+                const int c = unpack_col(key);
+
+                int count = 1;
+                ++idx;
+                while (idx < m && g.edges_lower[idx] == key)
+                {
+                    ++count;
+                    ++idx;
+                }
+
+                // Off-diagonal value = -A_rc. For unweighted adjacency with multiplicity, A_rc = count.
+                out.row_ind.push_back(r);
+                out.col_ind.push_back(c);
+                out.values.push_back(static_cast<T>(-static_cast<long double>(count)));
+            }
+
+            // Diagonal: degree + alpha
+            const long double diag = static_cast<long double>(g.degree[static_cast<std::size_t>(r)]) + static_cast<long double>(alpha);
+            out.row_ind.push_back(r);
+            out.col_ind.push_back(r);
+            out.values.push_back(static_cast<T>(diag));
+        }
+
+        if (out.values.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+            throw std::runtime_error("ichol::io::mtx_to_coo: nnz exceeds int capacity");
+        out.nnz = static_cast<int>(out.values.size());
+        return out;
+    }
+
+    /**
+     * Read MTX and return lower-tri + diag COO.
+     *
+     * - Numeric (real/integer): keep old behavior (require diagonal in file).
+     * - Pattern: interpret as adjacency and build shifted Laplacian L = (D - A) + alpha I.
+     */
+    template <typename T>
+    ichol::matrix::CooMatrix<T> mtx_to_coo(const std::string &path, bool verify, double alpha)
+    {
+        std::ifstream in(path);
+        if (!in)
+            throw std::invalid_argument("ichol::io::mtx_to_coo: failed to open file: " + path);
+
+        // Use a larger IO buffer to reduce small-read overhead.
+        std::vector<char> io_buf(1u << 20);
+        in.rdbuf()->pubsetbuf(io_buf.data(), static_cast<std::streamsize>(io_buf.size()));
+
+        std::string line;
+        int line_num = 0;
+
+        if (!std::getline(in, line))
+            throw std::invalid_argument("ichol::io::mtx_to_coo: empty file: " + path);
+        ++line_num;
+
+        Header hdr = parse_header_line(line);
+
+        if (hdr.symmetry == Symmetry::SkewSymmetric)
+            throw std::invalid_argument("ichol::io::mtx_to_coo: skew-symmetric not compatible with SPD requirement: " + path);
+        if (hdr.symmetry == Symmetry::Hermitian)
+            hdr.symmetry = Symmetry::Symmetric;
+
+        // Find size line
+        std::string size_line = read_first_noncomment_line(in, line_num);
+        if (!in || size_line.empty())
+            throw std::invalid_argument("ichol::io::mtx_to_coo: missing size line: " + path);
+
+        SizeLine sz = parse_size_line(size_line, path, line_num);
+        const int n = sz.n;
+
+        if (hdr.field == Field::Complex)
+            throw std::invalid_argument("ichol::io::mtx_to_coo: complex field not supported: " + path);
+
+        if (hdr.field == Field::Pattern)
+        {
+            // Build SPD operator from graph: L = (D - A) + alpha I.
+            // alpha should be > 0 to make it strictly SPD even if the graph is disconnected.
+            PatternGraph g = read_pattern_graph(in, path, hdr, n, verify, sz.nnz_file);
+            auto coo = build_shifted_laplacian_lower_coo<T>(std::move(g), n, alpha);
+            // Already generated row-major with col-sorted per row; no extra sort required.
+            return coo;
+        }
+
+        // Numeric path (old behavior)
+        if (hdr.field != Field::Real && hdr.field != Field::Integer)
+            throw std::invalid_argument("ichol::io::mtx_to_coo: unsupported field type: " + path);
+
+        ichol::matrix::CooMatrix<T> out;
+        out.num_rows = n;
+        out.num_cols = n;
+
+        // Reserve heuristic: general -> keep about half; symmetric -> keep as-is
+        std::size_t reserve_nnz = static_cast<std::size_t>(sz.nnz_file);
+        if (hdr.symmetry == Symmetry::General)
+            reserve_nnz = static_cast<std::size_t>(sz.nnz_file / 2 + n);
+
+        out.row_ind.reserve(reserve_nnz);
+        out.col_ind.reserve(reserve_nnz);
+        out.values.reserve(reserve_nnz);
+
+        read_numeric_lower_coo(in, path, hdr, n, verify, out);
+
+        // Ensure row-major order before CSR conversion.
+        sort_coo_by_row_then_col(out);
 
         if (out.row_ind.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
             throw std::runtime_error("ichol::io::mtx_to_coo: nnz exceeds int capacity");
-
-        // after rows/cols/vals are filled
-        std::vector<int> perm(out.row_ind.size());
-        std::iota(perm.begin(), perm.end(), 0);
-
-        std::sort(perm.begin(), perm.end(), [&](int a, int b)
-                  {
-                        if (out.row_ind[a] != out.row_ind[b]) {
-                            return out.row_ind[a] < out.row_ind[b];
-                        }
-    return out.col_ind[a] < out.col_ind[b]; });
-
-        auto apply_perm = [&](auto &v)
-        {
-            using V = typename std::decay_t<decltype(v)>::value_type;
-            std::vector<V> tmp;
-            tmp.reserve(v.size());
-            for (int k : perm)
-                tmp.push_back(v[k]);
-            v.swap(tmp);
-        };
-
-        apply_perm(out.row_ind);
-        apply_perm(out.col_ind);
-        apply_perm(out.values);
-
         out.nnz = static_cast<int>(out.values.size());
         return out;
     }
 
     template <typename T>
-    ichol::matrix::CsrMatrix<T> coo_to_csr(ichol::matrix::CooMatrix<T> coo_in)
+    ichol::matrix::CsrMatrix<T> coo_to_csr(const ichol::matrix::CooMatrix<T> &coo_in)
     {
-        ichol::matrix::CsrMatrix<T> csr_out;
-        csr_out.num_cols = coo_in.num_cols;
-        csr_out.num_rows = coo_in.num_rows;
-        csr_out.nnz = coo_in.nnz;
+        // Classic COO->CSR: count rows, prefix-sum, then scatter entries.
+        ichol::matrix::CsrMatrix<T> csr;
+        csr.num_rows = coo_in.num_rows;
+        csr.num_cols = coo_in.num_cols;
+        csr.nnz = coo_in.nnz;
 
-        csr_out.row_ptr.assign(static_cast<std::size_t>(csr_out.num_rows) + 1, 0);
+        const std::size_t n = static_cast<std::size_t>(csr.num_rows);
+        const std::size_t nnz = static_cast<std::size_t>(csr.nnz);
 
-        // count nnz per row
-        for (int r : coo_in.row_ind)
-            ++csr_out.row_ptr[static_cast<std::size_t>(r) + 1];
+        csr.row_ptr.assign(n + 1, 0);
 
-        // exclusive prefix sum
-        for (std::size_t i = 0; i + 1 < csr_out.row_ptr.size(); ++i)
-            csr_out.row_ptr[i + 1] += csr_out.row_ptr[i];
+        for (std::size_t k = 0; k < nnz; ++k)
+            ++csr.row_ptr[static_cast<std::size_t>(coo_in.row_ind[k]) + 1];
 
-        csr_out.col_ind = std::move(coo_in.col_ind);
-        csr_out.values = std::move(coo_in.values);
+        for (std::size_t i = 0; i < n; ++i)
+            csr.row_ptr[i + 1] += csr.row_ptr[i];
 
-        return csr_out;
+        csr.col_ind.resize(nnz);
+        csr.values.resize(nnz);
+
+        auto next = csr.row_ptr;
+        for (std::size_t k = 0; k < nnz; ++k)
+        {
+            const int r = coo_in.row_ind[k];
+            const std::size_t pos = next[static_cast<std::size_t>(r)]++;
+            csr.col_ind[pos] = coo_in.col_ind[k];
+            csr.values[pos] = coo_in.values[k];
+        }
+
+        return csr;
     }
 
     template <typename T>
-    ichol::matrix::CscMatrix<T> coo_to_csc(ichol::matrix::CooMatrix<T> coo_in)
+    ichol::matrix::CscMatrix<T> coo_to_csc(const ichol::matrix::CooMatrix<T> &coo_in)
     {
-        ichol::matrix::CscMatrix<T> csc_out;
-        csc_out.num_cols = coo_in.num_cols;
-        csc_out.num_rows = coo_in.num_rows;
-        csc_out.nnz = coo_in.nnz;
+        // Classic COO->CSC: count cols, prefix-sum, then scatter entries.
+        ichol::matrix::CscMatrix<T> csc;
+        csc.num_rows = coo_in.num_rows;
+        csc.num_cols = coo_in.num_cols;
+        csc.nnz = coo_in.nnz;
 
-        const std::size_t nnz = static_cast<std::size_t>(csc_out.nnz);
+        const std::size_t n = static_cast<std::size_t>(csc.num_cols);
+        const std::size_t nnz = static_cast<std::size_t>(csc.nnz);
 
-        // build col_ptr
-        csc_out.col_ptr.assign(static_cast<std::size_t>(csc_out.num_cols) + 1, 0);
-        for (int c : coo_in.col_ind)
-            ++csc_out.col_ptr[static_cast<std::size_t>(c) + 1];
+        csc.col_ptr.assign(n + 1, 0);
+        for (std::size_t k = 0; k < nnz; ++k)
+            ++csc.col_ptr[static_cast<std::size_t>(coo_in.col_ind[k]) + 1];
+        for (std::size_t j = 0; j < n; ++j)
+            csc.col_ptr[j + 1] += csc.col_ptr[j];
 
-        for (std::size_t j = 0; j + 1 < csc_out.col_ptr.size(); ++j)
-            csc_out.col_ptr[j + 1] += csc_out.col_ptr[j];
+        csc.row_ind.resize(nnz);
+        csc.values.resize(nnz);
 
-        // scatter
-        csc_out.row_ind.resize(nnz);
-        csc_out.values.resize(nnz);
-
-        auto next = csc_out.col_ptr; // same type as col_ptr
-
+        auto next = csc.col_ptr;
         for (std::size_t k = 0; k < nnz; ++k)
         {
             const int r = coo_in.row_ind[k];
             const int c = coo_in.col_ind[k];
-            const auto pos = next[static_cast<std::size_t>(c)]++;
-
-            csc_out.row_ind[static_cast<std::size_t>(pos)] = r;
-            csc_out.values[static_cast<std::size_t>(pos)] = coo_in.values[k];
+            const std::size_t pos = next[static_cast<std::size_t>(c)]++;
+            csc.row_ind[pos] = r;
+            csc.values[pos] = coo_in.values[k];
         }
 
-        // sort rows within each column (and permute values)
-        for (int cj = 0; cj < csc_out.num_cols; ++cj)
+        // Sort rows within each column to keep canonical CSC.
+        for (int cj = 0; cj < csc.num_cols; ++cj)
         {
             const std::size_t j = static_cast<std::size_t>(cj);
-            const std::size_t b = static_cast<std::size_t>(csc_out.col_ptr[j]);
-            const std::size_t e = static_cast<std::size_t>(csc_out.col_ptr[j + 1]);
+            const std::size_t b = static_cast<std::size_t>(csc.col_ptr[j]);
+            const std::size_t e = static_cast<std::size_t>(csc.col_ptr[j + 1]);
             const std::size_t len = e - b;
-
             if (len <= 1)
                 continue;
 
@@ -402,7 +608,7 @@ namespace
             std::sort(perm.begin(), perm.end(),
                       [&](std::size_t a, std::size_t d)
                       {
-                          return csc_out.row_ind[b + a] < csc_out.row_ind[b + d];
+                          return csc.row_ind[b + a] < csc.row_ind[b + d];
                       });
 
             std::vector<int> rtmp;
@@ -412,43 +618,43 @@ namespace
 
             for (std::size_t t : perm)
             {
-                rtmp.push_back(csc_out.row_ind[b + t]);
-                vtmp.push_back(csc_out.values[b + t]);
+                rtmp.push_back(csc.row_ind[b + t]);
+                vtmp.push_back(csc.values[b + t]);
             }
 
             for (std::size_t t = 0; t < len; ++t)
             {
-                csc_out.row_ind[b + t] = rtmp[t];
-                csc_out.values[b + t] = vtmp[t];
+                csc.row_ind[b + t] = rtmp[t];
+                csc.values[b + t] = vtmp[t];
             }
         }
 
-        return csc_out;
+        return csc;
     }
-}
+} // namespace
 
 namespace ichol::io
 {
     template <typename T>
-    matrix::CsrMatrix<T> mtx_to_csr(const std::string &path, bool verify)
+    matrix::CsrMatrix<T> mtx_to_csr(const std::string &path, bool verify, double alpha)
     {
-        auto coo = mtx_to_coo<T>(path, verify);
-        return coo_to_csr(std::move(coo));
+        auto coo = mtx_to_coo<T>(path, verify, alpha);
+        // For numeric: coo is sorted; for pattern Laplacian: generated sorted.
+        return coo_to_csr(coo);
     }
 
     template <typename T>
-    matrix::CscMatrix<T> mtx_to_csc(const std::string &path, bool verify)
+    matrix::CscMatrix<T> mtx_to_csc(const std::string &path, bool verify, double alpha)
     {
-        auto coo = mtx_to_coo<T>(path, verify);
-        return coo_to_csc(std::move(coo));
+        auto coo = mtx_to_coo<T>(path, verify, alpha);
+        return coo_to_csc(coo);
     }
 
-    template matrix::CsrMatrix<double> mtx_to_csr<double>(const std::string &path, bool verify);
-    template matrix::CsrMatrix<float> mtx_to_csr<float>(const std::string &path, bool verify);
-    template matrix::CsrMatrix<half_float::half> mtx_to_csr<half_float::half>(const std::string &path, bool verify);
+    template matrix::CsrMatrix<double> mtx_to_csr<double>(const std::string &path, bool verify, double alpha);
+    template matrix::CsrMatrix<float> mtx_to_csr<float>(const std::string &path, bool verify, double alpha);
+    template matrix::CsrMatrix<half_float::half> mtx_to_csr<half_float::half>(const std::string &path, bool verify, double alpha);
 
-    template matrix::CscMatrix<double> mtx_to_csc<double>(const std::string &path, bool verify);
-    template matrix::CscMatrix<float> mtx_to_csc<float>(const std::string &path, bool verify);
-    template matrix::CscMatrix<half_float::half> mtx_to_csc<half_float::half>(const std::string &path, bool verify);
-
+    template matrix::CscMatrix<double> mtx_to_csc<double>(const std::string &path, bool verify, double alpha);
+    template matrix::CscMatrix<float> mtx_to_csc<float>(const std::string &path, bool verify, double alpha);
+    template matrix::CscMatrix<half_float::half> mtx_to_csc<half_float::half>(const std::string &path, bool verify, double alpha);
 } // namespace ichol::io

@@ -182,22 +182,32 @@ template <typename T>
         const int n = A.num_rows;
         const int INF = std::numeric_limits<int>::max() / 8;
 
-        struct AdjEntry
+        std::vector<int> adj_head(n, -1); // Points to start of list for column 'j'
+
+        std::vector<int> adj_next;
+        std::vector<int> adj_row;
+        std::vector<int> adj_lvl;
+
+        // Reserve memory to prevent frequent reallocs. Estimate fill-in factor ~3x-5x
+        size_t est_nnz = A.nnz * 3;
+        adj_next.reserve(est_nnz);
+        adj_row.reserve(est_nnz);
+        adj_lvl.reserve(est_nnz);
+
+        auto add_dependency = [&](int col, int row, int level)
         {
-            int row;
-            int lvl;
+            int idx = static_cast<int>(adj_next.size());
+            adj_next.push_back(adj_head[col]);
+            adj_row.push_back(row);
+            adj_lvl.push_back(level);
+            adj_head[col] = idx;
         };
 
-        // For each column p: list of (row r, level(r,p)) for L(r,p), with r increasing.
-        std::vector<std::vector<AdjEntry>> col_adj(n);
-
-        // Per-row workspace (stamp-based)
         std::vector<int> mark(n, -1);
         std::vector<int> lvl(n, INF);
         std::vector<int> touched;
-        touched.reserve(256);
+        touched.reserve(256); // Thread-local scratch if parallelized
 
-        // Queue membership per row
         std::vector<int> inQ(n, -1);
         std::vector<int> Q;
         Q.reserve(64);
@@ -214,7 +224,7 @@ template <typename T>
         auto activate_or_decrease = [&](int i, int j, int newlvl)
         {
             if (j > i)
-                return; // lower only
+                return;
             if (j != i && newlvl > k)
                 return;
 
@@ -234,14 +244,15 @@ template <typename T>
 
         ichol::symbolic::FactorPattern fp;
         fp.row_ptr_L.assign(n + 1, 0);
-        fp.col_ind_L.clear();
+        fp.col_ind_L.reserve(est_nnz);
 
+        // Main Loop: Serial (Inherently sequential for IC(k) wavefront)
         for (int i = 0; i < n; ++i)
         {
             touched.clear();
             Q.clear();
 
-            // Seed from A(i, j) for j <= i, level 0
+            // Seed from A
             for (int p = A.row_ptr[i]; p < A.row_ptr[i + 1]; ++p)
             {
                 int j = A.col_ind[p];
@@ -249,7 +260,7 @@ template <typename T>
                     activate_or_decrease(i, j, 0);
             }
 
-            // Ensure diagonal at level 0
+            // Ensure diagonal
             if (mark[i] != i)
             {
                 mark[i] = i;
@@ -266,41 +277,42 @@ template <typename T>
             {
                 int p = Q.back();
                 Q.pop_back();
-                inQ[p] = -1; // allow re-enqueue in same row
+                inQ[p] = -1;
 
                 if (mark[p] != i)
                     continue;
                 int lvl_ip = lvl[p];
                 if (lvl_ip >= k)
-                    continue; // pruning: cannot generate <=k fills
+                    continue;
 
-                const auto &adj = col_adj[p];
-                for (const auto &e : adj)
+                int curr = adj_head[p];
+                while (curr != -1)
                 {
-                    int r = e.row;
-                    if (r >= i)
-                        break; // rows appended in increasing order
-                    int newlvl = lvl_ip + e.lvl + 1;
+                    int r = adj_row[curr];
+                    int newlvl = lvl_ip + adj_lvl[curr] + 1;
                     activate_or_decrease(i, r, newlvl);
+                    curr = adj_next[curr];
                 }
             }
 
-            std::sort(touched.begin(), touched.end()); // already unique
+            std::sort(touched.begin(), touched.end());
 
-            // Emit CSR row i
             fp.row_ptr_L[i] = (int)fp.col_ind_L.size();
             fp.col_ind_L.insert(fp.col_ind_L.end(), touched.begin(), touched.end());
             fp.row_ptr_L[i + 1] = (int)fp.col_ind_L.size();
 
-            // Update column adjacency for future rows
+            // Update column adjacency
             for (int j : touched)
+            {
                 if (j < i)
-                    col_adj[j].push_back({i, lvl[j]});
+                {
+                    // Optimized push
+                    add_dependency(j, i, lvl[j]);
+                }
+            }
         }
-
         return fp;
     }
-
 
     template ichol::symbolic::FactorPattern compute_complete_cholesky_pattern<double>(const ichol::matrix::CsrMatrix<double> &A,
                                                                                       const ichol::symbolic::ETree &etree);

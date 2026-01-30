@@ -1,10 +1,10 @@
-// etree.cpp
-#include <cassert>
 #include <vector>
 #include <algorithm>
 #include <utility>
 
 #include "symbolic.hpp"
+#include <cassert>
+#include "factor/symbolic/symbolic.hpp"
 
 namespace ichol::symbolic
 {
@@ -34,7 +34,7 @@ namespace ichol::symbolic
         }
     }
 
-    
+
 //------------------------------------------------------------------------------
 // Strict upper adjacency U of A in compressed form:
 //   U[j] = { i | i < j and A(i,j) != 0 }.
@@ -169,7 +169,7 @@ static UpperAdj build_strict_upper_adjacency(const ichol::matrix::CsrMatrix<T> &
 //------------------------------------------------------------------------------
     // etree from strict upper adjacency (CHOLMOD(etree), symmetric case)
     //------------------------------------------------------------------------------
-    
+
 //------------------------------------------------------------------------------
 // etree from strict upper adjacency (CHOLMOD(etree), symmetric case)
 //------------------------------------------------------------------------------
@@ -253,7 +253,7 @@ static std::vector<int> cholmod_etree_symmetric_upper(const UpperAdj &U)
     //   Lcol[j] = { i | i > j and A(j,i) is in strict upper }
     // This matches cholmod_rowcolcounts symmetric input convention.
     //------------------------------------------------------------------------------
-    
+
 //------------------------------------------------------------------------------
 // Build strict lower CSC (transpose of strict upper):
 //   Lcol[j] = { i | i > j and (j,i) is in strict upper }.
@@ -461,27 +461,31 @@ static void build_strict_lower_csc_from_upper(
         e.upper_ind = std::move(U.ind);
         return e;
     }
-
-    template <typename T>
-    ETree build_etree(const ichol::matrix::CsrMatrix<T> &A)
+    template <class T>
+    ichol::symbolic::ETree build_etree(const ichol::matrix::CsrMatrix<T> &A)
     {
         const int n = A.num_rows;
-        ETree e;
-        e.parent.assign(n, -1);
-        e.colcount.assign(n, 1);
 
-        UpperAdj U = build_strict_upper_adjacency(A);
-        e.parent = cholmod_etree_symmetric_upper(U);
-        const auto Post = cholmod_postorder(e.parent);
+        ichol::symbolic::ETree tree = ichol::symbolic::ETree();
+        tree.parent.resize(n, -1);
+        std::vector<int> Ancestor(n, -1);
 
-        std::vector<int> Ap, Ai;
-        build_strict_lower_csc_from_upper(U, Ap, Ai);
-        e.colcount = cholmod_colcount_symmetric(Ap, Ai, e.parent, Post);
+        for (int j = 0; j < n; ++j)
+        {
+            const int row_start = A.row_ptr[j];
+            const int row_end = A.row_ptr[j + 1];
 
-        // Cache strict-upper adjacency for downstream symbolic stages (optional).
-        e.upper_ptr = std::move(U.ptr);
-        e.upper_ind = std::move(U.ind);
-        return e;
+            for (int t = row_start; t < row_end; ++t)
+            {
+                const int i = A.col_ind[t];
+                if (i < j)
+                {
+                    update_etree(i, j, tree.parent, Ancestor);
+                }
+            }
+        }
+
+        return tree;
     }
 
     template ichol::symbolic::ETree build_etree<double>(const ichol::matrix::CsrMatrix<double> &A);

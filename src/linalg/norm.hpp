@@ -1,7 +1,5 @@
-// include/ichol/matrix_norm.hpp
+// src/linalg/norm.hpp
 #pragma once
-#ifndef INCHOL_MATRIX_NORM_HPP
-#define INCHOL_MATRIX_NORM_HPP
 
 #include <ichol/matrix_formats.hpp>
 
@@ -13,10 +11,8 @@
 #include <utility>
 #include <vector>
 
-namespace ichol
+namespace ichol::linalg
 {
-    using DenseMatrix = std::vector<std::vector<double>>;
-
     inline double l2_norm(const matrix::CsrMatrix<double> &mat)
     {
         long double sum_sq = 0.0L;
@@ -215,6 +211,4 @@ namespace ichol
         return num / denom;
     }
 
-} // namespace ichol
-
-#endif // INCHOL_MATRIX_NORM_HPP
+} // namespace ichol::linalg
