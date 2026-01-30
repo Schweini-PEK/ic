@@ -8,6 +8,15 @@
 
 namespace ichol::numeric {
 
+    // Options for CUDA supernodal numeric factorization (single GPU, multi-stream).
+    // Defaults follow the IA3'2014/CHOLMOD-style setting commonly used in practice.
+    struct CudaSupernodalOptions {
+        int device = 0;
+        int streams = 16;              // default stream count (paper-style)
+        bool verbose = false;          // print streams/work distribution
+        bool print_schedule = false;   // print level buckets + mapping preview
+        int schedule_print_limit = 8;  // how many snodes to preview per level
+    };
 
 
     struct SuperNumeric
@@ -31,6 +40,12 @@ namespace ichol::numeric {
     SuperNumeric factorize_supernodal_ll_cuda(
         const ichol::matrix::CscMatrix<double>& A,
         const symbolic::SupernodalLLPlan& plan);
+
+    // CUDA numeric phase with explicit options.
+    SuperNumeric factorize_supernodal_ll_cuda(
+        const ichol::matrix::CscMatrix<double>& A,
+        const symbolic::SupernodalLLPlan& plan,
+        const CudaSupernodalOptions& opt);
 
     // -------------------------------------------------------------------------
     // Backward-compatible overloads (discouraged).
