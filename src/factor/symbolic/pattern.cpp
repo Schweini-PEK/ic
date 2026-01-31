@@ -1,5 +1,6 @@
 #include <cassert>
 #include <deque>
+#include <limits>
 
 #include "symbolic.hpp"
 
@@ -21,171 +22,182 @@ namespace ichol::symbolic
         v.erase(std::unique(v.begin(), v.end()), v.end());
     }
 
-    // merge: a := union(a, b\{skip}), both a and b sorted unique, result sorted unique
-    static inline void union_sorted_skip(std::vector<int> &a,
-                                         const std::vector<int> &b,
-                                         int skip)
+    // NOTE: We used to merge child patterns into a parent column via repeated
+    // sorted unions (allocate+merge per child). That is correct but very slow.
+    // The implementation below uses a stamp-based set union (dedup on the fly)
+    // and sorts only once per column.
+
+    // compute_complete_cholesky_pattern - CSC implementation (fast ereach -> CSC)
+//
+// The previous implementation built L(:,k) by repeatedly merging child column patterns
+// into the parent (correct but can be superlinear: elements get re-scanned many times up
+// the etree). On modest matrices this already becomes 10s of milliseconds.
+//
+// Here we switch to a standard near-optimal symbolic algorithm:
+//   1) Build the symmetric *upper* pattern U = triu(A) as CSC-like adjacency:
+//        Ucol[k] = { i | i < k and A(i,k) != 0 }   (deduped, sorted)
+//   2) For each k, compute the nonzero pattern of row k of L (left of diagonal) via etree reach:
+//        pattern(L(k,1:k-1)) = ereach(U(:,k), parent).
+//      (Classic cs_ereach algorithm from CSparse; uses only the upper part of A.)
+//   3) Convert row-patterns to column-patterns:
+//        if L(k,j) is nonzero (j<k) then row k belongs to column j of L.
+//
+// Result: exact simplicial CSC pattern of the *lower* Cholesky factor L (rows >= col),
+// with columns already sorted (diagonal first, then increasing row index).
+template <typename T>
+FactorPattern compute_complete_cholesky_pattern(
+    const ichol::matrix::CscMatrix<T> &A,
+    const ichol::symbolic::ETree &etree)
+{
+    const int n = A.num_cols;
+    assert((int)etree.parent.size() == n);
+
+    // ------------------------------------------------------------
+    // Build symmetric upper-triangular adjacency by column:
+    // Ucol[k] contains i < k where A(i,k) is structurally nonzero.
+    // We map any (i,j) to (min(i,j), max(i,j)) so pattern becomes symmetric.
+    // ------------------------------------------------------------
+    std::vector<std::vector<int>> Ucol(n);
+    for (int j = 0; j < n; ++j)
     {
-        std::vector<int> out;
-        out.reserve(a.size() + b.size());
-
-        size_t i = 0, j = 0;
-        while (i < a.size() || j < b.size())
+        for (int p = A.col_ptr[j]; p < A.col_ptr[j + 1]; ++p)
         {
-            int va;
-            if (j >= b.size() || (i < a.size() && a[i] < b[j]))
-            {
-                va = a[i++];
-            }
-            else if (i >= a.size() || (j < b.size() && b[j] < a[i]))
-            {
-                va = b[j++];
-            }
-            else
-            {
-                va = a[i];
-                ++i;
-                ++j;
-            }
-
-            if (va == skip) continue;
-            if (out.empty() || out.back() != va) out.push_back(va);
+            int i = A.row_ind[p];
+            if (i == j) continue;
+            int u = (i < j) ? i : j;
+            int v = (i < j) ? j : i;
+            if (u == v) continue;
+            Ucol[v].push_back(u); // u < v, stored in column v
         }
+    }
+    for (int k = 0; k < n; ++k) sort_unique(Ucol[k]);
 
-        a.swap(out);
+    // ------------------------------------------------------------
+    // Workspace for ereach + store row-patterns (strictly lower part):
+    // row_ptr[k]..row_ptr[k+1]-1 are the columns j<k where L(k,j) is nonzero.
+    // ------------------------------------------------------------
+    std::vector<int> w(n, -1);    // mark array: w[i] == k means visited in current k
+    std::vector<int> s(n, -1);    // temporary stack
+    std::vector<int> row_ptr(n + 1, 0);
+    std::vector<int> row_ind;
+
+    // reserve using colcount sum if available (robust even if mismatch)
+    if ((int)etree.colcount.size() == n)
+    {
+        long long nnzL_est = 0;
+        for (int k = 0; k < n; ++k) nnzL_est += std::max(1, etree.colcount[k]);
+        long long strict_lower = std::max(0LL, nnzL_est - (long long)n);
+        if (strict_lower > 0) row_ind.reserve((size_t)strict_lower);
     }
 
-    // compute_complete_cholesky_pattern - CSC implementation (CHOLMOD-style symbolic)
-    // Build exact simplicial column pattern of L for A (symmetric pattern),
-    // using elimination tree and child-to-parent merge:
-    //   L_k := A_k ∪ (⋃_{j: parent[j]=k} (L_j \ {j})) , then keep only rows >= k.
-    template <typename T>
-    FactorPattern compute_complete_cholesky_pattern(
-        const ichol::matrix::CscMatrix<T> &A,
-        const ichol::symbolic::ETree &etree)
+    for (int k = 0; k < n; ++k)
     {
-        const int n = A.num_cols;
-        assert((int)etree.parent.size() == n);
+        const int stamp = k;
+        int top = n;
 
-        // ------------------------------------------------------------
-        // Build lower-triangular pattern of A as adjacency-by-column:
-        // Acol[c] contains rows r >= c where A(r,c) is nonzero (excluding diag handled later).
-        // We map any (i,j) to (min(i,j), max(i,j)) so pattern becomes symmetric.
-        // ------------------------------------------------------------
-        std::vector<std::vector<int>> Acol(n);
-        for (int j = 0; j < n; ++j)
+        // mark k as visited (so paths stop at k)
+        w[k] = stamp;
+
+        // traverse each i in triu(A(:,k)) (i <= k) => here Ucol[k] has i < k
+        for (int idx = 0; idx < (int)Ucol[k].size(); ++idx)
         {
-            for (int p = A.col_ptr[j]; p < A.col_ptr[j + 1]; ++p)
+            int i = Ucol[k][idx];
+
+            int len = 0;
+            while (i >= 0 && w[i] != stamp)
             {
-                int i = A.row_ind[p];
-                if (i == j) continue;
-                int c = (i < j) ? i : j;
-                int r = (i < j) ? j : i;
-                if (r == c) continue;
-                Acol[c].push_back(r);
+                s[len++] = i;
+                w[i] = stamp;
+                i = etree.parent[i];
             }
+            while (len > 0) s[--top] = s[--len];
         }
-        for (int c = 0; c < n; ++c) sort_unique(Acol[c]);
 
-        // ------------------------------------------------------------
-        // children lists from etree.parent
-        // ------------------------------------------------------------
-        std::vector<std::vector<int>> children(n);
-        for (int j = 0; j < n; ++j)
+        row_ptr[k] = (int)row_ind.size();
+        for (int p = top; p < n; ++p)
         {
-            int p = etree.parent[j];
-            if (p >= 0) children[p].push_back(j);
+            const int j = s[p];
+            if (j >= 0 && j < k) row_ind.push_back(j);
         }
-
-        // ------------------------------------------------------------
-        // Build L column patterns by increasing k (children always < parent in etree)
-        // ------------------------------------------------------------
-        std::vector<std::vector<int>> Lcol(n);
-        for (int k = 0; k < n; ++k)
-        {
-            std::vector<int> rows = Acol[k];
-            rows.push_back(k);
-            sort_unique(rows);
-
-            // merge child patterns into parent, skipping child pivot index itself
-            for (int child : children[k])
-            {
-                // child columns should be ready since child < k in elim tree
-                union_sorted_skip(rows, Lcol[child], child);
-            }
-
-            // keep only lower triangle (rows >= k)
-            auto it = std::lower_bound(rows.begin(), rows.end(), k);
-            if (it != rows.begin()) rows.erase(rows.begin(), it);
-
-            // ensure diagonal exists
-            if (rows.empty() || rows.front() != k)
-            {
-                rows.insert(rows.begin(), k);
-            }
-
-            Lcol[k].swap(rows);
-        }
-
-        // ------------------------------------------------------------
-        // Pack into FactorPattern (CSC of L pattern)
-        // ------------------------------------------------------------
-        FactorPattern pattern;
-        pattern.row_ptr_L.resize(n + 1);
-        pattern.row_ptr_L[0] = 0;
-        for (int k = 0; k < n; ++k)
-        {
-            pattern.row_ptr_L[k + 1] =
-                pattern.row_ptr_L[k] + (int)Lcol[k].size();
-        }
-
-        const int nnzL = pattern.row_ptr_L[n];
-        pattern.col_ind_L.resize(nnzL);
-        for (int k = 0; k < n; ++k)
-        {
-            int base = pattern.row_ptr_L[k];
-            for (size_t t = 0; t < Lcol[k].size(); ++t)
-            {
-                pattern.col_ind_L[base + (int)t] = Lcol[k][t];
-            }
-        }
-
-        return pattern;
+        row_ptr[k + 1] = (int)row_ind.size();
     }
 
-    template <typename T>
+    // ------------------------------------------------------------
+    // Column counts from row-patterns (diag included).
+    // ------------------------------------------------------------
+    std::vector<int> col_count(n, 1); // diagonal
+    for (int k = 0; k < n; ++k)
+    {
+        for (int p = row_ptr[k]; p < row_ptr[k + 1]; ++p)
+        {
+            const int j = row_ind[p];
+            if (j >= 0 && j < n) col_count[j]++;
+        }
+    }
+
+    // ------------------------------------------------------------
+    // Pack into FactorPattern (CSC of L pattern; row_ptr_L is actually col_ptr_L here).
+    // ------------------------------------------------------------
+    FactorPattern pattern;
+    pattern.row_ptr_L.resize(n + 1);
+    pattern.row_ptr_L[0] = 0;
+    for (int j = 0; j < n; ++j)
+    {
+        pattern.row_ptr_L[j + 1] = pattern.row_ptr_L[j] + col_count[j];
+    }
+    pattern.col_ind_L.resize(pattern.row_ptr_L[n]);
+
+    // next write position per column
+    std::vector<int> next = pattern.row_ptr_L;
+
+    // diagonal first
+    for (int j = 0; j < n; ++j)
+    {
+        pattern.col_ind_L[next[j]++] = j;
+    }
+
+    // scatter strictly-lower part: increasing k => columns become sorted by row
+    for (int k = 0; k < n; ++k)
+    {
+        for (int p = row_ptr[k]; p < row_ptr[k + 1]; ++p)
+        {
+            const int j = row_ind[p];
+            pattern.col_ind_L[next[j]++] = k;
+        }
+    }
+
+#ifndef NDEBUG
+    for (int j = 0; j < n; ++j)
+    {
+        assert(next[j] == pattern.row_ptr_L[j + 1] && "col_count mismatch in CSC pattern build");
+    }
+#endif
+
+    return pattern;
+}
+template <typename T>
     ichol::symbolic::FactorPattern
     compute_ic_factor_pattern(const ichol::matrix::CsrMatrix<T> &A, int k)
     {
         const int n = A.num_rows;
         const int INF = std::numeric_limits<int>::max() / 8;
 
-        std::vector<int> adj_head(n, -1); // Points to start of list for column 'j'
-
-        std::vector<int> adj_next;
-        std::vector<int> adj_row;
-        std::vector<int> adj_lvl;
-
-        // Reserve memory to prevent frequent reallocs. Estimate fill-in factor ~3x-5x
-        size_t est_nnz = A.nnz * 3;
-        adj_next.reserve(est_nnz);
-        adj_row.reserve(est_nnz);
-        adj_lvl.reserve(est_nnz);
-
-        auto add_dependency = [&](int col, int row, int level)
+        struct AdjEntry
         {
-            int idx = static_cast<int>(adj_next.size());
-            adj_next.push_back(adj_head[col]);
-            adj_row.push_back(row);
-            adj_lvl.push_back(level);
-            adj_head[col] = idx;
+            int row;
+            int lvl;
         };
 
+        // For each column p: list of (row r, level(r,p)) for L(r,p), with r increasing.
+        std::vector<std::vector<AdjEntry>> col_adj(n);
+
+        // Per-row workspace (stamp-based)
         std::vector<int> mark(n, -1);
         std::vector<int> lvl(n, INF);
         std::vector<int> touched;
-        touched.reserve(256); // Thread-local scratch if parallelized
+        touched.reserve(256);
 
+        // Queue membership per row
         std::vector<int> inQ(n, -1);
         std::vector<int> Q;
         Q.reserve(64);
@@ -202,7 +214,7 @@ namespace ichol::symbolic
         auto activate_or_decrease = [&](int i, int j, int newlvl)
         {
             if (j > i)
-                return;
+                return; // lower only
             if (j != i && newlvl > k)
                 return;
 
@@ -222,15 +234,14 @@ namespace ichol::symbolic
 
         ichol::symbolic::FactorPattern fp;
         fp.row_ptr_L.assign(n + 1, 0);
-        fp.col_ind_L.reserve(est_nnz);
+        fp.col_ind_L.clear();
 
-        // Main Loop: Serial (Inherently sequential for IC(k) wavefront)
         for (int i = 0; i < n; ++i)
         {
             touched.clear();
             Q.clear();
 
-            // Seed from A
+            // Seed from A(i, j) for j <= i, level 0
             for (int p = A.row_ptr[i]; p < A.row_ptr[i + 1]; ++p)
             {
                 int j = A.col_ind[p];
@@ -238,7 +249,7 @@ namespace ichol::symbolic
                     activate_or_decrease(i, j, 0);
             }
 
-            // Ensure diagonal
+            // Ensure diagonal at level 0
             if (mark[i] != i)
             {
                 mark[i] = i;
@@ -255,42 +266,41 @@ namespace ichol::symbolic
             {
                 int p = Q.back();
                 Q.pop_back();
-                inQ[p] = -1;
+                inQ[p] = -1; // allow re-enqueue in same row
 
                 if (mark[p] != i)
                     continue;
                 int lvl_ip = lvl[p];
                 if (lvl_ip >= k)
-                    continue;
+                    continue; // pruning: cannot generate <=k fills
 
-                int curr = adj_head[p];
-                while (curr != -1)
+                const auto &adj = col_adj[p];
+                for (const auto &e : adj)
                 {
-                    int r = adj_row[curr];
-                    int newlvl = lvl_ip + adj_lvl[curr] + 1;
+                    int r = e.row;
+                    if (r >= i)
+                        break; // rows appended in increasing order
+                    int newlvl = lvl_ip + e.lvl + 1;
                     activate_or_decrease(i, r, newlvl);
-                    curr = adj_next[curr];
                 }
             }
 
-            std::sort(touched.begin(), touched.end());
+            std::sort(touched.begin(), touched.end()); // already unique
 
+            // Emit CSR row i
             fp.row_ptr_L[i] = (int)fp.col_ind_L.size();
             fp.col_ind_L.insert(fp.col_ind_L.end(), touched.begin(), touched.end());
             fp.row_ptr_L[i + 1] = (int)fp.col_ind_L.size();
 
-            // Update column adjacency
+            // Update column adjacency for future rows
             for (int j : touched)
-            {
                 if (j < i)
-                {
-                    // Optimized push
-                    add_dependency(j, i, lvl[j]);
-                }
-            }
+                    col_adj[j].push_back({i, lvl[j]});
         }
+
         return fp;
     }
+
 
     template ichol::symbolic::FactorPattern compute_complete_cholesky_pattern<double>(const ichol::matrix::CsrMatrix<double> &A,
                                                                                       const ichol::symbolic::ETree &etree);

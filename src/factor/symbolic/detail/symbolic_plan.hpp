@@ -15,8 +15,15 @@ namespace ichol::symbolic
 
     struct ETree
     {
-        std::vector<int> parent; // size n
+        std::vector<int> parent;    // size n
         std::vector<int> colcount;  // size n, CHOLMOD-style simplicial column counts
+
+        // Cached strict-upper adjacency (optional). When present, callers can reuse
+        // it to avoid re-scanning A to build an adjacency for ereach-like traversals.
+        // Upper triangle in compressed form:
+        //   upper_ind[ upper_ptr[j] .. upper_ptr[j+1] ) are i < j with A(i,j) != 0
+        std::vector<int> upper_ptr; // size n+1
+        std::vector<int> upper_ind; // size nnz_strict_upper
 
     };
 

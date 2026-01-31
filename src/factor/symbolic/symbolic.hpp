@@ -5,36 +5,33 @@
 #include <stdexcept>
 #include <algorithm>
 #include <utility>
-#include <numeric>
-#include <petscksp.h>
-#include <omp.h>
-
-#include <vector>
-#include <stdexcept>
-#include <algorithm>
-#include <utility>
 
 #include "detail/symbolic_plan.hpp"
 #include "ichol/options.hpp"
 #include "ichol/matrix_formats.hpp"
 #include "ichol/half.hpp"
-#include "ichol/util/timer.hpp"
-
-extern "C"
-{
-#include <amd.h>
-}
 
 namespace ichol::symbolic
 {
     Permutation identity_permutation(int n);
 
-    /**
-     * Obtain a permutation reordering using AMD from Suitesparse.
-     */
     Permutation amd_from_csr(int n,
                              const std::vector<int> &row_ptr,
                              const std::vector<int> &col_ind);
+
+    // Reordering for CSC (square, structural symmetric; typically lower+diag stored).
+    Permutation amd_from_csc(int n,
+                             const std::vector<int> &col_ptr,
+                             const std::vector<int> &row_ind);
+
+    Permutation rcm_from_csc(int n,
+                             const std::vector<int> &col_ptr,
+                             const std::vector<int> &row_ind);
+
+    Permutation nd_from_csc(int n,
+                            const std::vector<int> &col_ptr,
+                            const std::vector<int> &row_ind);
+
 
     ichol::symbolic::Permutation rcm_from_csr(int n,
                                               const std::vector<int> &row_ptr,
@@ -44,14 +41,19 @@ namespace ichol::symbolic
                                              const std::vector<int> &row_ptr,
                                              const std::vector<int> &col_ind);
 
-    template <typename T>
-    std::vector<T> apply_permutation_vec(const std::vector<T> &v,
-                                         const Permutation &P);
+    // In-place permutation of CSC (lower+diag) matrix: A := P*A*P^T, keeping only lower triangle.
+    // P follows CHOLMOD convention: perm[new] = old; inv_perm[old] = new.
+    void apply_symmetric_permutation_csc_lower_inplace(ichol::matrix::CscMatrix<double> &A,
+                                                       const Permutation &P);
 
+    // Float variant (kept as an overload to avoid putting templates in headers).
+    void apply_symmetric_permutation_csc_lower_inplace(ichol::matrix::CscMatrix<float> &A,
+                                                       const Permutation &P);
+    
     /**
      * In-place permutation of CSR matrix: A := P * A * P^T
      */
-    template <typename T>
+                             template <typename T>
     void apply_permutation_csr(ichol::matrix::CsrMatrix<T> &A,
                                const Permutation &P);
 
@@ -62,7 +64,7 @@ namespace ichol::symbolic
     ichol::symbolic::ETree build_etree(const ichol::matrix::CsrMatrix<T> &A);
 
     template <typename T>
-    ichol::symbolic::ETree build_etree(const matrix::CscMatrix<T> &A);
+    ichol::symbolic::ETree build_etree(const matrix::CscMatrix<T>& A);
 
     template <typename T>
     ichol::symbolic::FactorPattern compute_complete_cholesky_pattern(const ichol::matrix::CsrMatrix<T> &A,
@@ -74,30 +76,11 @@ namespace ichol::symbolic
     ichol::symbolic::FactorPattern compute_ic_factor_pattern(const ichol::matrix::CsrMatrix<T> &A,
                                                              int level_k);
 
-    // CHOLMOD-style supernode detection
-    // - detect_supernodes: relaxed amalgamation (matches cholmod_super_symbolic default)
-    // - detect_supernodes_fundamental: relax=off (debug / comparison)
-    std::vector<std::pair<int, int>> detect_supernodes(const FactorPattern &pattern, const ETree &etree);
-    std::vector<std::pair<int, int>> detect_supernodes_fundamental(const ETree &etree);
-    std::vector<std::pair<int, int>> detect_supernodes_approx(const FactorPattern &pattern,
-                                                              const ETree & /*etree*/,
-                                                              double overlap_threshold);
-    std::vector<int> build_col2snode(const std::vector<std::pair<int, int>> &snodes, int ncols);
-    std::vector<std::vector<int>> compute_snode_rows(const FactorPattern &pattern, const std::vector<std::pair<int, int>> &snodes);
-
     /**
-     * Build 0-based level scheduling given the sparsity pattern of L.
-     *
-     * If a row has no dependencies, it is assigned to level 0.
-     * @param LevelSets.level_ptr gives the start indices of each level
-     * @param LevelSets.levels holds the row indices grouped contiguously by levels
+     * Build level scheduling given the sparsity pattern of L.
      */
-    ichol::symbolic::LevelSets build_level_sets(const ichol::symbolic::FactorPattern &factor_pattern);
-
-    ichol::symbolic::LevelSets build_level_sets_upper_csr(const ichol::symbolic::FactorPattern &U_pattern);
-
-    SnodeLevelSets build_snode_level_sets(const LevelSets &col_level_sets,
-                                          const std::vector<std::pair<int, int>> &snodes);
+    ichol::symbolic::LevelSets build_level_sets(const ichol::symbolic::FactorPattern &factor_pattern,
+                                                const ichol::SymbolicOptions &options);
     /**
      * Perform symbolic analysis for IC or IC(k) factorization.
      *

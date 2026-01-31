@@ -8,12 +8,22 @@ function(add_unit_test name)
         add_executable(${name} "${CMAKE_CURRENT_LIST_DIR}/unit/${name}.cpp")
     endif()
 
-    target_link_libraries(${name}
-        PRIVATE
-            ichol
-            GTest::gtest_main
-            OpenMP::OpenMP_CXX
-    )
+    # test_supernodal provides its own main() to parse extra CLI flags.
+    if(${name} STREQUAL "test_supernodal")
+        target_link_libraries(${name}
+            PRIVATE
+                ichol
+                GTest::gtest
+                OpenMP::OpenMP_CXX
+        )
+    else()
+        target_link_libraries(${name}
+            PRIVATE
+                ichol
+                GTest::gtest_main
+                OpenMP::OpenMP_CXX
+        )
+    endif()
 
     target_include_directories(${name}
         PRIVATE

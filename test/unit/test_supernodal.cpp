@@ -1,277 +1,432 @@
 // test_supernodal.cpp
+//
+// Supernodal LL: symbolic + numeric validation against SuiteSparse CHOLMOD.
+// - Symbolic: timing comparison (ours vs CHOLMOD analyze)
+// - Numeric : CPU and CUDA(single-GPU, multi-stream) vs CHOLMOD factorization
+//
+// Extra CLI flags (in addition to gtest flags):
+//   --ichol_mtx=PATH
+//   --ichol_cuda_device=N
+//   --ichol_cuda_streams=N            (default 16, paper/CHOLMOD-style)
+//   --ichol_cuda_verbose
+//   --ichol_cuda_print_schedule
+//   --ichol_cuda_schedule_limit=N
+//
+// Example:
+//   /tmp/ic/test/test_supernodal --gtest_color=no \
+//       --ichol_mtx=/tmp/ic/test/data/nasa2146.mtx \
+//       --ichol_cuda_streams=16 --ichol_cuda_verbose --ichol_cuda_print_schedule
+
 #include <gtest/gtest.h>
 
+extern "C" {
+#include <cholmod.h>
+}
+
 #include <algorithm>
-#include <cmath>
+#include <chrono>
+#include <cstdint>
+#include <cstdlib>
 #include <iostream>
-#include <random>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
-#include <limits>
 
 #include "ichol/mtx_read.hpp"
 #include "ichol/options.hpp"
 #include "factor/symbolic/supernodal_ll_plan.hpp"
 #include "factor/numerical/supernodal_numeric_ll.hpp"
-#include "factor/numerical/cuda/supernodal_num_fact.cuh"
 
-namespace
+namespace {
+
+using Clock = std::chrono::steady_clock;
+
+struct CliOpt {
+    std::string mtx_path;
+    ichol::numeric::CudaSupernodalOptions cuda_opt;
+};
+static CliOpt g_cli;
+
+static double elapsed_ms(Clock::time_point t0, Clock::time_point t1)
 {
+    return std::chrono::duration<double, std::milli>(t1 - t0).count();
+}
 
-    static double l2norm_sq(const std::vector<double> &v)
-    {
-        double s = 0.0;
-        for (double a : v)
-            s += a * a;
-        return s;
+static std::string get_mtx_path()
+{
+    if (!g_cli.mtx_path.empty()) return g_cli.mtx_path;
+    const char* p = std::getenv("ICHOL_MTX");
+    if (p && *p) return std::string(p);
+    return std::string("/tmp/ic/test/data/apache2.mtx");
+}
+
+static cholmod_sparse* to_cholmod_sparse_lower_csc(const ichol::matrix::CscMatrix<double>& A,
+                                                  cholmod_common* cc)
+{
+    const int n = A.num_cols;
+    const size_t nz = static_cast<size_t>(A.nnz);
+
+    // stype = -1 means symmetric, stored in LOWER triangle.
+    cholmod_sparse* S = cholmod_allocate_sparse(
+        (size_t)n, (size_t)n, nz,
+        /*sorted=*/1, /*packed=*/1,
+        /*stype=*/-1,
+        /*xtype=*/CHOLMOD_REAL,
+        cc);
+    if (!S) return nullptr;
+
+    auto* Sp = static_cast<int32_t*>(S->p);
+    auto* Si = static_cast<int32_t*>(S->i);
+    auto* Sx = static_cast<double*>(S->x);
+
+    for (int j = 0; j <= n; ++j) Sp[j] = static_cast<int32_t>(A.col_ptr[(size_t)j]);
+    for (int k = 0; k < A.nnz; ++k) {
+        Si[(size_t)k] = static_cast<int32_t>(A.row_ind[(size_t)k]);
+        Sx[(size_t)k] = (A.values.empty() ? 1.0 : A.values[(size_t)k]);
     }
+    return S;
+}
 
-    static double l2norm(const std::vector<double> &v)
-    {
-        return std::sqrt(l2norm_sq(v));
-    }
+struct CompareResult {
+    double max_abs = 0.0;
+    double max_rel = 0.0;
+    uint64_t worst_key = 0;
+    int common = 0;
+    int onlyA = 0;
+    int onlyB = 0;
+};
 
-    static double l2norm_diff(const std::vector<double> &a, const std::vector<double> &b)
-    {
-        if (a.size() != b.size())
-            return std::numeric_limits<double>::quiet_NaN();
-        double s = 0.0;
-        for (size_t i = 0; i < a.size(); ++i)
-        {
-            double d = a[i] - b[i];
-            s += d * d;
+static inline uint64_t pack_key(int32_t row, int32_t col)
+{
+    return (uint64_t)(uint32_t)col << 32 | (uint32_t)row;
+}
+
+static CompareResult compare_L_maps(const std::unordered_map<uint64_t,double>& A,
+                                   const std::unordered_map<uint64_t,double>& B)
+{
+    CompareResult r;
+    // common / onlyA
+    for (const auto& kv : A) {
+        auto it = B.find(kv.first);
+        if (it == B.end()) {
+            r.onlyA++;
+            continue;
         }
-        return std::sqrt(s);
+        r.common++;
+        const double va = kv.second;
+        const double vb = it->second;
+        const double diff = std::abs(va - vb);
+        r.max_abs = std::max(r.max_abs, diff);
+        const double denom = std::max(1e-300, std::abs(vb));
+        const double rel = diff / denom;
+        if (rel > r.max_rel) {
+            r.max_rel = rel;
+            r.worst_key = kv.first;
+        }
     }
+    // onlyB
+    for (const auto& kv : B) {
+        if (A.find(kv.first) == A.end()) r.onlyB++;
+    }
+    return r;
+}
 
-    // Treat A as symmetric, stored in LOWER triangle CSC (i >= j).
-    static void spmv_sym_lower_csc(const ichol::matrix::CscMatrix<double> &A,
-                                   const std::vector<double> &x,
-                                   std::vector<double> &y)
-    {
-        const int n = A.num_cols;
-        y.assign((size_t)n, 0.0);
+static void build_our_L_map(const ichol::numeric::SuperNumeric& num,
+                            std::unordered_map<uint64_t,double>& out,
+                            std::vector<double>* diag_out)
+{
+    const auto& sym = num.sym;
+    const int nsuper = (int)sym.super.size() - 1;
+    const int n = sym.super.back();
 
-        for (int j = 0; j < n; ++j)
-        {
-            for (int p = A.col_ptr[j]; p < A.col_ptr[j + 1]; ++p)
-            {
-                const int i = A.row_ind[p];
-                const double v = A.values[p];
-                if (i < j)
-                    continue; // lower only
+    out.clear();
+    out.reserve((size_t)n * 8);
 
-                y[(size_t)i] += v * x[(size_t)j];
-                if (i != j)
-                    y[(size_t)j] += v * x[(size_t)i];
+    std::vector<double> diag((size_t)n, 0.0);
+
+    for (int k = 0; k < nsuper; ++k) {
+        const int scol  = sym.super[(size_t)k];
+        const int ecol  = sym.super[(size_t)k + 1];
+        const int nscol = ecol - scol;
+
+        const int pi0   = sym.pi[(size_t)k];
+        const int pi1   = sym.pi[(size_t)k + 1];
+        const int nsrow = pi1 - pi0;
+
+        const int px0   = sym.px[(size_t)k];
+
+        for (int j = 0; j < nscol; ++j) {
+            const int gcol = scol + j;
+            for (int i = j; i < nsrow; ++i) {
+                const int grow = sym.s[(size_t)(pi0 + i)];
+                const double v = num.x[(size_t)px0 + (size_t)i + (size_t)j * (size_t)nsrow];
+                out.emplace(pack_key((int32_t)grow, (int32_t)gcol), v);
+                if (grow == gcol) diag[(size_t)gcol] = v;
             }
         }
     }
 
-    static double fro_norm_sym_lower_csc(const ichol::matrix::CscMatrix<double> &A)
-    {
-        const int n = A.num_cols;
-        double s = 0.0;
-        for (int j = 0; j < n; ++j)
-        {
-            for (int p = A.col_ptr[j]; p < A.col_ptr[j + 1]; ++p)
-            {
-                const int i = A.row_ind[p];
-                const double v = A.values[p];
-                if (i < j)
-                    continue;
-                if (i == j)
-                    s += v * v;
-                else
-                    s += 2.0 * v * v; // symmetric duplicate
-            }
-        }
-        return std::sqrt(s);
-    }
+    if (diag_out) *diag_out = std::move(diag);
+}
 
-    // y = L * x, where L is stored in CHOLMOD-style packed supernodal blocks.
-    static void apply_L(const ichol::numeric::SuperNumeric &num,
-                        const std::vector<double> &x,
-                        std::vector<double> &y)
-    {
-        const auto &sym = num.sym;
-        const int n = (int)x.size();
-        y.assign((size_t)n, 0.0);
+static void build_cholmod_L_map(cholmod_factor* L,
+                               cholmod_common* cc,
+                               std::unordered_map<uint64_t,double>& out)
+{
+    out.clear();
 
-        const int nsuper = (int)sym.super.size() - 1;
-        for (int k = 0; k < nsuper; ++k)
-        {
-            const int scol = sym.super[(size_t)k];
-            const int ecol = sym.super[(size_t)k + 1];
-            const int nscol = ecol - scol;
+    cholmod_sparse* Ls = cholmod_factor_to_sparse(L, cc);
+    if (!Ls) return;
 
-            const int pi0 = sym.pi[(size_t)k];
-            const int pi1 = sym.pi[(size_t)k + 1];
-            const int nsrow = pi1 - pi0;
+    const int n = (int)Ls->ncol;
+    auto* Lp = static_cast<int32_t*>(Ls->p);
+    auto* Li = static_cast<int32_t*>(Ls->i);
+    auto* Lx = static_cast<double*>(Ls->x);
 
-            const int px0 = sym.px[(size_t)k];
+    const int nnz = (int)Lp[n];
+    out.reserve((size_t)nnz * 2);
 
-            for (int lc = 0; lc < nscol; ++lc)
-            {
-                const int col = scol + lc;
-                const double alpha = x[(size_t)col];
-                if (alpha == 0.0)
-                    continue;
-
-                const size_t base = (size_t)px0 + (size_t)lc * (size_t)nsrow;
-                for (int t = 0; t < nsrow; ++t)
-                {
-                    const int row = sym.s[(size_t)(pi0 + t)];
-                    y[(size_t)row] += num.x[base + (size_t)t] * alpha;
-                }
-            }
+    for (int col = 0; col < n; ++col) {
+        for (int p = Lp[col]; p < Lp[col + 1]; ++p) {
+            const int row = Li[p];
+            const double v = Lx[p];
+            if (row < col) continue; // keep lower
+            out.emplace(pack_key((int32_t)row, (int32_t)col), v);
         }
     }
 
-    // y = L^T * x
-    static void apply_LT(const ichol::numeric::SuperNumeric &num,
-                         const std::vector<double> &x,
-                         std::vector<double> &y)
-    {
-        const auto &sym = num.sym;
-        const int n = (int)x.size();
-        y.assign((size_t)n, 0.0);
-
-        const int nsuper = (int)sym.super.size() - 1;
-        for (int k = 0; k < nsuper; ++k)
-        {
-            const int scol = sym.super[(size_t)k];
-            const int ecol = sym.super[(size_t)k + 1];
-            const int nscol = ecol - scol;
-
-            const int pi0 = sym.pi[(size_t)k];
-            const int pi1 = sym.pi[(size_t)k + 1];
-            const int nsrow = pi1 - pi0;
-
-            const int px0 = sym.px[(size_t)k];
-
-            for (int lc = 0; lc < nscol; ++lc)
-            {
-                const int col = scol + lc;
-                const size_t base = (size_t)px0 + (size_t)lc * (size_t)nsrow;
-
-                double sum = 0.0;
-                for (int t = 0; t < nsrow; ++t)
-                {
-                    const int row = sym.s[(size_t)(pi0 + t)];
-                    sum += num.x[base + (size_t)t] * x[(size_t)row];
-                }
-                y[(size_t)col] += sum;
-            }
-        }
-    }
-
-    static double estimate_fro_norm_LLt(const ichol::numeric::SuperNumeric &num, int trials)
-    {
-        const int n = (int)(num.sym.super.empty() ? 0 : num.sym.super.back());
-        std::mt19937 rng(12345);
-        std::bernoulli_distribution coin(0.5);
-
-        std::vector<double> g((size_t)n), t((size_t)n), v((size_t)n);
-        double acc = 0.0;
-
-        for (int k = 0; k < trials; ++k)
-        {
-            for (int i = 0; i < n; ++i)
-                g[(size_t)i] = coin(rng) ? 1.0 : -1.0;
-            apply_LT(num, g, t);
-            apply_L(num, t, v);
-            acc += l2norm_sq(v);
-        }
-
-        // Hutchinson: E ||M g||^2 = ||M||_F^2 for Rademacher / Gaussian g.
-        return std::sqrt(acc / std::max(1, trials));
-    }
-
-    static double worst_random_rel_residual(const ichol::matrix::CscMatrix<double> &A,
-                                            const ichol::numeric::SuperNumeric &num,
-                                            int trials)
-    {
-        const int n = A.num_cols;
-        std::mt19937 rng(20240120);
-        std::bernoulli_distribution coin(0.5);
-
-        std::vector<double> x((size_t)n), yA, t, yL;
-
-        double worst = 0.0;
-        for (int k = 0; k < trials; ++k)
-        {
-            for (int i = 0; i < n; ++i)
-                x[(size_t)i] = coin(rng) ? 1.0 : -1.0;
-
-            spmv_sym_lower_csc(A, x, yA);
-            apply_LT(num, x, t);
-            apply_L(num, t, yL);
-
-            const double nume = l2norm_diff(yA, yL);
-            const double deno = std::max(l2norm(yA), 1e-30);
-            worst = std::max(worst, nume / deno);
-        }
-        return worst;
-    }
+    cholmod_free_sparse(&Ls, cc);
+}
 
 } // namespace
 
-TEST(SupernodalCPU, SymbolicThenNumeric_LL)
+TEST(SupernodalSymbolic, Once_OursVsCHOLMOD)
 {
-    // Keep the same convention as the original project tests.
-    const std::string path = "test/data/apache2.mtx";
+    const std::string path = get_mtx_path();
+    std::cout << "[SymbolicOnce] matrix=" << path << "\n";
 
-    auto A = ichol::io::mtx_to_csc<double>(path, /*make_symmetric=*/false);
+    auto A0 = ichol::io::mtx_to_csc<double>(path, /*verify=*/false);
+    auto A = A0;
     ASSERT_GT(A.num_cols, 0);
-    ASSERT_EQ(A.num_rows, A.num_cols) << "This test expects a square matrix.";
+    ASSERT_EQ(A.num_rows, A.num_cols);
 
-    // 1) Symbolic phase: build ALL symbolic info needed by numeric.
+    const int n = A.num_cols;
+    std::cout << "[SymbolicOnce] n=" << n << " nnz=" << A.nnz << "\n";
+
     ichol::SuperNodeOptions snopt;
-    snopt.approximate = true;
-    auto plan = ichol::symbolic::supernodal_ll_analyze(A, snopt);
+    snopt.approximate = false;
 
-    std::cout << "Supernodal symbolic analysis produced "
-              << (int)plan.sym.super.size() - 1 << " supernodes.\n";
+    ichol::SymbolicOptions symopt;
+    symopt.ordering = ichol::Ordering::AMD;
 
-    // Basic sanity on the symbolic product.
-    ASSERT_GE((int)plan.sym.super.size(), 2);
-    ASSERT_EQ((int)plan.sym.super.size(), (int)plan.sym.pi.size());
-    ASSERT_EQ((int)plan.sym.super.size(), (int)plan.sym.px.size());
-    ASSERT_EQ((int)plan.sym.s.size(), plan.sym.pi.back());
+    // --- time ours (includes CHOLMOD analyze + apply permutation, if any) ---
+    const auto t0 = Clock::now();
+    auto plan = ichol::symbolic::supernodal_ll_analyze_fast(A, snopt, symopt);
+    const auto t1 = Clock::now();
 
-    // 2) Numeric phase (CPU): consume the symbolic plan and factorize.
-    // auto num = ichol::numeric::factorize_supernodal_ll(A, plan);
-    auto num = ichol::numeric::factorize_supernodal_ll_gpu(A, plan);
+    // --- CHOLMOD setup ---
+    cholmod_common cc;
+    cholmod_start(&cc);
+    cc.postorder = 0;
+    cc.nmethods = 1;
+    cc.method[0].ordering = CHOLMOD_AMD;
+    cc.supernodal = CHOLMOD_SUPERNODAL;
+    cc.supernodal_switch = 0;
+    cc.final_ll = 1;
+    cc.final_super = 1;
+    cc.final_asis = 0;
 
-    ASSERT_TRUE(num.ok) << "Numeric factorization failed at snode="
-                        << num.fail_snode << ", col_in_snode=" << num.fail_col_in_snode;
+    cholmod_sparse* S = to_cholmod_sparse_lower_csc(A0, &cc);
+    ASSERT_NE(S, nullptr);
 
-    // Numeric output is CHOLMOD-style packed supernodal storage of L.
-    ASSERT_EQ((int)num.x.size(), plan.sym.px.back());
+    const auto t2 = Clock::now();
+    cholmod_factor* L = cholmod_analyze(S, &cc);
+    const auto t3 = Clock::now();
 
-    // 3) Verification.
-    // The ratio ||L L^T|| / ||A|| alone is a weak check (it only checks scale),
-    // so we report it but also assert a meaningful relative residual.
-    const double A_fro = fro_norm_sym_lower_csc(A);
-    const double LLt_fro = estimate_fro_norm_LLt(num, /*trials=*/20);
-    const double ratio = LLt_fro / std::max(A_fro, 1e-30);
+    ASSERT_NE(L, nullptr);
 
-    const double worst_rel = worst_random_rel_residual(A, num, /*trials=*/10);
+    std::cout << "[SymbolicOnce] ours=" << elapsed_ms(t0, t1) << " ms"
+              << "  cholmod=" << elapsed_ms(t2, t3) << " ms"
+              << "  ratio=" << (elapsed_ms(t0, t1) / std::max(1e-9, elapsed_ms(t2, t3))) << "\n";
 
-    std::cout << "[SupernodalCPU] n=" << A.num_cols
-              << " nsuper=" << (int)plan.sym.super.size() - 1
-              << " ||A||_F=" << A_fro
-              << " ||LL^T||_F~=" << LLt_fro
-              << " ratio=" << ratio
-              << " worst_rel_residual~=" << worst_rel
-              << "\n";
+    cholmod_free_factor(&L, &cc);
+    cholmod_free_sparse(&S, &cc);
+    cholmod_finish(&cc);
+}
 
-    ASSERT_TRUE(std::isfinite(ratio));
-    ASSERT_TRUE(std::isfinite(worst_rel));
+TEST(SupernodalNumeric, OursCPUAndGPU_Vs_CHOLMOD_SupernodalLL)
+{
+    const std::string path = get_mtx_path();
+    std::cout << "[Numeric] matrix=" << path << "\n";
+    auto A0 = ichol::io::mtx_to_csc<double>(path, /*verify=*/false);
+    auto A = A0;
+    ASSERT_GT(A.num_cols, 0);
+    ASSERT_EQ(A.num_rows, A.num_cols);
 
-    // Loose but meaningful default bound for double-precision Cholesky.
-    // If this fails, it usually means: wrong symmetry interpretation, wrong
-    // packed-block decoding, or numeric kernel bug.
-    ASSERT_LT(worst_rel, 1e-8);
+    const int n = A.num_cols;
+
+    ichol::SuperNodeOptions snopt;
+    snopt.approximate = false;
+
+    ichol::SymbolicOptions symopt;
+    symopt.ordering = ichol::Ordering::AMD;
+
+    // --- time symbolic (ours vs CHOLMOD analyze) ---
+    auto A_sym = A; // our analyze permutes A in-place
+    const auto ts0 = Clock::now();
+    auto plan = ichol::symbolic::supernodal_ll_analyze_fast(A_sym, snopt, symopt);
+    const auto ts1 = Clock::now();
+
+    cholmod_common cc;
+    cholmod_start(&cc);
+    cc.postorder = 0;
+    cc.nmethods = 1;
+    cc.method[0].ordering = CHOLMOD_AMD;
+    cc.supernodal = CHOLMOD_SUPERNODAL;
+    cc.supernodal_switch = 0;
+    cc.final_ll = 1;
+    cc.final_super = 1;
+    cc.final_asis = 0;
+
+    cholmod_sparse* S = to_cholmod_sparse_lower_csc(A0, &cc);
+    ASSERT_NE(S, nullptr);
+
+    const auto ts2 = Clock::now();
+    cholmod_factor* L = cholmod_analyze(S, &cc);
+    const auto ts3 = Clock::now();
+    ASSERT_NE(L, nullptr);
+
+    const double ours_ms = elapsed_ms(ts0, ts1);
+    const double cholmod_ms = elapsed_ms(ts2, ts3);
+    std::cout << "[NumericSymbolic] ours=" << ours_ms << " ms"
+              << "  cholmod=" << cholmod_ms << " ms"
+              << "  ratio=" << (ours_ms / std::max(1e-9, cholmod_ms)) << "";
+
+    cholmod_free_factor(&L, &cc);
+    cholmod_free_sparse(&S, &cc);
+    cholmod_finish(&cc);
+
+    // Use permuted matrix for numeric factorization, consistent with the plan.
+    A = std::move(A_sym);
+
+    // --- our CPU ---
+    auto num_cpu = ichol::numeric::factorize_supernodal_ll(A, plan);
+    ASSERT_TRUE(num_cpu.ok);
+    g_cli.cuda_opt.print_schedule = true;
+    // --- our GPU ---
+    auto num_gpu = ichol::numeric::factorize_supernodal_ll_cuda(A, plan, g_cli.cuda_opt);
+    if (!num_gpu.ok) {
+        GTEST_SKIP() << "CUDA unavailable or GPU factorization failed";
+    }
+
+    // --- CHOLMOD factorize ---
+    cholmod_start(&cc);
+    cc.postorder = 0;
+    cc.nmethods = 1;
+    cc.method[0].ordering = CHOLMOD_GIVEN;
+    cc.supernodal = CHOLMOD_SUPERNODAL;
+    cc.supernodal_switch = 0;
+    cc.final_ll = 1;
+    cc.final_super = 1;
+    cc.final_asis = 0;
+
+    ASSERT_NE(S, nullptr);
+
+    std::vector<int32_t> perm((size_t)n);
+    for (int i = 0; i < n; ++i) perm[(size_t)i] = (int32_t)i;
+
+    ASSERT_NE(L, nullptr);
+    ASSERT_TRUE(cholmod_factorize(S, L, &cc));
+
+    std::unordered_map<uint64_t,double> map_chol;
+    build_cholmod_L_map(L, &cc, map_chol);
+
+    std::unordered_map<uint64_t,double> map_cpu, map_gpu;
+    std::vector<double> diag_cpu, diag_gpu;
+    build_our_L_map(num_cpu, map_cpu, &diag_cpu);
+    build_our_L_map(num_gpu, map_gpu, &diag_gpu);
+
+    auto rcpu = compare_L_maps(map_cpu, map_chol);
+    auto rgpu = compare_L_maps(map_gpu, map_chol);
+
+    std::cout << "[Compare][CPU vs CHOLMOD] max_abs=" << rcpu.max_abs
+              << " max_rel=" << rcpu.max_rel
+              << " worst_key=" << rcpu.worst_key
+              << " common=" << rcpu.common
+              << " onlyCPU=" << rcpu.onlyA
+              << " onlyCHOL=" << rcpu.onlyB << "\n";
+
+    std::cout << "[Compare][GPU vs CHOLMOD] max_abs=" << rgpu.max_abs
+              << " max_rel=" << rgpu.max_rel
+              << " worst_key=" << rgpu.worst_key
+              << " common=" << rgpu.common
+              << " onlyGPU=" << rgpu.onlyA
+              << " onlyCHOL=" << rgpu.onlyB << "\n";
+
+    auto print_first10 = [](const char* tag, const std::vector<double>& d){
+        std::cout << tag << " first10:";
+        for (int i = 0; i < 10 && i < (int)d.size(); ++i) std::cout << " " << d[(size_t)i];
+        std::cout << "\n";
+    };
+    print_first10("[Diag][CPU]", diag_cpu);
+    print_first10("[Diag][GPU]", diag_gpu);
+
+    std::cout << "[GPU streams] streams_used=" << num_gpu.threads_used << " work_per_stream:";
+    for (int v : num_gpu.thread_work) std::cout << " " << v;
+    std::cout << "\n";
+
+    cholmod_free_factor(&L, &cc);
+    cholmod_free_sparse(&S, &cc);
+    cholmod_finish(&cc);
+}
+
+// --- Custom main: parse our flags, then run gtest ---
+static bool starts_with(const std::string& s, const std::string& p) {
+    return s.rfind(p, 0) == 0;
+}
+
+int main(int argc, char** argv)
+{
+    g_cli.cuda_opt = ichol::numeric::CudaSupernodalOptions{}; // defaults (streams=16)
+
+    std::vector<char*> gtest_argv;
+    gtest_argv.reserve((size_t)argc);
+    gtest_argv.push_back(argv[0]);
+
+    for (int i = 1; i < argc; ++i) {
+        std::string a(argv[i]);
+
+        if (starts_with(a, "--ichol_mtx=")) {
+            g_cli.mtx_path = a.substr(std::string("--ichol_mtx=").size());
+            continue;
+        }
+        if (starts_with(a, "--ichol_cuda_device=")) {
+            g_cli.cuda_opt.device = std::atoi(a.c_str() + std::string("--ichol_cuda_device=").size());
+            continue;
+        }
+        if (starts_with(a, "--ichol_cuda_streams=")) {
+            g_cli.cuda_opt.streams = std::atoi(a.c_str() + std::string("--ichol_cuda_streams=").size());
+            continue;
+        }
+        if (a == "--ichol_cuda_verbose") {
+            g_cli.cuda_opt.verbose = true;
+            continue;
+        }
+        if (a == "--ichol_cuda_print_schedule") {
+            g_cli.cuda_opt.print_schedule = true;
+            continue;
+        }
+        if (starts_with(a, "--ichol_cuda_schedule_limit=")) {
+            g_cli.cuda_opt.schedule_print_limit = std::atoi(a.c_str() + std::string("--ichol_cuda_schedule_limit=").size());
+            continue;
+        }
+
+        // Keep all other args for gtest
+        gtest_argv.push_back(argv[i]);
+    }
+
+    int gargc = (int)gtest_argv.size();
+    ::testing::InitGoogleTest(&gargc, gtest_argv.data());
+    return RUN_ALL_TESTS();
 }

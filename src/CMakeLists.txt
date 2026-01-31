@@ -65,8 +65,6 @@ target_link_libraries(ichol PUBLIC
     CUDA::cusolver
 )
 
-target_link_libraries(ichol PUBLIC PkgConfig::PETSC)
-
 option(ICHOL_USE_OPENMP "Enable OpenMP parallelism for supernodal numeric" ON)
 option(ICHOL_USE_BLAS   "Use BLAS/LAPACK (dpotrf/dtrsm/dsyrk) for supernodal numeric" ON)
 

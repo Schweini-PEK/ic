@@ -1,40 +1,28 @@
 #pragma once
+
 #include <vector>
 
 namespace ichol::symbolic
 {
     /**
+     * @brief CHOLMOD-style packed supernodal symbolic.
      *
-     * 该结构用于把“每个 supernode 的列范围 + 行列表”编码成一组紧凑数组，方便数值分解阶段
-     * 直接消费，而无需再次扫描稀疏结构。
+     * This is the minimal symbolic data the (CPU/GPU) supernodal numeric phase needs.
+     * For supernode k:
+     *   - columns are [super[k], super[k+1]) with width nscol
+     *   - rowlist is s[pi[k] .. pi[k+1]) with length nsrow
+     *   - dense block storage for node k typically uses offsets px[k]..px[k+1)
+     *     with size nsrow * nscol.
      *
-     * 记第 k 个 supernode 的列区间为 [super[k], super[k+1])，宽度 nscol = super[k+1]-super[k]。
-     * 对应的行列表（rowlist）存放在 s[pi[k] .. pi[k+1])，长度 nsrow。
-     *
-     * 约定（与 CHOLMOD 默认 supernodal LL 管线一致）：
-     *  - rowlist 的前 nscol 个条目是 pivot 行：super[k], super[k]+1, ..., super[k+1)-1
-     *  - 后续条目为 update 行：严格递增、去重，并且必须满足 r >= super[k+1]
-     *
-     * px 是数值阶段用于定位每个 supernode 稠密块存储的前缀和：
-     *  - block(k) 的元素数 = nsrow * nscol
-     *  - px[k] 为第 k 个 supernode 稠密块在一维数组中的起始偏移（类似 CHOLMOD 的 Lx / Px 用法）
+     * Convention (matching CHOLMOD supernodal LL default):
+     *   - rowlist begins with pivot rows: super[k]..super[k+1)-1 (nscol entries)
+     *   - followed by strictly increasing update rows >= super[k+1].
      */
     struct SuperSym
     {
-        std::vector<int> super; // size = nsuper + 1, supernode 的列边界（起始列号）
-        std::vector<int> pi;    // size = nsuper + 1, rowlist 指针：rowlist(k)=s[pi[k]..pi[k+1])
-        std::vector<int> px;    // size = nsuper + 1, 数值块偏移前缀和：px[k+1]=px[k]+nsrow*nscol
-        std::vector<int> s;     // size = pi.back(), 按 supernode 打包后的 rowlist
+        std::vector<int> super; // size = nsuper + 1, supernode column boundaries
+        std::vector<int> pi;    // size = nsuper + 1, rowlist pointers into s
+        std::vector<int> px;    // size = nsuper + 1, dense-block offsets (prefix sum of nsrow*nscol)
+        std::vector<int> s;     // packed rowlists
     };
-
-    /**
-     * @brief 从 snodes + snode_rows 构造 SuperSym（CHOLMOD 兼容的 rowlist 格式）。
-     *
-     * @param snodes      每个 supernode 的列区间 [start_col,end_col)
-     * @param snode_rows  每个 supernode 的行集合（通常是该 supernode 中所有列的并集行模式）
-     * @return            填充好的 SuperSym（包含 super/pi/px/s）
-     */
-    SuperSym build_super_sym(
-        const std::vector<std::pair<int,int>>& snodes,
-        const std::vector<std::vector<int>>& snode_rows);
-}
+} // namespace ichol::symbolic
