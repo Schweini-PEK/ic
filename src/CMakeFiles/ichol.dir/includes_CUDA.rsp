@@ -1,0 +1,1 @@
+-I/tmp/ic/include -I/tmp/ic/src -isystem "/usr/lib/x86_64-linux-gnu/openmpi/include" -isystem "/usr/lib/x86_64-linux-gnu/openmpi/include/openmpi" -isystem /usr/include/suitesparse -isystem "/usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include" -isystem "/usr/local/cuda/targets/x86_64-linux/include"

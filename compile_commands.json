@@ -1,0 +1,182 @@
+[
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/local/cuda/bin/nvcc -forward-unknown-to-host-compiler -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 --options-file CMakeFiles/ichol.dir/includes_CUDA.rsp  --extended-lambda -O3 -DNDEBUG -std=c++17 \"--generate-code=arch=compute_90,code=[compute_90,sm_90]\" --extended-lambda -Wdate-time -D_FORTIFY_SOURCE=3 -x cu -c /tmp/ic/src/backends/CUDA/factor/ickdt/ickdt_kernels.cu -o CMakeFiles/ichol.dir/backends/CUDA/factor/ickdt/ickdt_kernels.cu.o",
+  "file": "/tmp/ic/src/backends/CUDA/factor/ickdt/ickdt_kernels.cu",
+  "output": "src/CMakeFiles/ichol.dir/backends/CUDA/factor/ickdt/ickdt_kernels.cu.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/local/cuda/bin/nvcc -forward-unknown-to-host-compiler -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 --options-file CMakeFiles/ichol.dir/includes_CUDA.rsp  --extended-lambda -O3 -DNDEBUG -std=c++17 \"--generate-code=arch=compute_90,code=[compute_90,sm_90]\" --extended-lambda -Wdate-time -D_FORTIFY_SOURCE=3 -x cu -c /tmp/ic/src/backends/CUDA/pcg.cu -o CMakeFiles/ichol.dir/backends/CUDA/pcg.cu.o",
+  "file": "/tmp/ic/src/backends/CUDA/pcg.cu",
+  "output": "src/CMakeFiles/ichol.dir/backends/CUDA/pcg.cu.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/local/cuda/bin/nvcc -forward-unknown-to-host-compiler -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 --options-file CMakeFiles/ichol.dir/includes_CUDA.rsp  --extended-lambda -O3 -DNDEBUG -std=c++17 \"--generate-code=arch=compute_90,code=[compute_90,sm_90]\" --extended-lambda -Wdate-time -D_FORTIFY_SOURCE=3 -x cu -c /tmp/ic/src/backends/CUDA/sptrsv_kernel.cu -o CMakeFiles/ichol.dir/backends/CUDA/sptrsv_kernel.cu.o",
+  "file": "/tmp/ic/src/backends/CUDA/sptrsv_kernel.cu",
+  "output": "src/CMakeFiles/ichol.dir/backends/CUDA/sptrsv_kernel.cu.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/local/cuda/bin/nvcc -forward-unknown-to-host-compiler -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 --options-file CMakeFiles/ichol.dir/includes_CUDA.rsp  --extended-lambda -O3 -DNDEBUG -std=c++17 \"--generate-code=arch=compute_90,code=[compute_90,sm_90]\" --extended-lambda -Wdate-time -D_FORTIFY_SOURCE=3 -x cu -c /tmp/ic/src/core/parict.cu -o CMakeFiles/ichol.dir/core/parict.cu.o",
+  "file": "/tmp/ic/src/core/parict.cu",
+  "output": "src/CMakeFiles/ichol.dir/core/parict.cu.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/local/cuda/bin/nvcc -forward-unknown-to-host-compiler -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 --options-file CMakeFiles/ichol.dir/includes_CUDA.rsp  --extended-lambda -O3 -DNDEBUG -std=c++17 \"--generate-code=arch=compute_90,code=[compute_90,sm_90]\" --extended-lambda -Wdate-time -D_FORTIFY_SOURCE=3 -x cu -c /tmp/ic/src/core/supernode.cu -o CMakeFiles/ichol.dir/core/supernode.cu.o",
+  "file": "/tmp/ic/src/core/supernode.cu",
+  "output": "src/CMakeFiles/ichol.dir/core/supernode.cu.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/local/cuda/bin/nvcc -forward-unknown-to-host-compiler -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 --options-file CMakeFiles/ichol.dir/includes_CUDA.rsp  --extended-lambda -O3 -DNDEBUG -std=c++17 \"--generate-code=arch=compute_90,code=[compute_90,sm_90]\" --extended-lambda -Wdate-time -D_FORTIFY_SOURCE=3 -x cu -c /tmp/ic/src/factor/numerical/cuda/ickdt.cu -o CMakeFiles/ichol.dir/factor/numerical/cuda/ickdt.cu.o",
+  "file": "/tmp/ic/src/factor/numerical/cuda/ickdt.cu",
+  "output": "src/CMakeFiles/ichol.dir/factor/numerical/cuda/ickdt.cu.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/local/cuda/bin/nvcc -forward-unknown-to-host-compiler -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 --options-file CMakeFiles/ichol.dir/includes_CUDA.rsp  --extended-lambda -O3 -DNDEBUG -std=c++17 \"--generate-code=arch=compute_90,code=[compute_90,sm_90]\" --extended-lambda -Wdate-time -D_FORTIFY_SOURCE=3 -x cu -c /tmp/ic/src/factor/numerical/cuda/supernodal_numeric_ll_cuda.cu -o CMakeFiles/ichol.dir/factor/numerical/cuda/supernodal_numeric_ll_cuda.cu.o",
+  "file": "/tmp/ic/src/factor/numerical/cuda/supernodal_numeric_ll_cuda.cu",
+  "output": "src/CMakeFiles/ichol.dir/factor/numerical/cuda/supernodal_numeric_ll_cuda.cu.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -o CMakeFiles/ichol.dir/factor/numerical/factorize.cpp.o -c /tmp/ic/src/factor/numerical/factorize.cpp",
+  "file": "/tmp/ic/src/factor/numerical/factorize.cpp",
+  "output": "src/CMakeFiles/ichol.dir/factor/numerical/factorize.cpp.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -o CMakeFiles/ichol.dir/factor/numerical/prescaling.cpp.o -c /tmp/ic/src/factor/numerical/prescaling.cpp",
+  "file": "/tmp/ic/src/factor/numerical/prescaling.cpp",
+  "output": "src/CMakeFiles/ichol.dir/factor/numerical/prescaling.cpp.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -o CMakeFiles/ichol.dir/factor/numerical/shifting.cpp.o -c /tmp/ic/src/factor/numerical/shifting.cpp",
+  "file": "/tmp/ic/src/factor/numerical/shifting.cpp",
+  "output": "src/CMakeFiles/ichol.dir/factor/numerical/shifting.cpp.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -o CMakeFiles/ichol.dir/factor/numerical/supernodal_numeric_ll.cpp.o -c /tmp/ic/src/factor/numerical/supernodal_numeric_ll.cpp",
+  "file": "/tmp/ic/src/factor/numerical/supernodal_numeric_ll.cpp",
+  "output": "src/CMakeFiles/ichol.dir/factor/numerical/supernodal_numeric_ll.cpp.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -o CMakeFiles/ichol.dir/factor/symbolic/analyze.cpp.o -c /tmp/ic/src/factor/symbolic/analyze.cpp",
+  "file": "/tmp/ic/src/factor/symbolic/analyze.cpp",
+  "output": "src/CMakeFiles/ichol.dir/factor/symbolic/analyze.cpp.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -o CMakeFiles/ichol.dir/factor/symbolic/etree.cpp.o -c /tmp/ic/src/factor/symbolic/etree.cpp",
+  "file": "/tmp/ic/src/factor/symbolic/etree.cpp",
+  "output": "src/CMakeFiles/ichol.dir/factor/symbolic/etree.cpp.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -o CMakeFiles/ichol.dir/factor/symbolic/levels.cpp.o -c /tmp/ic/src/factor/symbolic/levels.cpp",
+  "file": "/tmp/ic/src/factor/symbolic/levels.cpp",
+  "output": "src/CMakeFiles/ichol.dir/factor/symbolic/levels.cpp.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -o CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.o -c /tmp/ic/src/factor/symbolic/pattern.cpp",
+  "file": "/tmp/ic/src/factor/symbolic/pattern.cpp",
+  "output": "src/CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -o CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.o -c /tmp/ic/src/factor/symbolic/perm.cpp",
+  "file": "/tmp/ic/src/factor/symbolic/perm.cpp",
+  "output": "src/CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -o CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.o -c /tmp/ic/src/factor/symbolic/reordering.cpp",
+  "file": "/tmp/ic/src/factor/symbolic/reordering.cpp",
+  "output": "src/CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -o CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.o -c /tmp/ic/src/factor/symbolic/super_sym.cpp",
+  "file": "/tmp/ic/src/factor/symbolic/super_sym.cpp",
+  "output": "src/CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -o CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.o -c /tmp/ic/src/factor/symbolic/supernode.cpp",
+  "file": "/tmp/ic/src/factor/symbolic/supernode.cpp",
+  "output": "src/CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -o CMakeFiles/ichol.dir/io/lap.cpp.o -c /tmp/ic/src/io/lap.cpp",
+  "file": "/tmp/ic/src/io/lap.cpp",
+  "output": "src/CMakeFiles/ichol.dir/io/lap.cpp.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -o CMakeFiles/ichol.dir/io/mtx_read.cpp.o -c /tmp/ic/src/io/mtx_read.cpp",
+  "file": "/tmp/ic/src/io/mtx_read.cpp",
+  "output": "src/CMakeFiles/ichol.dir/io/mtx_read.cpp.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -o CMakeFiles/ichol.dir/linalg/norm.cpp.o -c /tmp/ic/src/linalg/norm.cpp",
+  "file": "/tmp/ic/src/linalg/norm.cpp",
+  "output": "src/CMakeFiles/ichol.dir/linalg/norm.cpp.o"
+},
+{
+  "directory": "/tmp/ic/src",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -o CMakeFiles/ict_pcg.dir/apps/ict_pcg_main.cpp.o -c /tmp/ic/src/apps/ict_pcg_main.cpp",
+  "file": "/tmp/ic/src/apps/ict_pcg_main.cpp",
+  "output": "src/CMakeFiles/ict_pcg.dir/apps/ict_pcg_main.cpp.o"
+},
+{
+  "directory": "/tmp/ic/test",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -I/tmp/ic/test -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -DGTEST_HAS_PTHREAD=1 -o CMakeFiles/test_io.dir/unit/test_io.cpp.o -c /tmp/ic/test/unit/test_io.cpp",
+  "file": "/tmp/ic/test/unit/test_io.cpp",
+  "output": "test/CMakeFiles/test_io.dir/unit/test_io.cpp.o"
+},
+{
+  "directory": "/tmp/ic/test",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -I/tmp/ic/test -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -DGTEST_HAS_PTHREAD=1 -o CMakeFiles/test_fact.dir/unit/test_fact.cpp.o -c /tmp/ic/test/unit/test_fact.cpp",
+  "file": "/tmp/ic/test/unit/test_fact.cpp",
+  "output": "test/CMakeFiles/test_fact.dir/unit/test_fact.cpp.o"
+},
+{
+  "directory": "/tmp/ic/test",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -I/tmp/ic/test -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -DGTEST_HAS_PTHREAD=1 -o CMakeFiles/test_cg.dir/unit/test_cg.cpp.o -c /tmp/ic/test/unit/test_cg.cpp",
+  "file": "/tmp/ic/test/unit/test_cg.cpp",
+  "output": "test/CMakeFiles/test_cg.dir/unit/test_cg.cpp.o"
+},
+{
+  "directory": "/tmp/ic/test",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -I/tmp/ic/test -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -DGTEST_HAS_PTHREAD=1 -o CMakeFiles/test_ic.dir/unit/test_ic.cpp.o -c /tmp/ic/test/unit/test_ic.cpp",
+  "file": "/tmp/ic/test/unit/test_ic.cpp",
+  "output": "test/CMakeFiles/test_ic.dir/unit/test_ic.cpp.o"
+},
+{
+  "directory": "/tmp/ic/test",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -I/tmp/ic/test -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -DGTEST_HAS_PTHREAD=1 -o CMakeFiles/test_symbolic.dir/unit/test_symbolic.cpp.o -c /tmp/ic/test/unit/test_symbolic.cpp",
+  "file": "/tmp/ic/test/unit/test_symbolic.cpp",
+  "output": "test/CMakeFiles/test_symbolic.dir/unit/test_symbolic.cpp.o"
+},
+{
+  "directory": "/tmp/ic/test",
+  "command": "/usr/bin/c++ -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 -I/tmp/ic/include -I/tmp/ic/src -I/tmp/ic/test -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -isystem /usr/include/suitesparse -isystem /usr/lib/petscdir/petsc3.19/x86_64-linux-gnu-real/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=gnu++17 -fdiagnostics-color=always -Wdate-time -D_FORTIFY_SOURCE=3 -fopenmp -DGTEST_HAS_PTHREAD=1 -o CMakeFiles/test_supernodal.dir/unit/test_supernodal.cpp.o -c /tmp/ic/test/unit/test_supernodal.cpp",
+  "file": "/tmp/ic/test/unit/test_supernodal.cpp",
+  "output": "test/CMakeFiles/test_supernodal.dir/unit/test_supernodal.cpp.o"
+},
+{
+  "directory": "/tmp/ic/test",
+  "command": "/usr/local/cuda/bin/nvcc -forward-unknown-to-host-compiler -DICHOL_USE_BLAS=1 -DICHOL_USE_OPENMP=1 --options-file CMakeFiles/test_sptrsv.dir/includes_CUDA.rsp  --extended-lambda -O3 -DNDEBUG -std=c++17 \"--generate-code=arch=compute_90,code=[compute_90,sm_90]\" -Wdate-time -D_FORTIFY_SOURCE=3 -DGTEST_HAS_PTHREAD=1 -x cu -c /tmp/ic/test/unit/test_sptrsv.cu -o CMakeFiles/test_sptrsv.dir/unit/test_sptrsv.cu.o",
+  "file": "/tmp/ic/test/unit/test_sptrsv.cu",
+  "output": "test/CMakeFiles/test_sptrsv.dir/unit/test_sptrsv.cu.o"
+}
+]
