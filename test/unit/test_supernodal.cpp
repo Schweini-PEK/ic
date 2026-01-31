@@ -206,7 +206,8 @@ TEST(SupernodalSymbolic, Once_OursVsCHOLMOD)
     const std::string path = get_mtx_path();
     std::cout << "[SymbolicOnce] matrix=" << path << "\n";
 
-    auto A = ichol::io::mtx_to_csc<double>(path, /*verify=*/false);
+    auto A0 = ichol::io::mtx_to_csc<double>(path, /*verify=*/false);
+    auto A = A0;
     ASSERT_GT(A.num_cols, 0);
     ASSERT_EQ(A.num_rows, A.num_cols);
 
@@ -216,32 +217,31 @@ TEST(SupernodalSymbolic, Once_OursVsCHOLMOD)
     ichol::SuperNodeOptions snopt;
     snopt.approximate = false;
 
+    ichol::SymbolicOptions symopt;
+    symopt.ordering = ichol::Ordering::AMD;
+
+    // --- time ours (includes CHOLMOD analyze + apply permutation, if any) ---
+    const auto t0 = Clock::now();
+    auto plan = ichol::symbolic::supernodal_ll_analyze_fast(A, snopt, symopt);
+    const auto t1 = Clock::now();
+
     // --- CHOLMOD setup ---
     cholmod_common cc;
     cholmod_start(&cc);
     cc.postorder = 0;
     cc.nmethods = 1;
-    cc.method[0].ordering = CHOLMOD_GIVEN;
+    cc.method[0].ordering = CHOLMOD_AMD;
     cc.supernodal = CHOLMOD_SUPERNODAL;
     cc.supernodal_switch = 0;
     cc.final_ll = 1;
     cc.final_super = 1;
     cc.final_asis = 0;
 
-    cholmod_sparse* S = to_cholmod_sparse_lower_csc(A, &cc);
+    cholmod_sparse* S = to_cholmod_sparse_lower_csc(A0, &cc);
     ASSERT_NE(S, nullptr);
 
-    std::vector<int32_t> perm((size_t)n);
-    for (int i = 0; i < n; ++i) perm[(size_t)i] = (int32_t)i;
-
-    // --- time ours ---
-    const auto t0 = Clock::now();
-    auto plan = ichol::symbolic::supernodal_ll_analyze_fast(A, snopt);
-    const auto t1 = Clock::now();
-
-    // --- time cholmod analyze ---
     const auto t2 = Clock::now();
-    cholmod_factor* L = cholmod_analyze_p(S, perm.data(), nullptr, 0, &cc);
+    cholmod_factor* L = cholmod_analyze(S, &cc);
     const auto t3 = Clock::now();
 
     ASSERT_NE(L, nullptr);
@@ -259,7 +259,8 @@ TEST(SupernodalNumeric, OursCPUAndGPU_Vs_CHOLMOD_SupernodalLL)
 {
     const std::string path = get_mtx_path();
     std::cout << "[Numeric] matrix=" << path << "\n";
-    auto A = ichol::io::mtx_to_csc<double>(path, /*verify=*/false);
+    auto A0 = ichol::io::mtx_to_csc<double>(path, /*verify=*/false);
+    auto A = A0;
     ASSERT_GT(A.num_cols, 0);
     ASSERT_EQ(A.num_rows, A.num_cols);
 
@@ -268,7 +269,9 @@ TEST(SupernodalNumeric, OursCPUAndGPU_Vs_CHOLMOD_SupernodalLL)
     ichol::SuperNodeOptions snopt;
     snopt.approximate = false;
 
-    auto plan = ichol::symbolic::supernodal_ll_analyze_fast(A, snopt);
+    ichol::SymbolicOptions symopt;
+    symopt.ordering = ichol::Ordering::AMD;
+    auto plan = ichol::symbolic::supernodal_ll_analyze_fast(A, snopt, symopt);
 
     // --- our CPU ---
     auto num_cpu = ichol::numeric::factorize_supernodal_ll(A, plan);
