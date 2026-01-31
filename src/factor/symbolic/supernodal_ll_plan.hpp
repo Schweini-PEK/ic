@@ -147,6 +147,22 @@ inline void fill_schedule_from_sym(SupernodalLLPlan& plan, int ncols)
     }
 }
 
+// Wrap a CHOLMOD-style SuperSym into a full plan (identity ordering).
+// This is used by backward-compatible numeric entrypoints that still accept SuperSym.
+inline SupernodalLLPlan ll_plan_from_sym(const SuperSym& sym, int ncols)
+{
+    SupernodalLLPlan plan;
+    plan.sym = sym;
+    plan.perm.perm.assign((size_t)ncols, 0);
+    plan.perm.inv_perm.assign((size_t)ncols, 0);
+    for (int i = 0; i < ncols; ++i) {
+        plan.perm.perm[(size_t)i] = i;
+        plan.perm.inv_perm[(size_t)i] = i;
+    }
+    fill_schedule_from_sym(plan, ncols);
+    return plan;
+}
+
 // Supernodal LL symbolic via CHOLMOD.
 // - A may be permuted in-place (A := P*A*P^T) when a non-identity ordering is used.
 // - sn_options is kept for API compatibility; CHOLMOD controls supernode amalgamation.
