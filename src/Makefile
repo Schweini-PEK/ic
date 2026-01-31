@@ -337,6 +337,54 @@ factor/numerical/cuda/supernodal_numeric_ll_cuda.cu.s:
 	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/numerical/cuda/supernodal_numeric_ll_cuda.cu.s
 .PHONY : factor/numerical/cuda/supernodal_numeric_ll_cuda.cu.s
 
+factor/numerical/detail/supernodal_kernels_cpu.o: factor/numerical/detail/supernodal_kernels_cpu.cpp.o
+.PHONY : factor/numerical/detail/supernodal_kernels_cpu.o
+
+# target to build an object file
+factor/numerical/detail/supernodal_kernels_cpu.cpp.o:
+	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.o
+.PHONY : factor/numerical/detail/supernodal_kernels_cpu.cpp.o
+
+factor/numerical/detail/supernodal_kernels_cpu.i: factor/numerical/detail/supernodal_kernels_cpu.cpp.i
+.PHONY : factor/numerical/detail/supernodal_kernels_cpu.i
+
+# target to preprocess a source file
+factor/numerical/detail/supernodal_kernels_cpu.cpp.i:
+	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.i
+.PHONY : factor/numerical/detail/supernodal_kernels_cpu.cpp.i
+
+factor/numerical/detail/supernodal_kernels_cpu.s: factor/numerical/detail/supernodal_kernels_cpu.cpp.s
+.PHONY : factor/numerical/detail/supernodal_kernels_cpu.s
+
+# target to generate assembly for a file
+factor/numerical/detail/supernodal_kernels_cpu.cpp.s:
+	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.s
+.PHONY : factor/numerical/detail/supernodal_kernels_cpu.cpp.s
+
+factor/numerical/detail/supernodal_scheduler_cpu.o: factor/numerical/detail/supernodal_scheduler_cpu.cpp.o
+.PHONY : factor/numerical/detail/supernodal_scheduler_cpu.o
+
+# target to build an object file
+factor/numerical/detail/supernodal_scheduler_cpu.cpp.o:
+	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.o
+.PHONY : factor/numerical/detail/supernodal_scheduler_cpu.cpp.o
+
+factor/numerical/detail/supernodal_scheduler_cpu.i: factor/numerical/detail/supernodal_scheduler_cpu.cpp.i
+.PHONY : factor/numerical/detail/supernodal_scheduler_cpu.i
+
+# target to preprocess a source file
+factor/numerical/detail/supernodal_scheduler_cpu.cpp.i:
+	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.i
+.PHONY : factor/numerical/detail/supernodal_scheduler_cpu.cpp.i
+
+factor/numerical/detail/supernodal_scheduler_cpu.s: factor/numerical/detail/supernodal_scheduler_cpu.cpp.s
+.PHONY : factor/numerical/detail/supernodal_scheduler_cpu.s
+
+# target to generate assembly for a file
+factor/numerical/detail/supernodal_scheduler_cpu.cpp.s:
+	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.s
+.PHONY : factor/numerical/detail/supernodal_scheduler_cpu.cpp.s
+
 factor/numerical/factorize.o: factor/numerical/factorize.cpp.o
 .PHONY : factor/numerical/factorize.o
 
@@ -529,30 +577,6 @@ factor/symbolic/pattern.cpp.s:
 	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.s
 .PHONY : factor/symbolic/pattern.cpp.s
 
-factor/symbolic/perm.o: factor/symbolic/perm.cpp.o
-.PHONY : factor/symbolic/perm.o
-
-# target to build an object file
-factor/symbolic/perm.cpp.o:
-	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.o
-.PHONY : factor/symbolic/perm.cpp.o
-
-factor/symbolic/perm.i: factor/symbolic/perm.cpp.i
-.PHONY : factor/symbolic/perm.i
-
-# target to preprocess a source file
-factor/symbolic/perm.cpp.i:
-	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.i
-.PHONY : factor/symbolic/perm.cpp.i
-
-factor/symbolic/perm.s: factor/symbolic/perm.cpp.s
-.PHONY : factor/symbolic/perm.s
-
-# target to generate assembly for a file
-factor/symbolic/perm.cpp.s:
-	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.s
-.PHONY : factor/symbolic/perm.cpp.s
-
 factor/symbolic/reordering.o: factor/symbolic/reordering.cpp.o
 .PHONY : factor/symbolic/reordering.o
 
@@ -576,54 +600,6 @@ factor/symbolic/reordering.s: factor/symbolic/reordering.cpp.s
 factor/symbolic/reordering.cpp.s:
 	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.s
 .PHONY : factor/symbolic/reordering.cpp.s
-
-factor/symbolic/super_sym.o: factor/symbolic/super_sym.cpp.o
-.PHONY : factor/symbolic/super_sym.o
-
-# target to build an object file
-factor/symbolic/super_sym.cpp.o:
-	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.o
-.PHONY : factor/symbolic/super_sym.cpp.o
-
-factor/symbolic/super_sym.i: factor/symbolic/super_sym.cpp.i
-.PHONY : factor/symbolic/super_sym.i
-
-# target to preprocess a source file
-factor/symbolic/super_sym.cpp.i:
-	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.i
-.PHONY : factor/symbolic/super_sym.cpp.i
-
-factor/symbolic/super_sym.s: factor/symbolic/super_sym.cpp.s
-.PHONY : factor/symbolic/super_sym.s
-
-# target to generate assembly for a file
-factor/symbolic/super_sym.cpp.s:
-	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.s
-.PHONY : factor/symbolic/super_sym.cpp.s
-
-factor/symbolic/supernode.o: factor/symbolic/supernode.cpp.o
-.PHONY : factor/symbolic/supernode.o
-
-# target to build an object file
-factor/symbolic/supernode.cpp.o:
-	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.o
-.PHONY : factor/symbolic/supernode.cpp.o
-
-factor/symbolic/supernode.i: factor/symbolic/supernode.cpp.i
-.PHONY : factor/symbolic/supernode.i
-
-# target to preprocess a source file
-factor/symbolic/supernode.cpp.i:
-	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.i
-.PHONY : factor/symbolic/supernode.cpp.i
-
-factor/symbolic/supernode.s: factor/symbolic/supernode.cpp.s
-.PHONY : factor/symbolic/supernode.s
-
-# target to generate assembly for a file
-factor/symbolic/supernode.cpp.s:
-	cd /tmp/ic && $(MAKE) $(MAKESILENT) -f src/CMakeFiles/ichol.dir/build.make src/CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.s
-.PHONY : factor/symbolic/supernode.cpp.s
 
 io/lap.o: io/lap.cpp.o
 .PHONY : io/lap.o
@@ -731,6 +707,12 @@ help:
 	@echo "... factor/numerical/cuda/supernodal_numeric_ll_cuda.o"
 	@echo "... factor/numerical/cuda/supernodal_numeric_ll_cuda.i"
 	@echo "... factor/numerical/cuda/supernodal_numeric_ll_cuda.s"
+	@echo "... factor/numerical/detail/supernodal_kernels_cpu.o"
+	@echo "... factor/numerical/detail/supernodal_kernels_cpu.i"
+	@echo "... factor/numerical/detail/supernodal_kernels_cpu.s"
+	@echo "... factor/numerical/detail/supernodal_scheduler_cpu.o"
+	@echo "... factor/numerical/detail/supernodal_scheduler_cpu.i"
+	@echo "... factor/numerical/detail/supernodal_scheduler_cpu.s"
 	@echo "... factor/numerical/factorize.o"
 	@echo "... factor/numerical/factorize.i"
 	@echo "... factor/numerical/factorize.s"
@@ -755,18 +737,9 @@ help:
 	@echo "... factor/symbolic/pattern.o"
 	@echo "... factor/symbolic/pattern.i"
 	@echo "... factor/symbolic/pattern.s"
-	@echo "... factor/symbolic/perm.o"
-	@echo "... factor/symbolic/perm.i"
-	@echo "... factor/symbolic/perm.s"
 	@echo "... factor/symbolic/reordering.o"
 	@echo "... factor/symbolic/reordering.i"
 	@echo "... factor/symbolic/reordering.s"
-	@echo "... factor/symbolic/super_sym.o"
-	@echo "... factor/symbolic/super_sym.i"
-	@echo "... factor/symbolic/super_sym.s"
-	@echo "... factor/symbolic/supernode.o"
-	@echo "... factor/symbolic/supernode.i"
-	@echo "... factor/symbolic/supernode.s"
 	@echo "... io/lap.o"
 	@echo "... io/lap.i"
 	@echo "... io/lap.s"

@@ -93,7 +93,7 @@ test_supernodal_EXTERNAL_OBJECTS =
 test/test_supernodal: test/CMakeFiles/test_supernodal.dir/unit/test_supernodal.cpp.o
 test/test_supernodal: test/CMakeFiles/test_supernodal.dir/build.make
 test/test_supernodal: src/libichol.a
-test/test_supernodal: /usr/lib/x86_64-linux-gnu/libgtest_main.a
+test/test_supernodal: /usr/lib/x86_64-linux-gnu/libgtest.a
 test/test_supernodal: /usr/lib/x86_64-linux-gnu/openmpi/lib/libmpi_cxx.so
 test/test_supernodal: /usr/lib/x86_64-linux-gnu/openmpi/lib/libmpi.so
 test/test_supernodal: /usr/lib/x86_64-linux-gnu/libcholmod.so
@@ -108,7 +108,6 @@ test/test_supernodal: /usr/local/cuda-12.5/targets/x86_64-linux/lib/libcublas.so
 test/test_supernodal: /usr/local/cuda-12.5/targets/x86_64-linux/lib/libculibos.a
 test/test_supernodal: /usr/local/cuda-12.5/targets/x86_64-linux/lib/libcublasLt.so
 test/test_supernodal: /usr/lib/x86_64-linux-gnu/libopenblas.so
-test/test_supernodal: /usr/lib/x86_64-linux-gnu/libgtest.a
 test/test_supernodal: /usr/lib/gcc/x86_64-linux-gnu/13/libgomp.so
 test/test_supernodal: /usr/lib/x86_64-linux-gnu/libpthread.a
 test/test_supernodal: test/CMakeFiles/test_supernodal.dir/link.txt

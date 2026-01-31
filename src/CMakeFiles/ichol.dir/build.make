@@ -174,10 +174,38 @@ src/CMakeFiles/ichol.dir/factor/numerical/cuda/supernodal_numeric_ll_cuda.cu.s: 
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CUDA source to assembly CMakeFiles/ichol.dir/factor/numerical/cuda/supernodal_numeric_ll_cuda.cu.s"
 	$(CMAKE_COMMAND) -E cmake_unimplemented_variable CMAKE_CUDA_CREATE_ASSEMBLY_SOURCE
 
+src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.o: src/CMakeFiles/ichol.dir/flags.make
+src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.o: src/factor/numerical/detail/supernodal_kernels_cpu.cpp
+src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.o"
+	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.o -MF CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.o.d -o CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.o -c /tmp/ic/src/factor/numerical/detail/supernodal_kernels_cpu.cpp
+
+src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.i"
+	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /tmp/ic/src/factor/numerical/detail/supernodal_kernels_cpu.cpp > CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.i
+
+src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.s"
+	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /tmp/ic/src/factor/numerical/detail/supernodal_kernels_cpu.cpp -o CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.s
+
+src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.o: src/CMakeFiles/ichol.dir/flags.make
+src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.o: src/factor/numerical/detail/supernodal_scheduler_cpu.cpp
+src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building CXX object src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.o"
+	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.o -MF CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.o.d -o CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.o -c /tmp/ic/src/factor/numerical/detail/supernodal_scheduler_cpu.cpp
+
+src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.i"
+	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /tmp/ic/src/factor/numerical/detail/supernodal_scheduler_cpu.cpp > CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.i
+
+src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.s"
+	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /tmp/ic/src/factor/numerical/detail/supernodal_scheduler_cpu.cpp -o CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.s
+
 src/CMakeFiles/ichol.dir/factor/numerical/factorize.cpp.o: src/CMakeFiles/ichol.dir/flags.make
 src/CMakeFiles/ichol.dir/factor/numerical/factorize.cpp.o: src/factor/numerical/factorize.cpp
 src/CMakeFiles/ichol.dir/factor/numerical/factorize.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object src/CMakeFiles/ichol.dir/factor/numerical/factorize.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object src/CMakeFiles/ichol.dir/factor/numerical/factorize.cpp.o"
 	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/factor/numerical/factorize.cpp.o -MF CMakeFiles/ichol.dir/factor/numerical/factorize.cpp.o.d -o CMakeFiles/ichol.dir/factor/numerical/factorize.cpp.o -c /tmp/ic/src/factor/numerical/factorize.cpp
 
 src/CMakeFiles/ichol.dir/factor/numerical/factorize.cpp.i: cmake_force
@@ -191,7 +219,7 @@ src/CMakeFiles/ichol.dir/factor/numerical/factorize.cpp.s: cmake_force
 src/CMakeFiles/ichol.dir/factor/numerical/prescaling.cpp.o: src/CMakeFiles/ichol.dir/flags.make
 src/CMakeFiles/ichol.dir/factor/numerical/prescaling.cpp.o: src/factor/numerical/prescaling.cpp
 src/CMakeFiles/ichol.dir/factor/numerical/prescaling.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building CXX object src/CMakeFiles/ichol.dir/factor/numerical/prescaling.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building CXX object src/CMakeFiles/ichol.dir/factor/numerical/prescaling.cpp.o"
 	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/factor/numerical/prescaling.cpp.o -MF CMakeFiles/ichol.dir/factor/numerical/prescaling.cpp.o.d -o CMakeFiles/ichol.dir/factor/numerical/prescaling.cpp.o -c /tmp/ic/src/factor/numerical/prescaling.cpp
 
 src/CMakeFiles/ichol.dir/factor/numerical/prescaling.cpp.i: cmake_force
@@ -205,7 +233,7 @@ src/CMakeFiles/ichol.dir/factor/numerical/prescaling.cpp.s: cmake_force
 src/CMakeFiles/ichol.dir/factor/numerical/shifting.cpp.o: src/CMakeFiles/ichol.dir/flags.make
 src/CMakeFiles/ichol.dir/factor/numerical/shifting.cpp.o: src/factor/numerical/shifting.cpp
 src/CMakeFiles/ichol.dir/factor/numerical/shifting.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object src/CMakeFiles/ichol.dir/factor/numerical/shifting.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building CXX object src/CMakeFiles/ichol.dir/factor/numerical/shifting.cpp.o"
 	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/factor/numerical/shifting.cpp.o -MF CMakeFiles/ichol.dir/factor/numerical/shifting.cpp.o.d -o CMakeFiles/ichol.dir/factor/numerical/shifting.cpp.o -c /tmp/ic/src/factor/numerical/shifting.cpp
 
 src/CMakeFiles/ichol.dir/factor/numerical/shifting.cpp.i: cmake_force
@@ -219,7 +247,7 @@ src/CMakeFiles/ichol.dir/factor/numerical/shifting.cpp.s: cmake_force
 src/CMakeFiles/ichol.dir/factor/numerical/supernodal_numeric_ll.cpp.o: src/CMakeFiles/ichol.dir/flags.make
 src/CMakeFiles/ichol.dir/factor/numerical/supernodal_numeric_ll.cpp.o: src/factor/numerical/supernodal_numeric_ll.cpp
 src/CMakeFiles/ichol.dir/factor/numerical/supernodal_numeric_ll.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building CXX object src/CMakeFiles/ichol.dir/factor/numerical/supernodal_numeric_ll.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building CXX object src/CMakeFiles/ichol.dir/factor/numerical/supernodal_numeric_ll.cpp.o"
 	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/factor/numerical/supernodal_numeric_ll.cpp.o -MF CMakeFiles/ichol.dir/factor/numerical/supernodal_numeric_ll.cpp.o.d -o CMakeFiles/ichol.dir/factor/numerical/supernodal_numeric_ll.cpp.o -c /tmp/ic/src/factor/numerical/supernodal_numeric_ll.cpp
 
 src/CMakeFiles/ichol.dir/factor/numerical/supernodal_numeric_ll.cpp.i: cmake_force
@@ -233,7 +261,7 @@ src/CMakeFiles/ichol.dir/factor/numerical/supernodal_numeric_ll.cpp.s: cmake_for
 src/CMakeFiles/ichol.dir/factor/symbolic/analyze.cpp.o: src/CMakeFiles/ichol.dir/flags.make
 src/CMakeFiles/ichol.dir/factor/symbolic/analyze.cpp.o: src/factor/symbolic/analyze.cpp
 src/CMakeFiles/ichol.dir/factor/symbolic/analyze.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building CXX object src/CMakeFiles/ichol.dir/factor/symbolic/analyze.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Building CXX object src/CMakeFiles/ichol.dir/factor/symbolic/analyze.cpp.o"
 	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/factor/symbolic/analyze.cpp.o -MF CMakeFiles/ichol.dir/factor/symbolic/analyze.cpp.o.d -o CMakeFiles/ichol.dir/factor/symbolic/analyze.cpp.o -c /tmp/ic/src/factor/symbolic/analyze.cpp
 
 src/CMakeFiles/ichol.dir/factor/symbolic/analyze.cpp.i: cmake_force
@@ -247,7 +275,7 @@ src/CMakeFiles/ichol.dir/factor/symbolic/analyze.cpp.s: cmake_force
 src/CMakeFiles/ichol.dir/factor/symbolic/etree.cpp.o: src/CMakeFiles/ichol.dir/flags.make
 src/CMakeFiles/ichol.dir/factor/symbolic/etree.cpp.o: src/factor/symbolic/etree.cpp
 src/CMakeFiles/ichol.dir/factor/symbolic/etree.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building CXX object src/CMakeFiles/ichol.dir/factor/symbolic/etree.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building CXX object src/CMakeFiles/ichol.dir/factor/symbolic/etree.cpp.o"
 	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/factor/symbolic/etree.cpp.o -MF CMakeFiles/ichol.dir/factor/symbolic/etree.cpp.o.d -o CMakeFiles/ichol.dir/factor/symbolic/etree.cpp.o -c /tmp/ic/src/factor/symbolic/etree.cpp
 
 src/CMakeFiles/ichol.dir/factor/symbolic/etree.cpp.i: cmake_force
@@ -261,7 +289,7 @@ src/CMakeFiles/ichol.dir/factor/symbolic/etree.cpp.s: cmake_force
 src/CMakeFiles/ichol.dir/factor/symbolic/levels.cpp.o: src/CMakeFiles/ichol.dir/flags.make
 src/CMakeFiles/ichol.dir/factor/symbolic/levels.cpp.o: src/factor/symbolic/levels.cpp
 src/CMakeFiles/ichol.dir/factor/symbolic/levels.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Building CXX object src/CMakeFiles/ichol.dir/factor/symbolic/levels.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building CXX object src/CMakeFiles/ichol.dir/factor/symbolic/levels.cpp.o"
 	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/factor/symbolic/levels.cpp.o -MF CMakeFiles/ichol.dir/factor/symbolic/levels.cpp.o.d -o CMakeFiles/ichol.dir/factor/symbolic/levels.cpp.o -c /tmp/ic/src/factor/symbolic/levels.cpp
 
 src/CMakeFiles/ichol.dir/factor/symbolic/levels.cpp.i: cmake_force
@@ -275,7 +303,7 @@ src/CMakeFiles/ichol.dir/factor/symbolic/levels.cpp.s: cmake_force
 src/CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.o: src/CMakeFiles/ichol.dir/flags.make
 src/CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.o: src/factor/symbolic/pattern.cpp
 src/CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building CXX object src/CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building CXX object src/CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.o"
 	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.o -MF CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.o.d -o CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.o -c /tmp/ic/src/factor/symbolic/pattern.cpp
 
 src/CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.i: cmake_force
@@ -286,24 +314,10 @@ src/CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.s"
 	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /tmp/ic/src/factor/symbolic/pattern.cpp -o CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.s
 
-src/CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.o: src/CMakeFiles/ichol.dir/flags.make
-src/CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.o: src/factor/symbolic/perm.cpp
-src/CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building CXX object src/CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.o"
-	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.o -MF CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.o.d -o CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.o -c /tmp/ic/src/factor/symbolic/perm.cpp
-
-src/CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.i"
-	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /tmp/ic/src/factor/symbolic/perm.cpp > CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.i
-
-src/CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.s"
-	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /tmp/ic/src/factor/symbolic/perm.cpp -o CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.s
-
 src/CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.o: src/CMakeFiles/ichol.dir/flags.make
 src/CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.o: src/factor/symbolic/reordering.cpp
 src/CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building CXX object src/CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building CXX object src/CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.o"
 	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.o -MF CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.o.d -o CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.o -c /tmp/ic/src/factor/symbolic/reordering.cpp
 
 src/CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.i: cmake_force
@@ -314,38 +328,10 @@ src/CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.s"
 	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /tmp/ic/src/factor/symbolic/reordering.cpp -o CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.s
 
-src/CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.o: src/CMakeFiles/ichol.dir/flags.make
-src/CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.o: src/factor/symbolic/super_sym.cpp
-src/CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building CXX object src/CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.o"
-	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.o -MF CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.o.d -o CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.o -c /tmp/ic/src/factor/symbolic/super_sym.cpp
-
-src/CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.i"
-	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /tmp/ic/src/factor/symbolic/super_sym.cpp > CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.i
-
-src/CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.s"
-	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /tmp/ic/src/factor/symbolic/super_sym.cpp -o CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.s
-
-src/CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.o: src/CMakeFiles/ichol.dir/flags.make
-src/CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.o: src/factor/symbolic/supernode.cpp
-src/CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building CXX object src/CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.o"
-	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.o -MF CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.o.d -o CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.o -c /tmp/ic/src/factor/symbolic/supernode.cpp
-
-src/CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.i"
-	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /tmp/ic/src/factor/symbolic/supernode.cpp > CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.i
-
-src/CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.s"
-	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /tmp/ic/src/factor/symbolic/supernode.cpp -o CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.s
-
 src/CMakeFiles/ichol.dir/io/lap.cpp.o: src/CMakeFiles/ichol.dir/flags.make
 src/CMakeFiles/ichol.dir/io/lap.cpp.o: src/io/lap.cpp
 src/CMakeFiles/ichol.dir/io/lap.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building CXX object src/CMakeFiles/ichol.dir/io/lap.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building CXX object src/CMakeFiles/ichol.dir/io/lap.cpp.o"
 	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/io/lap.cpp.o -MF CMakeFiles/ichol.dir/io/lap.cpp.o.d -o CMakeFiles/ichol.dir/io/lap.cpp.o -c /tmp/ic/src/io/lap.cpp
 
 src/CMakeFiles/ichol.dir/io/lap.cpp.i: cmake_force
@@ -359,7 +345,7 @@ src/CMakeFiles/ichol.dir/io/lap.cpp.s: cmake_force
 src/CMakeFiles/ichol.dir/io/mtx_read.cpp.o: src/CMakeFiles/ichol.dir/flags.make
 src/CMakeFiles/ichol.dir/io/mtx_read.cpp.o: src/io/mtx_read.cpp
 src/CMakeFiles/ichol.dir/io/mtx_read.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building CXX object src/CMakeFiles/ichol.dir/io/mtx_read.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building CXX object src/CMakeFiles/ichol.dir/io/mtx_read.cpp.o"
 	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/io/mtx_read.cpp.o -MF CMakeFiles/ichol.dir/io/mtx_read.cpp.o.d -o CMakeFiles/ichol.dir/io/mtx_read.cpp.o -c /tmp/ic/src/io/mtx_read.cpp
 
 src/CMakeFiles/ichol.dir/io/mtx_read.cpp.i: cmake_force
@@ -373,7 +359,7 @@ src/CMakeFiles/ichol.dir/io/mtx_read.cpp.s: cmake_force
 src/CMakeFiles/ichol.dir/linalg/norm.cpp.o: src/CMakeFiles/ichol.dir/flags.make
 src/CMakeFiles/ichol.dir/linalg/norm.cpp.o: src/linalg/norm.cpp
 src/CMakeFiles/ichol.dir/linalg/norm.cpp.o: src/CMakeFiles/ichol.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building CXX object src/CMakeFiles/ichol.dir/linalg/norm.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building CXX object src/CMakeFiles/ichol.dir/linalg/norm.cpp.o"
 	cd /tmp/ic/src && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT src/CMakeFiles/ichol.dir/linalg/norm.cpp.o -MF CMakeFiles/ichol.dir/linalg/norm.cpp.o.d -o CMakeFiles/ichol.dir/linalg/norm.cpp.o -c /tmp/ic/src/linalg/norm.cpp
 
 src/CMakeFiles/ichol.dir/linalg/norm.cpp.i: cmake_force
@@ -393,6 +379,8 @@ ichol_OBJECTS = \
 "CMakeFiles/ichol.dir/core/supernode.cu.o" \
 "CMakeFiles/ichol.dir/factor/numerical/cuda/ickdt.cu.o" \
 "CMakeFiles/ichol.dir/factor/numerical/cuda/supernodal_numeric_ll_cuda.cu.o" \
+"CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.o" \
+"CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.o" \
 "CMakeFiles/ichol.dir/factor/numerical/factorize.cpp.o" \
 "CMakeFiles/ichol.dir/factor/numerical/prescaling.cpp.o" \
 "CMakeFiles/ichol.dir/factor/numerical/shifting.cpp.o" \
@@ -401,10 +389,7 @@ ichol_OBJECTS = \
 "CMakeFiles/ichol.dir/factor/symbolic/etree.cpp.o" \
 "CMakeFiles/ichol.dir/factor/symbolic/levels.cpp.o" \
 "CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.o" \
-"CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.o" \
 "CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.o" \
-"CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.o" \
-"CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.o" \
 "CMakeFiles/ichol.dir/io/lap.cpp.o" \
 "CMakeFiles/ichol.dir/io/mtx_read.cpp.o" \
 "CMakeFiles/ichol.dir/linalg/norm.cpp.o"
@@ -419,6 +404,8 @@ src/libichol.a: src/CMakeFiles/ichol.dir/core/parict.cu.o
 src/libichol.a: src/CMakeFiles/ichol.dir/core/supernode.cu.o
 src/libichol.a: src/CMakeFiles/ichol.dir/factor/numerical/cuda/ickdt.cu.o
 src/libichol.a: src/CMakeFiles/ichol.dir/factor/numerical/cuda/supernodal_numeric_ll_cuda.cu.o
+src/libichol.a: src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_kernels_cpu.cpp.o
+src/libichol.a: src/CMakeFiles/ichol.dir/factor/numerical/detail/supernodal_scheduler_cpu.cpp.o
 src/libichol.a: src/CMakeFiles/ichol.dir/factor/numerical/factorize.cpp.o
 src/libichol.a: src/CMakeFiles/ichol.dir/factor/numerical/prescaling.cpp.o
 src/libichol.a: src/CMakeFiles/ichol.dir/factor/numerical/shifting.cpp.o
@@ -427,16 +414,13 @@ src/libichol.a: src/CMakeFiles/ichol.dir/factor/symbolic/analyze.cpp.o
 src/libichol.a: src/CMakeFiles/ichol.dir/factor/symbolic/etree.cpp.o
 src/libichol.a: src/CMakeFiles/ichol.dir/factor/symbolic/levels.cpp.o
 src/libichol.a: src/CMakeFiles/ichol.dir/factor/symbolic/pattern.cpp.o
-src/libichol.a: src/CMakeFiles/ichol.dir/factor/symbolic/perm.cpp.o
 src/libichol.a: src/CMakeFiles/ichol.dir/factor/symbolic/reordering.cpp.o
-src/libichol.a: src/CMakeFiles/ichol.dir/factor/symbolic/super_sym.cpp.o
-src/libichol.a: src/CMakeFiles/ichol.dir/factor/symbolic/supernode.cpp.o
 src/libichol.a: src/CMakeFiles/ichol.dir/io/lap.cpp.o
 src/libichol.a: src/CMakeFiles/ichol.dir/io/mtx_read.cpp.o
 src/libichol.a: src/CMakeFiles/ichol.dir/linalg/norm.cpp.o
 src/libichol.a: src/CMakeFiles/ichol.dir/build.make
 src/libichol.a: src/CMakeFiles/ichol.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Linking CXX static library libichol.a"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/tmp/ic/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Linking CXX static library libichol.a"
 	cd /tmp/ic/src && $(CMAKE_COMMAND) -P CMakeFiles/ichol.dir/cmake_clean_target.cmake
 	cd /tmp/ic/src && $(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/ichol.dir/link.txt --verbose=$(VERBOSE)
 

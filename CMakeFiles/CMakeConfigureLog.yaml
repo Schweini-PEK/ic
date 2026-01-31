@@ -1874,3 +1874,74 @@ events:
         
       exitCode: 0
 ...
+
+---
+events:
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/FindMPI.cmake:1278 (try_compile)"
+      - "/usr/share/cmake-3.28/Modules/FindMPI.cmake:1322 (_MPI_try_staged_settings)"
+      - "/usr/share/cmake-3.28/Modules/FindMPI.cmake:1645 (_MPI_check_lang_works)"
+      - "src/CMakeLists.txt:22 (find_package)"
+    description: "The MPI test test_mpi for CXX in mode normal"
+    directories:
+      source: "/tmp/ic/CMakeFiles/CMakeScratch/TryCompile-Xi0dAP"
+      binary: "/tmp/ic/CMakeFiles/CMakeScratch/TryCompile-Xi0dAP"
+    cmakeVariables:
+      CMAKE_CUDA_ARCHITECTURES: "90"
+      CMAKE_CUDA_RUNTIME_LIBRARY: "Shared"
+      CMAKE_CXX_FLAGS: ""
+      CMAKE_CXX_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+    buildResult:
+      variable: "MPI_RESULT_CXX_test_mpi_normal"
+      cached: true
+      stdout: |
+        Change Dir: '/tmp/ic/CMakeFiles/CMakeScratch/TryCompile-Xi0dAP'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_01c06/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_01c06.dir/build.make CMakeFiles/cmTC_01c06.dir/build
+        gmake[1]: Entering directory '/tmp/ic/CMakeFiles/CMakeScratch/TryCompile-Xi0dAP'
+        Building CXX object CMakeFiles/cmTC_01c06.dir/test_mpi.cpp.o
+        /usr/bin/c++  -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -std=gnu++17 -fdiagnostics-color=always -o CMakeFiles/cmTC_01c06.dir/test_mpi.cpp.o -c /tmp/ic/CMakeFiles/CMakeScratch/TryCompile-Xi0dAP/test_mpi.cpp
+        Linking CXX executable cmTC_01c06
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_01c06.dir/link.txt --verbose=1
+        /usr/bin/c++ CMakeFiles/cmTC_01c06.dir/test_mpi.cpp.o -o cmTC_01c06  -Wl,-rpath,/usr/lib/x86_64-linux-gnu/openmpi/lib /usr/lib/x86_64-linux-gnu/openmpi/lib/libmpi_cxx.so /usr/lib/x86_64-linux-gnu/openmpi/lib/libmpi.so 
+        gmake[1]: Leaving directory '/tmp/ic/CMakeFiles/CMakeScratch/TryCompile-Xi0dAP'
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/FindMPI.cmake:1278 (try_compile)"
+      - "/usr/share/cmake-3.28/Modules/FindMPI.cmake:1672 (_MPI_try_staged_settings)"
+      - "src/CMakeLists.txt:22 (find_package)"
+    description: "The MPI test test_mpi for CXX in mode MPICXX"
+    directories:
+      source: "/tmp/ic/CMakeFiles/CMakeScratch/TryCompile-T66INT"
+      binary: "/tmp/ic/CMakeFiles/CMakeScratch/TryCompile-T66INT"
+    cmakeVariables:
+      CMAKE_CUDA_ARCHITECTURES: "90"
+      CMAKE_CUDA_RUNTIME_LIBRARY: "Shared"
+      CMAKE_CXX_FLAGS: ""
+      CMAKE_CXX_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+    buildResult:
+      variable: "MPI_RESULT_CXX_test_mpi_MPICXX"
+      cached: true
+      stdout: |
+        Change Dir: '/tmp/ic/CMakeFiles/CMakeScratch/TryCompile-T66INT'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_8642f/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_8642f.dir/build.make CMakeFiles/cmTC_8642f.dir/build
+        gmake[1]: Entering directory '/tmp/ic/CMakeFiles/CMakeScratch/TryCompile-T66INT'
+        Building CXX object CMakeFiles/cmTC_8642f.dir/test_mpi.cpp.o
+        /usr/bin/c++  -isystem /usr/lib/x86_64-linux-gnu/openmpi/include -isystem /usr/lib/x86_64-linux-gnu/openmpi/include/openmpi -std=gnu++17 -fdiagnostics-color=always -o CMakeFiles/cmTC_8642f.dir/test_mpi.cpp.o -c /tmp/ic/CMakeFiles/CMakeScratch/TryCompile-T66INT/test_mpi.cpp
+        Linking CXX executable cmTC_8642f
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_8642f.dir/link.txt --verbose=1
+        /usr/bin/c++ CMakeFiles/cmTC_8642f.dir/test_mpi.cpp.o -o cmTC_8642f  -Wl,-rpath,/usr/lib/x86_64-linux-gnu/openmpi/lib /usr/lib/x86_64-linux-gnu/openmpi/lib/libmpi_cxx.so /usr/lib/x86_64-linux-gnu/openmpi/lib/libmpi.so 
+        gmake[1]: Leaving directory '/tmp/ic/CMakeFiles/CMakeScratch/TryCompile-T66INT'
+        
+      exitCode: 0
+...

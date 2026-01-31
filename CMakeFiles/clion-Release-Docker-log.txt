@@ -14,6 +14,6 @@ https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
 
 A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
 
--- Configuring done (8.3s)
+-- Configuring done (7.3s)
 -- Generating done (0.9s)
 -- Build files have been written to: /tmp/ic
