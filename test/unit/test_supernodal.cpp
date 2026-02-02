@@ -58,7 +58,7 @@ static std::string get_mtx_path()
     if (!g_cli.mtx_path.empty()) return g_cli.mtx_path;
     const char* p = std::getenv("ICHOL_MTX");
     if (p && *p) return std::string(p);
-    return std::string("/tmp/ic/test/data/apache2.mtx");
+    return std::string("/tmp/ic/test/data/nasa2146.mtx");
 }
 
 static cholmod_sparse* to_cholmod_sparse_lower_csc(const ichol::matrix::CscMatrix<double>& A,
@@ -301,43 +301,50 @@ TEST(SupernodalNumeric, OursCPUAndGPU_Vs_CHOLMOD_SupernodalLL)
     const double cholmod_ms = elapsed_ms(ts2, ts3);
     std::cout << "[NumericSymbolic] ours=" << ours_ms << " ms"
               << "  cholmod=" << cholmod_ms << " ms"
-              << "  ratio=" << (ours_ms / std::max(1e-9, cholmod_ms)) << "";
+              << "  ratio=" << (ours_ms / std::max(1e-9, cholmod_ms)) << "\n";
 
-    cholmod_free_factor(&L, &cc);
-    cholmod_free_sparse(&S, &cc);
-    cholmod_finish(&cc);
+    // NOTE: keep CHOLMOD objects alive; we will factorize and compare later.
 
     // Use permuted matrix for numeric factorization, consistent with the plan.
     A = std::move(A_sym);
 
-    // --- our CPU ---
+    // --- our CPU (timed) ---
+    const auto t_cpu0 = Clock::now();
     auto num_cpu = ichol::numeric::factorize_supernodal_ll(A, plan);
+    const auto t_cpu1 = Clock::now();
     ASSERT_TRUE(num_cpu.ok);
+    const double cpu_fact_ms = elapsed_ms(t_cpu0, t_cpu1);
+
+    // --- our GPU (timed) ---
+    // Note: this first call can include CUDA runtime init / module loading overhead.
     g_cli.cuda_opt.print_schedule = true;
-    // --- our GPU ---
+    const auto t_gpu0 = Clock::now();
     auto num_gpu = ichol::numeric::factorize_supernodal_ll_cuda(A, plan, g_cli.cuda_opt);
+    const auto t_gpu1 = Clock::now();
     if (!num_gpu.ok) {
+        cholmod_free_factor(&L, &cc);
+        cholmod_free_sparse(&S, &cc);
+        cholmod_finish(&cc);
         GTEST_SKIP() << "CUDA unavailable or GPU factorization failed";
     }
+    const double gpu_fact_ms = elapsed_ms(t_gpu0, t_gpu1);
 
-    // --- CHOLMOD factorize ---
-    cholmod_start(&cc);
-    cc.postorder = 0;
-    cc.nmethods = 1;
-    cc.method[0].ordering = CHOLMOD_GIVEN;
-    cc.supernodal = CHOLMOD_SUPERNODAL;
-    cc.supernodal_switch = 0;
-    cc.final_ll = 1;
-    cc.final_super = 1;
-    cc.final_asis = 0;
+    std::cout << "[NumericFactorize] ours_cpu=" << cpu_fact_ms << " ms"
+              << "  ours_gpu=" << gpu_fact_ms << " ms"
+              << "  (gpu_device=" << g_cli.cuda_opt.device
+              << ", streams=" << g_cli.cuda_opt.streams << ")\n";
 
+    // --- CHOLMOD factorize (timed) ---
     ASSERT_NE(S, nullptr);
-
-    std::vector<int32_t> perm((size_t)n);
-    for (int i = 0; i < n; ++i) perm[(size_t)i] = (int32_t)i;
-
     ASSERT_NE(L, nullptr);
+    const auto t_ch0 = Clock::now();
     ASSERT_TRUE(cholmod_factorize(S, L, &cc));
+    const auto t_ch1 = Clock::now();
+    const double chol_fact_ms = elapsed_ms(t_ch0, t_ch1);
+    std::cout << "[NumericFactorize] cholmod=" << chol_fact_ms << " ms"
+              << "  speedup(chol/ours_cpu)=" << (chol_fact_ms / std::max(1e-9, cpu_fact_ms))
+              << "  speedup(chol/ours_gpu)=" << (chol_fact_ms / std::max(1e-9, gpu_fact_ms))
+              << "\n";
 
     std::unordered_map<uint64_t,double> map_chol;
     build_cholmod_L_map(L, &cc, map_chol);

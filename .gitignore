@@ -7,7 +7,7 @@ build/
 python/.idea
 cuda-keyring_1.1-1_all.deb.*
 test/data/
-Makefile/
+Makefile
 cmake_install.cmake
 CMakeCache.txt
 Testing/
@@ -18,7 +18,9 @@ test/Makefile
 src/Makefile
 src/cmake_install.cmake
 src/libichol.a
-CMakeFiles
+src/CMakeFiles/
+compile_commands.json
+CMakeFiles/
 .cmake/
 command.md
 config/

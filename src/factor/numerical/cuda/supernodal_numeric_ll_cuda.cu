@@ -21,6 +21,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <unordered_map>
 
 #include <dlfcn.h>
 #include <link.h>
@@ -135,6 +136,31 @@ struct CudaCtx {
     int cap_nscol = 0;
     int cap_nupd  = 0;
 
+    // Batched POTRF scratch (for small diagonal blocks)
+    double* dDiagPack = nullptr;   // contiguous pack of [batch][n][n]
+    double** dAarray = nullptr;    // device array of pointers into dDiagPack
+    int* dInfoArray = nullptr;     // device info array [batch]
+    int cap_diag_n = 0;
+    int cap_diag_batch = 0;
+
+    void ensure_diag_pack(int n, int batch)
+    {
+        if (!inited) throw std::runtime_error("CudaCtx not initialized");
+        if (n <= cap_diag_n && batch <= cap_diag_batch && dDiagPack && dAarray && dInfoArray) return;
+
+        cap_diag_n = std::max(cap_diag_n, n);
+        cap_diag_batch = std::max(cap_diag_batch, batch);
+
+        if (dDiagPack) { CUDA_CHECK(cudaFree(dDiagPack)); dDiagPack = nullptr; }
+        if (dAarray)   { CUDA_CHECK(cudaFree(dAarray));   dAarray = nullptr; }
+        if (dInfoArray){ CUDA_CHECK(cudaFree(dInfoArray));dInfoArray = nullptr; }
+
+        CUDA_CHECK(cudaMalloc((void**)&dDiagPack,
+                              sizeof(double) * (size_t)cap_diag_batch * (size_t)cap_diag_n * (size_t)cap_diag_n));
+        CUDA_CHECK(cudaMalloc((void**)&dAarray, sizeof(double*) * (size_t)cap_diag_batch));
+        CUDA_CHECK(cudaMalloc((void**)&dInfoArray, sizeof(int) * (size_t)cap_diag_batch));
+    }
+
     void init(int dev)
     {
         if (inited) return;
@@ -184,7 +210,12 @@ struct CudaCtx {
         if (!inited) return;
         CUDA_CHECK(cudaSetDevice(device));
 
-        if (dwork) { CUDA_CHECK(cudaFree(dwork)); dwork = nullptr; }
+        // batched potrf scratch
+        if (dInfoArray) { CUDA_CHECK(cudaFree(dInfoArray)); dInfoArray = nullptr; }
+        if (dAarray)    { CUDA_CHECK(cudaFree(dAarray));    dAarray = nullptr; }
+        if (dDiagPack)  { CUDA_CHECK(cudaFree(dDiagPack));  dDiagPack = nullptr; }
+
+if (dwork) { CUDA_CHECK(cudaFree(dwork)); dwork = nullptr; }
         if (dS)    { CUDA_CHECK(cudaFree(dS)); dS = nullptr; }
         if (dC)    { CUDA_CHECK(cudaFree(dC)); dC = nullptr; }
         if (dinfo) { CUDA_CHECK(cudaFree(dinfo)); dinfo = nullptr; }
@@ -195,6 +226,8 @@ struct CudaCtx {
 
         inited = false;
         cap_nsrow = cap_nscol = cap_nupd = 0;
+        cap_diag_n = 0;
+        cap_diag_batch = 0;
         lwork = 0;
     }
 };
@@ -206,7 +239,8 @@ static bool gpu_factor_and_update(
     const std::vector<double>& C_host, // nsrow x nscol
     int nupd,
     std::vector<double>& C_out_host,   // nsrow x nscol (L block)
-    std::vector<double>& S_out_host)   // nupd x nupd (full)
+    std::vector<double>& S_out_host,   // nupd x nupd (full)
+    bool skip_potrf)                   // if true, C_host already contains factored L11 (lower)
 {
     ctx.ensure_C(nsrow, nscol);
 
@@ -214,19 +248,20 @@ static bool gpu_factor_and_update(
     CUDA_CHECK(cudaMemcpyAsync(ctx.dC, C_host.data(),
                                sizeof(double) * (size_t)nsrow * (size_t)nscol,
                                cudaMemcpyHostToDevice, ctx.stream));
+    if (!skip_potrf) {
+        // POTRF on top-left nscol x nscol of dC
+        ctx.ensure_potrf_workspace(nscol, nsrow);
+        CUSOLVER_CHECK(cusolverDnDpotrf(ctx.cusolver, CUBLAS_FILL_MODE_LOWER,
+                                        nscol, ctx.dC, nsrow,
+                                        (double*)ctx.dwork, ctx.lwork,
+                                        ctx.dinfo));
 
-    // POTRF on top-left nscol x nscol of dC
-    ctx.ensure_potrf_workspace(nscol, nsrow);
-    CUSOLVER_CHECK(cusolverDnDpotrf(ctx.cusolver, CUBLAS_FILL_MODE_LOWER,
-                                    nscol, ctx.dC, nsrow,
-                                    (double*)ctx.dwork, ctx.lwork,
-                                    ctx.dinfo));
-
-    int info_h = 0;
-    CUDA_CHECK(cudaMemcpyAsync(&info_h, ctx.dinfo, sizeof(int),
-                               cudaMemcpyDeviceToHost, ctx.stream));
-    CUDA_CHECK(cudaStreamSynchronize(ctx.stream));
-    if (info_h != 0) return false;
+        int info_h = 0;
+        CUDA_CHECK(cudaMemcpyAsync(&info_h, ctx.dinfo, sizeof(int),
+                                   cudaMemcpyDeviceToHost, ctx.stream));
+        CUDA_CHECK(cudaStreamSynchronize(ctx.stream));
+        if (info_h != 0) return false;
+    }
 
     // TRSM: L21 = A21 * inv(L11^T)
     if (nupd > 0) {
@@ -422,6 +457,106 @@ static void assemble_C_and_S(
     for (int r : tl.touched) tl.g2p[(size_t)r] = -1;
 }
 
+// -----------------------------------------------------------------------------
+// Batched POTRF for small diagonal blocks (nscol x nscol).
+// We pre-factor L11 on GPU in batches, write back into C (host), then skip POTRF
+// inside gpu_factor_and_update. This reduces per-supernode cuSOLVER call overhead
+// for many tiny fronts.
+// -----------------------------------------------------------------------------
+struct WorkItem {
+    int k = -1;
+    int nsrow = 0;
+    int nscol = 0;
+    int nupd = 0;
+    int px0 = 0;
+    bool diag_factored = false;
+    std::vector<double> C; // nsrow x nscol
+    std::vector<double> S; // nupd x nupd (full)
+};
+
+// Extract top-left (nscol x nscol) block from C (ld=nsrow) into dst (ld=nscol).
+static inline void pack_diag_block(const std::vector<double>& C, int nsrow, int nscol,
+                                   double* dst /* nscol*nscol */)
+{
+    for (int j = 0; j < nscol; ++j) {
+        for (int i = 0; i < nscol; ++i) {
+            dst[(size_t)i + (size_t)j * (size_t)nscol] = HCMc(C, nsrow, i, j);
+        }
+    }
+}
+
+// Scatter factored diagonal block (lower) back into C, and zero upper for determinism.
+static inline void unpack_diag_block(std::vector<double>& C, int nsrow, int nscol,
+                                     const double* src /* nscol*nscol */)
+{
+    for (int j = 0; j < nscol; ++j) {
+        for (int i = 0; i < nscol; ++i) {
+            double v = src[(size_t)i + (size_t)j * (size_t)nscol];
+            if (i < j) v = 0.0;
+            HCM(C, nsrow, i, j) = v;
+        }
+    }
+}
+
+// Run cusolverDnDpotrfBatched on a group of items that all share the same nscol (n).
+static bool batched_potrf_diags(CudaCtx& ctx, int n, std::vector<WorkItem*>& items)
+{
+    const int batch = (int)items.size();
+    if (batch <= 1) return true;
+
+    ctx.ensure_diag_pack(n, batch);
+
+    std::vector<double> hpack((size_t)batch * (size_t)n * (size_t)n);
+    std::vector<double*> hA((size_t)batch);
+    std::vector<int> hinfo((size_t)batch, 0);
+
+    // Pack each diag block
+    for (int b = 0; b < batch; ++b) {
+        WorkItem* it = items[(size_t)b];
+        double* dst = hpack.data() + (size_t)b * (size_t)n * (size_t)n;
+        pack_diag_block(it->C, it->nsrow, n, dst);
+        hA[(size_t)b] = ctx.dDiagPack + (size_t)b * (size_t)n * (size_t)n;
+    }
+
+    // H2D pack + pointer array
+    CUDA_CHECK(cudaMemcpyAsync(ctx.dDiagPack, hpack.data(),
+                               sizeof(double) * hpack.size(),
+                               cudaMemcpyHostToDevice, ctx.stream));
+    CUDA_CHECK(cudaMemcpyAsync(ctx.dAarray, hA.data(),
+                               sizeof(double*) * hA.size(),
+                               cudaMemcpyHostToDevice, ctx.stream));
+
+    // Batched POTRF
+    CUSOLVER_CHECK(cusolverDnDpotrfBatched(ctx.cusolver,
+                                          CUBLAS_FILL_MODE_LOWER,
+                                          n,
+                                          (double**)ctx.dAarray,
+                                          n,
+                                          ctx.dInfoArray,
+                                          batch));
+
+    // D2H results and info
+    CUDA_CHECK(cudaMemcpyAsync(hpack.data(), ctx.dDiagPack,
+                               sizeof(double) * hpack.size(),
+                               cudaMemcpyDeviceToHost, ctx.stream));
+    CUDA_CHECK(cudaMemcpyAsync(hinfo.data(), ctx.dInfoArray,
+                               sizeof(int) * hinfo.size(),
+                               cudaMemcpyDeviceToHost, ctx.stream));
+    CUDA_CHECK(cudaStreamSynchronize(ctx.stream));
+
+    for (int b = 0; b < batch; ++b) {
+        if (hinfo[(size_t)b] != 0) {
+            return false;
+        }
+        WorkItem* it = items[(size_t)b];
+        const double* src = hpack.data() + (size_t)b * (size_t)n * (size_t)n;
+        unpack_diag_block(it->C, it->nsrow, n, src);
+        it->diag_factored = true;
+    }
+    return true;
+}
+
+
 SuperNumeric factorize_supernodal_ll_cuda(
     const ichol::matrix::CscMatrix<double>& A,
     const symbolic::SupernodalLLPlan& plan)
@@ -539,46 +674,84 @@ SuperNumeric factorize_supernodal_ll_cuda(
             CudaCtx& ctx = ctxs[(size_t)tid];
             ThreadLocal& tl = tls[(size_t)tid];
 
+
 #ifdef _OPENMP
-            #pragma omp for schedule(static)
+            // Use a simple cyclic distribution to make it easy to batch per-thread.
+            // (This is equivalent to schedule(static,1) and remains deterministic.)
 #endif
-            for (int bi = 0; bi < (int)bucket.size(); ++bi) {
+            std::vector<WorkItem> items;
+            items.reserve((bucket.size() + (size_t)streams_used - 1) / (size_t)streams_used);
+
+            for (int bi = tid; bi < (int)bucket.size(); bi += streams_used) {
                 if (!ok.load(std::memory_order_relaxed)) continue;
 
-                const int k = bucket[(size_t)bi];
+                WorkItem it;
+                it.k = bucket[(size_t)bi];
 
-                std::vector<double> C, S;
-                int nsrow=0, nscol=0, nupd=0, px0=0;
+                assemble_C_and_S(it.k, A, plan.sym, children, up, tl,
+                                 it.C, it.S, it.nsrow, it.nscol, it.nupd, it.px0);
+                items.emplace_back(std::move(it));
+            }
 
-                assemble_C_and_S(k, A, plan.sym, children, up, tl, C, S, nsrow, nscol, nupd, px0);
+            // Batched POTRF pre-factorization for small diagonal blocks.
+            // Heuristic: only batch small n (reduces cuSOLVER call overhead) and only when batch>=2.
+            const int BATCH_MAX_N = 64;
+            std::unordered_map<int, std::vector<WorkItem*>> groups;
+            groups.reserve(16);
+
+            for (auto& it : items) {
+                if (it.nscol > 0 && it.nscol <= BATCH_MAX_N) {
+                    groups[it.nscol].push_back(&it);
+                }
+            }
+
+            for (auto& kv : groups) {
+                int ncol = kv.first;
+                auto& vec = kv.second;
+                if ((int)vec.size() <= 1) continue;
+                bool bok = batched_potrf_diags(ctx, ncol, vec);
+                if (!bok) {
+                    bool expected = true;
+                    if (ok.compare_exchange_strong(expected, false)) {
+                        out.ok = false;
+                        out.fail_snode = vec[0]->k;
+                        out.fail_col_in_snode = -1;
+                    }
+                    break;
+                }
+            }
+
+            // Now run the existing per-supernode GPU pipeline, skipping POTRF if pre-factored.
+            for (auto& it : items) {
+                if (!ok.load(std::memory_order_relaxed)) continue;
 
                 std::vector<double> Cfact;
-                bool gok = gpu_factor_and_update(ctx, nsrow, nscol, C, nupd, Cfact, S);
+                bool gok = gpu_factor_and_update(ctx, it.nsrow, it.nscol, it.C, it.nupd, Cfact, it.S, it.diag_factored);
                 if (!gok) {
                     bool expected = true;
                     if (ok.compare_exchange_strong(expected, false)) {
                         out.ok = false;
-                        out.fail_snode = k;
+                        out.fail_snode = it.k;
                         out.fail_col_in_snode = -1;
                     }
                     continue;
                 }
 
                 // write block to x
-                std::copy(Cfact.begin(), Cfact.end(), out.x.begin() + (size_t)px0);
+                std::copy(Cfact.begin(), Cfact.end(), out.x.begin() + (size_t)it.px0);
 
                 // store update pack (for parent)
-                UpdatePack& uk = up[(size_t)k];
-                uk.nupd = nupd;
+                UpdatePack& uk = up[(size_t)it.k];
+                uk.nupd = it.nupd;
                 uk.idx.clear();
                 uk.S.clear();
-                if (nupd > 0) {
-                    uk.idx.resize((size_t)nupd);
-                    const int pi0 = plan.sym.pi[(size_t)k];
-                    for (int t = 0; t < nupd; ++t) {
-                        uk.idx[(size_t)t] = plan.sym.s[(size_t)(pi0 + nscol + t)];
+                if (it.nupd > 0) {
+                    uk.idx.resize((size_t)it.nupd);
+                    const int pi0 = plan.sym.pi[(size_t)it.k];
+                    for (int t = 0; t < it.nupd; ++t) {
+                        uk.idx[(size_t)t] = plan.sym.s[(size_t)(pi0 + it.nscol + t)];
                     }
-                    uk.S = std::move(S);
+                    uk.S = std::move(it.S);
                 }
 
 #ifdef _OPENMP
@@ -586,6 +759,7 @@ SuperNumeric factorize_supernodal_ll_cuda(
 #endif
                 out.thread_work[(size_t)tid] += 1;
             }
+
         } // end parallel
 
         if (!ok.load()) break;
