@@ -26,3 +26,4 @@ command.md
 config/
 results/
 python/
+test/test_io
