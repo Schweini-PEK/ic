@@ -370,7 +370,7 @@ ichol::symbolic::Permutation rcm_from_csc(int n,
     return P;
 }
 
-    
+
 ichol::symbolic::Permutation nd_from_csc(int n,
                                          const std::vector<int> &col_ptr,
                                          const std::vector<int> &row_ind)
@@ -390,107 +390,169 @@ ichol::symbolic::Permutation nd_from_csc(int n,
     return P;
 }
 
-    void apply_symmetric_permutation_csc_lower_inplace(ichol::matrix::CscMatrix<double> &A,
-                                                       const Permutation &P)
+// ------------------------------------------------------------------------
+// Apply symmetric permutation to a LOWER-triangular CSC matrix (incl diag):
+//   A := A(P,P), where P is CHOLMOD-style "perm[new] = old".
+//
+// IMPORTANT:
+// - This permutation is required because we import CHOLMOD's supernodal
+//   symbolic (super/pi/px/s) which is defined on the permuted ordering.
+// - We implement the permutation ourselves (instead of calling CHOLMOD
+//   ptranspose) to avoid long runtimes / apparent hangs on large problems
+//   due to CHOLMOD's internal sorting/workspace behavior in some builds.
+//
+// Implementation notes:
+// - We map each stored entry (i_old, j_old) with i_old>=j_old to
+//     (i_new, j_new) = (inv_perm[i_old], inv_perm[j_old]).
+// - We then enforce lower-triangular storage by swapping if i_new<j_new.
+// - Because the permutation is bijective, duplicates cannot be created.
+// - We sort rows within each column to keep CSC "sorted" invariant.
+// ------------------------------------------------------------------------
+
+namespace detail
+{
+    template <typename T>
+    static inline void ensure_inv_perm(const Permutation &P, std::vector<int> &inv_out)
     {
-        // Prefer CHOLMOD for symmetric permutation to avoid maintaining our own
-        // CSC reindexing + sorting logic.
+        const int n = (int)P.perm.size();
+        inv_out.assign((size_t)n, 0);
+        if (!P.inv_perm.empty())
+        {
+            for (int i = 0; i < n; ++i) inv_out[(size_t)i] = (int)P.inv_perm[(size_t)i];
+            return;
+        }
+        // Build inverse from perm[new]=old
+        for (int new_i = 0; new_i < n; ++new_i)
+        {
+            const int old_i = (int)P.perm[(size_t)new_i];
+            inv_out[(size_t)old_i] = new_i;
+        }
+    }
+
+    template <typename T>
+    static void apply_sym_perm_lower_csc_inplace(ichol::matrix::CscMatrix<T> &A, const Permutation &P)
+    {
         const int n = A.num_cols;
         if (n <= 0) return;
         if (A.num_rows != n) throw std::runtime_error("apply_symmetric_permutation_csc_lower_inplace: A must be square");
         if ((int)P.perm.size() != n) throw std::runtime_error("apply_symmetric_permutation_csc_lower_inplace: perm size mismatch");
-
-        cholmod_common cc;
-        cholmod_start(&cc);
-        // Keep CHOLMOD in its default 32-bit index mode (CHOLMOD_INT) to match our
-        // internal index type (int) and to remain compatible with SuiteSparse builds
-        // that are not compiled with long indices.
-        // Some SuiteSparse/CHOLMOD versions do not expose cc.dtype; avoid touching it.
+        if ((int)A.col_ptr.size() != n + 1) throw std::runtime_error("apply_symmetric_permutation_csc_lower_inplace: bad col_ptr size");
 
         const int nnz = (int)A.row_ind.size();
-        cholmod_sparse* S = cholmod_allocate_sparse(
-            (size_t)n, (size_t)n, (size_t)nnz,
-            /*sorted=*/1,
-            /*packed=*/1,
-            /*stype=*/-1,
-            CHOLMOD_REAL,
-            &cc);
-        if (!S)
+        if ((int)A.values.size() != nnz) throw std::runtime_error("apply_symmetric_permutation_csc_lower_inplace: values size mismatch");
+        if (A.col_ptr.back() != nnz) throw std::runtime_error("apply_symmetric_permutation_csc_lower_inplace: col_ptr.back() != nnz");
+
+        std::vector<int> inv;
+        ensure_inv_perm<T>(P, inv);
+
+        // 1) Count nnz per new column
+        std::vector<int> col_counts((size_t)n, 0);
+        int max_col_nnz = 0;
+
+        for (int j_old = 0; j_old < n; ++j_old)
         {
-            cholmod_finish(&cc);
-            throw std::runtime_error("apply_symmetric_permutation_csc_lower_inplace: cholmod_allocate_sparse failed");
+            const int j_new = inv[(size_t)j_old];
+            const int p0 = A.col_ptr[(size_t)j_old];
+            const int p1 = A.col_ptr[(size_t)j_old + 1];
+
+            for (int p = p0; p < p1; ++p)
+            {
+                const int i_old = A.row_ind[(size_t)p];
+                const int i_new = inv[(size_t)i_old];
+
+                int col = j_new;
+                if (i_new < j_new) col = i_new; // store in lower triangle
+                col_counts[(size_t)col] += 1;
+            }
         }
 
-        auto* Sp = reinterpret_cast<int*>(S->p);
-        auto* Si = reinterpret_cast<int*>(S->i);
-        auto* Sx = reinterpret_cast<double*>(S->x);
-        for (int j = 0; j < n + 1; ++j) Sp[(std::size_t)j] = (int)A.col_ptr[(std::size_t)j];
-        for (int p = 0; p < nnz; ++p)
+        for (int j = 0; j < n; ++j) max_col_nnz = std::max(max_col_nnz, col_counts[(size_t)j]);
+
+        // 2) Prefix sum -> new col_ptr
+        std::vector<int> new_col_ptr((size_t)n + 1, 0);
+        for (int j = 0; j < n; ++j)
         {
-            Si[(std::size_t)p] = (int)A.row_ind[(std::size_t)p];
-            Sx[(std::size_t)p] = A.values[(std::size_t)p];
+            new_col_ptr[(size_t)j + 1] = new_col_ptr[(size_t)j] + col_counts[(size_t)j];
         }
 
-        std::vector<int> perm_int((std::size_t)n);
-        for (int k = 0; k < n; ++k) perm_int[(std::size_t)k] = (int)P.perm[(std::size_t)k];
+        const int new_nnz = new_col_ptr[(size_t)n];
+        if (new_nnz != nnz)
+            throw std::runtime_error("apply_symmetric_permutation_csc_lower_inplace: nnz mismatch after permutation");
 
-        // For symmetric A stored as tril(A), CHOLMOD's ptranspose returns A(P,P)'.
-        // Since A is symmetric, this equals A(P,P). stype=-1 keeps lower triangle.
-        cholmod_sparse* Spm = cholmod_ptranspose(S, /*values=*/1,
-                                                 perm_int.data(),
-                                                 /*fset=*/nullptr, /*fsize=*/0, &cc);
-        if (!Spm)
+        std::vector<int> new_row_ind((size_t)new_nnz, 0);
+        std::vector<T>   new_values((size_t)new_nnz);
+
+        // 3) Fill
+        std::vector<int> next = new_col_ptr;
+
+        for (int j_old = 0; j_old < n; ++j_old)
         {
-            cholmod_free_sparse(&S, &cc);
-            cholmod_finish(&cc);
-            throw std::runtime_error("apply_symmetric_permutation_csc_lower_inplace: cholmod_ptranspose failed");
+            const int j_new = inv[(size_t)j_old];
+            const int p0 = A.col_ptr[(size_t)j_old];
+            const int p1 = A.col_ptr[(size_t)j_old + 1];
+
+            for (int p = p0; p < p1; ++p)
+            {
+                const int i_old = A.row_ind[(size_t)p];
+                const int i_new = inv[(size_t)i_old];
+                const T   aij   = A.values[(size_t)p];
+
+                int col = j_new;
+                int row = i_new;
+                if (row < col) { std::swap(row, col); } // enforce lower
+
+                const int dst = next[(size_t)col]++;
+                new_row_ind[(size_t)dst] = row;
+                new_values[(size_t)dst]  = aij;
+            }
         }
 
-        const auto* Pp = reinterpret_cast<const int*>(Spm->p);
-        const auto* Pi = reinterpret_cast<const int*>(Spm->i);
-        const auto* Px = reinterpret_cast<const double*>(Spm->x);
-        const int new_nnz = (int)Pp[(std::size_t)n];
+        // 4) Sort rows within each column (keep values aligned)
+        struct RowVal { int r; T v; };
+        std::vector<RowVal> buf;
+        buf.reserve((size_t)max_col_nnz);
 
-        A.col_ptr.assign((std::size_t)n + 1, 0);
-        A.row_ind.assign((std::size_t)new_nnz, 0);
-        A.values.assign((std::size_t)new_nnz, 0.0);
-        A.nnz = new_nnz;
-        for (int j = 0; j < n + 1; ++j) A.col_ptr[(std::size_t)j] = (int)Pp[(std::size_t)j];
-        for (int p = 0; p < new_nnz; ++p)
+        for (int j = 0; j < n; ++j)
         {
-            A.row_ind[(std::size_t)p] = (int)Pi[(std::size_t)p];
-            A.values[(std::size_t)p]  = Px[(std::size_t)p];
+            const int b0 = new_col_ptr[(size_t)j];
+            const int b1 = new_col_ptr[(size_t)j + 1];
+            const int len = b1 - b0;
+            if (len <= 1) continue;
+
+            buf.clear();
+            for (int t = 0; t < len; ++t)
+            {
+                buf.push_back(RowVal{ new_row_ind[(size_t)(b0 + t)], new_values[(size_t)(b0 + t)] });
+            }
+
+            std::sort(buf.begin(), buf.end(), [](const RowVal &a, const RowVal &b) { return a.r < b.r; });
+
+            for (int t = 0; t < len; ++t)
+            {
+                new_row_ind[(size_t)(b0 + t)] = buf[(size_t)t].r;
+                new_values[(size_t)(b0 + t)]  = buf[(size_t)t].v;
+            }
         }
 
-        cholmod_free_sparse(&Spm, &cc);
-        cholmod_free_sparse(&S, &cc);
-        cholmod_finish(&cc);
+        // 5) Swap into A
+        A.col_ptr.swap(new_col_ptr);
+        A.row_ind.swap(new_row_ind);
+        A.values.swap(new_values);
+        A.nnz = nnz;
     }
+} // namespace detail
 
-    void apply_symmetric_permutation_csc_lower_inplace(ichol::matrix::CscMatrix<float> &A,
-                                                       const Permutation &P)
-    {
-        // CHOLMOD is most commonly built in double precision. To keep this portable across
-        // SuiteSparse versions, route the float case through the double implementation.
-        ichol::matrix::CscMatrix<double> Ad;
-        Ad.num_rows = A.num_rows;
-        Ad.num_cols = A.num_cols;
-        Ad.nnz = A.nnz;
-        Ad.col_ptr = A.col_ptr;
-        Ad.row_ind = A.row_ind;
-        Ad.values.resize(A.values.size());
-        for (std::size_t k = 0; k < A.values.size(); ++k) Ad.values[k] = (double)A.values[k];
+void apply_symmetric_permutation_csc_lower_inplace(ichol::matrix::CscMatrix<double> &A,
+                                                   const Permutation &P)
+{
+    detail::apply_sym_perm_lower_csc_inplace<double>(A, P);
+}
 
-        apply_symmetric_permutation_csc_lower_inplace(Ad, P);
-
-        A.num_rows = Ad.num_rows;
-        A.num_cols = Ad.num_cols;
-        A.nnz = Ad.nnz;
-        A.col_ptr = Ad.col_ptr;
-        A.row_ind = Ad.row_ind;
-        A.values.resize(Ad.values.size());
-        for (std::size_t k = 0; k < Ad.values.size(); ++k) A.values[k] = (float)Ad.values[k];
-    }
+void apply_symmetric_permutation_csc_lower_inplace(ichol::matrix::CscMatrix<float> &A,
+                                                   const Permutation &P)
+{
+    detail::apply_sym_perm_lower_csc_inplace<float>(A, P);
+}
 
     namespace detail
     {

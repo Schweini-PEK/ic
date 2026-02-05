@@ -16,6 +16,18 @@ namespace ichol::numeric {
         bool verbose = false;          // print streams/work distribution
         bool print_schedule = false;   // print level buckets + mapping preview
         int schedule_print_limit = 8;  // how many snodes to preview per level
+
+        // Fast path: CHOLMOD typically assumes SPD for LL; if your input may be
+        // indefinite, set this to false to keep per-supernode info checks.
+        // When true, we avoid a per-supernode stream sync on POTRF, which is
+        // a major overhead on workloads with many small fronts.
+        bool assume_spd = true;
+
+        // Heuristic: for very small supernodes, GPU POTRF/TRSM launch/setup
+        // overhead can dominate. If nscol <= cpu_fallback_max_n, we perform
+        // POTRF/TRSM/SYRK on CPU (simple unblocked kernels) and only keep the
+        // GPU path for larger fronts. Set to 0 to disable.
+        int cpu_fallback_max_n = 48;
     };
 
 

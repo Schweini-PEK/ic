@@ -121,6 +121,16 @@ struct SupernodalLLPlan {
     // Supernode DAG scheduling.
     std::vector<int> parent;                // size = nsuper
     std::vector<std::vector<int>> children; // adjacency list
+
+    // Precomputed child->parent rowlist positions (CHOLMOD-style relpos).
+    //
+    // child_relpos[p][ci][t] = position in parent p rowlist (0..nsrow_p-1) of
+    // the t-th update row of child c=children[p][ci]. -1 if that global index
+    // is not present in the parent front rowlist.
+    //
+    // This removes per-child/per-supernode g2p lookups and enables much cheaper
+    // scatter-add of child updates in the numeric phase.
+    std::vector<std::vector<std::vector<int>>> child_relpos;
     std::vector<int> level;                 // per-snode level
     std::vector<std::vector<int>> buckets;  // buckets[level] = snode ids
 
@@ -129,6 +139,61 @@ struct SupernodalLLPlan {
     int max_front_dim = 0;
 };
 
+// Build CHOLMOD-style relpos arrays:
+// for each edge child->parent, map child's update row ids into parent's rowlist positions.
+inline void fill_child_relpos_from_sym(SupernodalLLPlan& plan, int ncols)
+{
+    const int nsuper = (int)plan.sym.super.size() - 1;
+    plan.child_relpos.assign((size_t)nsuper, {});
+
+    // Marker arrays (CHOLMOD "mark" technique) to avoid hashing.
+    std::vector<int> mark_pos((size_t)ncols, -1);
+    std::vector<int> mark_stamp((size_t)ncols, 0);
+    int cur = 1;
+
+    for (int p = 0; p < nsuper; ++p) {
+        const int pi0_p = plan.sym.pi[(size_t)p];
+        const int pi1_p = plan.sym.pi[(size_t)p + 1];
+        const int nsrow_p = pi1_p - pi0_p;
+
+        // Mark all rows in the parent front rowlist with their local position.
+        for (int t = 0; t < nsrow_p; ++t) {
+            const int g = plan.sym.s[(size_t)(pi0_p + t)];
+            mark_stamp[(size_t)g] = cur;
+            mark_pos[(size_t)g] = t;
+        }
+
+        const auto& ch = plan.children[(size_t)p];
+        plan.child_relpos[(size_t)p].resize(ch.size());
+
+        for (size_t ci = 0; ci < ch.size(); ++ci) {
+            const int c = ch[ci];
+            const int scol_c = plan.sym.super[(size_t)c];
+            const int ecol_c = plan.sym.super[(size_t)c + 1];
+            const int nscol_c = ecol_c - scol_c;
+            const int pi0_c = plan.sym.pi[(size_t)c];
+            const int pi1_c = plan.sym.pi[(size_t)c + 1];
+            const int nsrow_c = pi1_c - pi0_c;
+            const int nupd_c = nsrow_c - nscol_c;
+
+            auto& rel = plan.child_relpos[(size_t)p][ci];
+            rel.assign((size_t)std::max(0, nupd_c), -1);
+
+            for (int t = 0; t < nupd_c; ++t) {
+                const int g = plan.sym.s[(size_t)(pi0_c + nscol_c + t)];
+                rel[(size_t)t] = (mark_stamp[(size_t)g] == cur) ? mark_pos[(size_t)g] : -1;
+            }
+        }
+
+        // Bump stamp; if it overflows, reset stamps (very unlikely).
+        ++cur;
+        if (cur == 0) {
+            std::fill(mark_stamp.begin(), mark_stamp.end(), 0);
+            cur = 1;
+        }
+    }
+}
+
 inline void fill_schedule_from_sym(SupernodalLLPlan& plan, int ncols)
 {
     const auto col2s = build_col2snode(plan.sym.super, ncols);
@@ -136,6 +201,9 @@ inline void fill_schedule_from_sym(SupernodalLLPlan& plan, int ncols)
     plan.children = build_children(plan.parent);
     plan.level    = compute_level_from_leaves(plan.children);
     plan.buckets  = bucket_by_level(plan.level);
+
+    // Precompute relpos mapping for cheap child-update scatter in numeric.
+    fill_child_relpos_from_sym(plan, ncols);
 
     const int nsuper = (int)plan.sym.super.size() - 1;
     plan.front_dim.assign((size_t)nsuper, 0);
