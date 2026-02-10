@@ -277,7 +277,7 @@ namespace ichol::symbolic
     template <typename T>
     void apply_permutation_csr(ichol::matrix::CsrMatrix<T> &A, const Permutation &P)
     {
-        const int n = A.num_rows();
+        const int n = A.row_ptr.size() - 1;
         const auto &p = P.inv_perm; // inv_perm maps old->new
         const int nnz = A.row_ptr[n];
 
@@ -373,7 +373,7 @@ namespace ichol::symbolic
     template <typename T>
     void apply_permutation_csc(ichol::matrix::CscMatrix<T> &A, const Permutation &P)
     {
-        const int n = A.num_cols();
+        const int n = A.col_ptr.size() - 1;
         const auto &p = P.inv_perm;
         const int nnz = A.col_ptr[n];
 
