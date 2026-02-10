@@ -16,6 +16,12 @@ namespace ichol::io
     template <typename T>
     ichol::matrix::CscMatrix<T> mtx_to_csc(const std::string &path, bool verify, double alpha = 1e-3);
 
+    template <typename T>
+    ichol::matrix::CsrMatrix<T> coo_to_csr(const ichol::matrix::CooMatrix<double> &coo_in);
+
+    template <typename T>
+    ichol::matrix::CscMatrix<T> coo_to_csc(const ichol::matrix::CooMatrix<double> &coo_in);
+
     /**
      * Generate a 2D Laplacian matrix in CSR format.
      *
