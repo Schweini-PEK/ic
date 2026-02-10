@@ -525,7 +525,10 @@ namespace
         out.nnz = static_cast<int>(out.values.size());
         return out;
     }
+} // namespace
 
+namespace ichol::io
+{
     template <typename T>
     ichol::matrix::CsrMatrix<T> coo_to_csr(const ichol::matrix::CooMatrix<T> &coo_in)
     {
@@ -631,10 +634,15 @@ namespace
 
         return csc;
     }
-} // namespace
 
-namespace ichol::io
-{
+    template ichol::matrix::CsrMatrix<double> coo_to_csr<double>(const ichol::matrix::CooMatrix<double> &coo_in);
+    template ichol::matrix::CsrMatrix<float> coo_to_csr<float>(const ichol::matrix::CooMatrix<float> &coo_in);
+    template ichol::matrix::CsrMatrix<half_float::half> coo_to_csr<half_float::half>(const ichol::matrix::CooMatrix<half_float::half> &coo_in);
+
+    template ichol::matrix::CscMatrix<double> coo_to_csc<double>(const ichol::matrix::CooMatrix<double> &coo_in);
+    template ichol::matrix::CscMatrix<float> coo_to_csc<float>(const ichol::matrix::CooMatrix<float> &coo_in);
+    template ichol::matrix::CscMatrix<half_float::half> coo_to_csc<half_float::half>(const ichol::matrix::CooMatrix<half_float::half> &coo_in);
+
     template <typename T>
     matrix::CsrMatrix<T> mtx_to_csr(const std::string &path, bool verify, double alpha)
     {
