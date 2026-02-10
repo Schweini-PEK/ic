@@ -1,4 +1,4 @@
-//include/ichol/options.hpp
+// include/ichol/options.hpp
 #pragma once
 
 #include <string>
@@ -43,14 +43,11 @@ namespace ichol
         int level_k = -1; // -1 means complete Cholesky
         bool profile = false;
         ichol::util::TimeSink timer_sink = nullptr;
-    };
 
-    struct SuperNodeOptions
-    {
+        // Supernodal
         int min_supernode_size = 16;
         int max_supernode_size = 128;
         bool relaxed = false;
-        bool approximate = false;
         double overlap_threshold = 0.8;
     };
 
@@ -62,8 +59,8 @@ namespace ichol
         int max_restarts = 5;
 
         double static_shift = 1e-6; // For static shift strategy
-        double pivot_tol = 0.0; // For pivot check
-        double shift_growth = 2.0; // For shift increase on restart
+        double pivot_tol = 0.0;     // For pivot check
+        double shift_growth = 2.0;  // For shift increase on restart
 
         // For ICKDT
         int lfil = 20;
