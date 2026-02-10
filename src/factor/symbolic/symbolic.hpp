@@ -32,7 +32,6 @@ namespace ichol::symbolic
                             const std::vector<int> &col_ptr,
                             const std::vector<int> &row_ind);
 
-
     ichol::symbolic::Permutation rcm_from_csr(int n,
                                               const std::vector<int> &row_ptr,
                                               const std::vector<int> &col_ind);
@@ -41,21 +40,20 @@ namespace ichol::symbolic
                                              const std::vector<int> &row_ptr,
                                              const std::vector<int> &col_ind);
 
-    // In-place permutation of CSC (lower+diag) matrix: A := P*A*P^T, keeping only lower triangle.
-    // P follows CHOLMOD convention: perm[new] = old; inv_perm[old] = new.
-    void apply_symmetric_permutation_csc_lower_inplace(ichol::matrix::CscMatrix<double> &A,
-                                                       const Permutation &P);
-
-    // Float variant (kept as an overload to avoid putting templates in headers).
-    void apply_symmetric_permutation_csc_lower_inplace(ichol::matrix::CscMatrix<float> &A,
-                                                       const Permutation &P);
-    
     /**
      * In-place permutation of CSR matrix: A := P * A * P^T
      */
-                             template <typename T>
+    template <typename T>
     void apply_permutation_csr(ichol::matrix::CsrMatrix<T> &A,
                                const Permutation &P);
+
+    template <typename T>
+    void apply_permutation_csc(ichol::matrix::CscMatrix<T> &A,
+                               const Permutation &P);
+
+    template <typename T>
+    std::vector<T> apply_permutation_vec(const std::vector<T> &v,
+                                         const ichol::symbolic::Permutation &P);
 
     /**
      * Construct the elimination tree from the pattern of A.
@@ -64,7 +62,7 @@ namespace ichol::symbolic
     ichol::symbolic::ETree build_etree(const ichol::matrix::CsrMatrix<T> &A);
 
     template <typename T>
-    ichol::symbolic::ETree build_etree(const matrix::CscMatrix<T>& A);
+    ichol::symbolic::ETree build_etree(const matrix::CscMatrix<T> &A);
 
     template <typename T>
     ichol::symbolic::FactorPattern compute_complete_cholesky_pattern(const ichol::matrix::CsrMatrix<T> &A,
