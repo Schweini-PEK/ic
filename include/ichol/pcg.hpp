@@ -3,6 +3,8 @@
 
 #include <vector>
 
+#include "ichol/preconditioner.hpp"
+
 namespace ichol::solver
 {
     /**
@@ -13,7 +15,7 @@ namespace ichol::solver
      * this function solves By = \tilde{b} with PCG.
      * The stopping criteria is based on the residual norm
      * ||Ax-b||_2 / ||b||_2 \leq tol.
-     * 
+     *
      * Note that @param h_valA is the scaled A, i.e., B's values.
      *
      * @param h_csrRowPtrA CSR row pointer for matrix A (host).
@@ -38,6 +40,29 @@ namespace ichol::solver
         const std::vector<double> &h_b,
         std::vector<double> &h_x,
         const std::vector<double> &h_D,
+        int &iterations,
+        double &finalRes);
+
+    template <typename T>
+    struct PrecondApply
+    {
+        // Apply z = M^{-1} r
+        // (runs on GPU; can use SpSV/SpSM or custom kernels)
+        void (*apply)(void *ctx, const double *d_r, double *d_z, int n, cudaStream_t stream);
+        void *ctx; // points to preconditioner data (IC factors, ADI params, etc.)
+    };
+
+    template <typename T_L>
+    void mpcg(
+        const std::vector<int> &h_csrRowPtrA,
+        const std::vector<int> &h_csrColIndA,
+        const std::vector<double> &h_valA,
+        const std::vector<ichol::precond::PrecondApply>& preconds,
+        const std::vector<double> &h_b,
+        std::vector<double> &h_x,
+        int maxits,
+        double tol,
+        int restart, // 0 => treat as "full" (allocate maxits blocks)
         int &iterations,
         double &finalRes);
 

@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 #include "ichol/matrix_formats.hpp"
+#include "factor/symbolic/symbolic.hpp"
 
 namespace ichol::testutil
 {

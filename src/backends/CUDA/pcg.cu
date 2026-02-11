@@ -13,6 +13,7 @@
 #include <cstring>
 
 #include "ichol/half.hpp"
+#include "ichol/pcg.hpp"
 #include "solve/sptrsv/cuda/sptrsv_level.cuh"
 
 // ---------------------- mixed-precision helpers ----------------------
