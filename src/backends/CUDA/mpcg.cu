@@ -1,26 +1,8 @@
 // src/solver/mpcg_cuda.cu
 //
-// CUDA 12 baseline implementation of Bridson & Greif (2005) MPCG,
-// mirroring the MATLAB reference (mpcg.m) with truncation window "restart".
-//
-// Key idea: each iteration builds a dense block P_i (n×k) of k search directions.
-// It maintains last m blocks (m = restart) and A-orthogonalizes the new block
-// against those blocks.
-//
 // Implementation choices (baseline):
-// - A*P uses cuSPARSE SpMM (CUDA 12 generic API).
-// - All block inner products and updates use cuBLAS GEMM/GEMV.
 // - The "pinv" on small k×k matrices is done on CPU via a self-contained
 //   Jacobi eigen-decomposition pseudo-inverse (copy small matrices host<->device).
-// - Preconditioner apply is a placeholder "identity" kernel by default; replace
-//   apply_precond_column_* with your existing IC/triangular solve pipeline.
-//
-// Build notes:
-//   nvcc -O3 -std=c++17 mpcg_cuda.cu -lcusparse -lcublas -o mpcg_test
-//
-// Dense block layout on GPU:
-//   Column-major (leading dimension = n).
-//   Column t corresponds to the t-th preconditioner output.
 //
 #include <cuda_runtime.h>
 #include <cusparse.h>
@@ -36,7 +18,9 @@
 #include "ichol/pcg.hpp"
 #include "ichol/preconditioner.hpp"
 
-// ------------------------- Error handling -------------------------
+namespace
+{
+    // ------------------------- Error handling -------------------------
 #define CUDA_CHECK(call)                                           \
     do                                                             \
     {                                                              \
@@ -68,231 +52,207 @@
         }                                             \
     } while (0)
 
-// ------------------------- Device kernels (baseline helpers) -------------------------
-// Identity "preconditioner": z(:,t) = r
-__global__ void k_copy_vec_to_col(double *__restrict__ Z, int ldZ,
-                                  const double *__restrict__ r, int n,
-                                  int col_id)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n)
-        Z[col_id * ldZ + i] = r[i];
-}
-
-// ------------------------- CPU: Jacobi eigen-decomposition for symmetric k×k -------------------------
-// Baseline pinv for small symmetric matrices G (k×k):
-//   G ≈ Q diag(lambda) Q^T
-//   pinv(G) = Q diag(1/lambda_i if lambda_i > thresh else 0) Q^T
-//
-// This is used to realize MATLAB pinv(G) in mpcg.m.
-//
-// Notes:
-// - Designed for small k (e.g., 1..32).
-// - G is symmetrized before factorization (0.5*(G+G^T)).
-//
-static void symmetrize_inplace(std::vector<double> &A, int k)
-{
-    for (int j = 0; j < k; ++j)
+    // ------------------------- CPU: Jacobi eigen-decomposition for symmetric k×k -------------------------
+    // Baseline pinv for small symmetric matrices G (k×k):
+    //   G ≈ Q diag(lambda) Q^T
+    //   pinv(G) = Q diag(1/lambda_i if lambda_i > thresh else 0) Q^T
+    //
+    // This is used to realize MATLAB pinv(G) in mpcg.m.
+    //
+    // Notes:
+    // - Designed for small k (e.g., 1..32).
+    // - G is symmetrized before factorization (0.5*(G+G^T)).
+    //
+    static void symmetrize_inplace(std::vector<double> &A, int k)
     {
-        for (int i = j + 1; i < k; ++i)
-        {
-            double aij = A[i + j * k];
-            double aji = A[j + i * k];
-            double s = 0.5 * (aij + aji);
-            A[i + j * k] = s;
-            A[j + i * k] = s;
-        }
-    }
-}
-
-static void jacobi_eig_sym(const std::vector<double> &A_in, int k,
-                           std::vector<double> &Q_out,
-                           std::vector<double> &eval_out,
-                           int max_sweeps = 50,
-                           double tol = 1e-12)
-{
-    // A (working copy), Q initialized to identity
-    std::vector<double> A = A_in;
-    Q_out.assign(k * k, 0.0);
-    eval_out.assign(k, 0.0);
-    for (int i = 0; i < k; ++i)
-        Q_out[i + i * k] = 1.0;
-
-    auto idx = [k](int r, int c)
-    { return r + c * k; }; // column-major k×k
-
-    for (int sweep = 0; sweep < max_sweeps; ++sweep)
-    {
-        // Find largest off-diagonal magnitude
-        int p = 0, q = 1;
-        double max_off = 0.0;
         for (int j = 0; j < k; ++j)
         {
-            for (int i = 0; i < j; ++i)
+            for (int i = j + 1; i < k; ++i)
             {
-                double v = std::abs(A[idx(i, j)]);
-                if (v > max_off)
+                double aij = A[i + j * k];
+                double aji = A[j + i * k];
+                double s = 0.5 * (aij + aji);
+                A[i + j * k] = s;
+                A[j + i * k] = s;
+            }
+        }
+    }
+
+    static void jacobi_eig_sym(const std::vector<double> &A_in, int k,
+                               std::vector<double> &Q_out,
+                               std::vector<double> &eval_out,
+                               int max_sweeps = 50,
+                               double tol = 1e-12)
+    {
+        // A (working copy), Q initialized to identity
+        std::vector<double> A = A_in;
+        Q_out.assign(k * k, 0.0);
+        eval_out.assign(k, 0.0);
+        for (int i = 0; i < k; ++i)
+            Q_out[i + i * k] = 1.0;
+
+        auto idx = [k](int r, int c)
+        { return r + c * k; }; // column-major k×k
+
+        for (int sweep = 0; sweep < max_sweeps; ++sweep)
+        {
+            // Find largest off-diagonal magnitude
+            int p = 0, q = 1;
+            double max_off = 0.0;
+            for (int j = 0; j < k; ++j)
+            {
+                for (int i = 0; i < j; ++i)
                 {
-                    max_off = v;
-                    p = i;
-                    q = j;
+                    double v = std::abs(A[idx(i, j)]);
+                    if (v > max_off)
+                    {
+                        max_off = v;
+                        p = i;
+                        q = j;
+                    }
                 }
             }
-        }
-        if (max_off < tol)
-            break;
+            if (max_off < tol)
+                break;
 
-        double app = A[idx(p, p)];
-        double aqq = A[idx(q, q)];
-        double apq = A[idx(p, q)];
+            double app = A[idx(p, p)];
+            double aqq = A[idx(q, q)];
+            double apq = A[idx(p, q)];
 
-        // Jacobi rotation parameters
-        double tau = (aqq - app) / (2.0 * apq);
-        double t = (tau >= 0.0)
-                       ? 1.0 / (tau + std::sqrt(1.0 + tau * tau))
-                       : -1.0 / (-tau + std::sqrt(1.0 + tau * tau));
-        double c = 1.0 / std::sqrt(1.0 + t * t);
-        double s = t * c;
+            // Jacobi rotation parameters
+            double tau = (aqq - app) / (2.0 * apq);
+            double t = (tau >= 0.0)
+                           ? 1.0 / (tau + std::sqrt(1.0 + tau * tau))
+                           : -1.0 / (-tau + std::sqrt(1.0 + tau * tau));
+            double c = 1.0 / std::sqrt(1.0 + t * t);
+            double s = t * c;
 
-        // Apply rotation to A: A <- J^T A J
-        // Update rows/cols p,q
-        for (int i = 0; i < k; ++i)
-        {
-            if (i == p || i == q)
-                continue;
-            double aip = A[idx(i, p)];
-            double aiq = A[idx(i, q)];
-            // New entries in columns p,q
-            A[idx(i, p)] = c * aip - s * aiq;
-            A[idx(i, q)] = s * aip + c * aiq;
-        }
-        for (int i = 0; i < k; ++i)
-        {
-            if (i == p || i == q)
-                continue;
-            // Mirror symmetry
-            A[idx(p, i)] = A[idx(i, p)];
-            A[idx(q, i)] = A[idx(i, q)];
-        }
-
-        // Update diagonal & apq
-        double app_new = c * c * app - 2.0 * s * c * apq + s * s * aqq;
-        double aqq_new = s * s * app + 2.0 * s * c * apq + c * c * aqq;
-        A[idx(p, p)] = app_new;
-        A[idx(q, q)] = aqq_new;
-        A[idx(p, q)] = 0.0;
-        A[idx(q, p)] = 0.0;
-
-        // Update eigenvectors: Q <- Q J
-        for (int i = 0; i < k; ++i)
-        {
-            double qip = Q_out[idx(i, p)];
-            double qiq = Q_out[idx(i, q)];
-            Q_out[idx(i, p)] = c * qip - s * qiq;
-            Q_out[idx(i, q)] = s * qip + c * qiq;
-        }
-    }
-
-    // Eigenvalues are diagonal
-    for (int i = 0; i < k; ++i)
-        eval_out[i] = A[idx(i, i)];
-}
-
-// Compute X = pinv(G) * B, where:
-// - G is symmetric (k×k)
-// - B is (k×nrhs) in column-major with ldB=k
-// - X is (k×nrhs) in column-major with ldX=k
-//
-// This realizes the MATLAB blocks:
-//   Y = pinv(Gj) * C
-//   alpha = pinv(Gnew) * rhs
-static void pinv_sym_apply(const std::vector<double> &G_in, int k,
-                           const std::vector<double> &B_in, int nrhs,
-                           std::vector<double> &X_out,
-                           double rcond = 1e-12)
-{
-    // Symmetrize G to guard numerical drift
-    std::vector<double> G = G_in;
-    symmetrize_inplace(G, k);
-
-    // Eigendecompose G
-    std::vector<double> Q, eval;
-    jacobi_eig_sym(G, k, Q, eval);
-
-    // Determine threshold for pseudo-inverse
-    double max_abs = 0.0;
-    for (int i = 0; i < k; ++i)
-        max_abs = std::max(max_abs, std::abs(eval[i]));
-    double thresh = rcond * (max_abs > 0.0 ? max_abs : 1.0);
-
-    // Precompute inv eigenvalues
-    std::vector<double> inv_eval(k, 0.0);
-    for (int i = 0; i < k; ++i)
-    {
-        if (std::abs(eval[i]) > thresh)
-            inv_eval[i] = 1.0 / eval[i];
-        else
-            inv_eval[i] = 0.0; // pseudo-inverse: drop small eigenvalues
-    }
-
-    // X = Q * diag(inv_eval) * (Q^T * B)
-    X_out.assign(k * nrhs, 0.0);
-
-    // T = Q^T * B : (k×nrhs)
-    std::vector<double> T(k * nrhs, 0.0);
-    for (int col = 0; col < nrhs; ++col)
-    {
-        for (int i = 0; i < k; ++i)
-        {
-            double sum = 0.0;
-            for (int j = 0; j < k; ++j)
+            // Apply rotation to A: A <- J^T A J
+            // Update rows/cols p,q
+            for (int i = 0; i < k; ++i)
             {
-                sum += Q[j + i * k] * B_in[j + col * k]; // Q^T: (i,j) = Q(j,i)
+                if (i == p || i == q)
+                    continue;
+                double aip = A[idx(i, p)];
+                double aiq = A[idx(i, q)];
+                // New entries in columns p,q
+                A[idx(i, p)] = c * aip - s * aiq;
+                A[idx(i, q)] = s * aip + c * aiq;
             }
-            T[i + col * k] = sum;
-        }
-    }
-
-    // Scale rows by inv_eval: T <- diag(inv_eval) * T
-    for (int col = 0; col < nrhs; ++col)
-    {
-        for (int i = 0; i < k; ++i)
-        {
-            T[i + col * k] *= inv_eval[i];
-        }
-    }
-
-    // X = Q * T
-    for (int col = 0; col < nrhs; ++col)
-    {
-        for (int i = 0; i < k; ++i)
-        {
-            double sum = 0.0;
-            for (int j = 0; j < k; ++j)
+            for (int i = 0; i < k; ++i)
             {
-                sum += Q[i + j * k] * T[j + col * k]; // Q(i,j)
+                if (i == p || i == q)
+                    continue;
+                // Mirror symmetry
+                A[idx(p, i)] = A[idx(i, p)];
+                A[idx(q, i)] = A[idx(i, q)];
             }
-            X_out[i + col * k] = sum;
+
+            // Update diagonal & apq
+            double app_new = c * c * app - 2.0 * s * c * apq + s * s * aqq;
+            double aqq_new = s * s * app + 2.0 * s * c * apq + c * c * aqq;
+            A[idx(p, p)] = app_new;
+            A[idx(q, q)] = aqq_new;
+            A[idx(p, q)] = 0.0;
+            A[idx(q, p)] = 0.0;
+
+            // Update eigenvectors: Q <- Q J
+            for (int i = 0; i < k; ++i)
+            {
+                double qip = Q_out[idx(i, p)];
+                double qiq = Q_out[idx(i, q)];
+                Q_out[idx(i, p)] = c * qip - s * qiq;
+                Q_out[idx(i, q)] = s * qip + c * qiq;
+            }
+        }
+
+        // Eigenvalues are diagonal
+        for (int i = 0; i < k; ++i)
+            eval_out[i] = A[idx(i, i)];
+    }
+
+    // Compute X = pinv(G) * B, where:
+    // - G is symmetric (k×k)
+    // - B is (k×nrhs) in column-major with ldB=k
+    // - X is (k×nrhs) in column-major with ldX=k
+    //
+    // This realizes the MATLAB blocks:
+    //   Y = pinv(Gj) * C
+    //   alpha = pinv(Gnew) * rhs
+    static void pinv_sym_apply(const std::vector<double> &G_in, int k,
+                               const std::vector<double> &B_in, int nrhs,
+                               std::vector<double> &X_out,
+                               double rcond = 1e-12)
+    {
+        // Symmetrize G to guard numerical drift
+        std::vector<double> G = G_in;
+        symmetrize_inplace(G, k);
+
+        // Eigendecompose G
+        std::vector<double> Q, eval;
+        jacobi_eig_sym(G, k, Q, eval);
+
+        // Determine threshold for pseudo-inverse
+        double max_abs = 0.0;
+        for (int i = 0; i < k; ++i)
+            max_abs = std::max(max_abs, std::abs(eval[i]));
+        double thresh = rcond * (max_abs > 0.0 ? max_abs : 1.0);
+
+        // Precompute inv eigenvalues
+        std::vector<double> inv_eval(k, 0.0);
+        for (int i = 0; i < k; ++i)
+        {
+            if (std::abs(eval[i]) > thresh)
+                inv_eval[i] = 1.0 / eval[i];
+            else
+                inv_eval[i] = 0.0; // pseudo-inverse: drop small eigenvalues
+        }
+
+        // X = Q * diag(inv_eval) * (Q^T * B)
+        X_out.assign(k * nrhs, 0.0);
+
+        // T = Q^T * B : (k×nrhs)
+        std::vector<double> T(k * nrhs, 0.0);
+        for (int col = 0; col < nrhs; ++col)
+        {
+            for (int i = 0; i < k; ++i)
+            {
+                double sum = 0.0;
+                for (int j = 0; j < k; ++j)
+                {
+                    sum += Q[j + i * k] * B_in[j + col * k]; // Q^T: (i,j) = Q(j,i)
+                }
+                T[i + col * k] = sum;
+            }
+        }
+
+        // Scale rows by inv_eval: T <- diag(inv_eval) * T
+        for (int col = 0; col < nrhs; ++col)
+        {
+            for (int i = 0; i < k; ++i)
+            {
+                T[i + col * k] *= inv_eval[i];
+            }
+        }
+
+        // X = Q * T
+        for (int col = 0; col < nrhs; ++col)
+        {
+            for (int i = 0; i < k; ++i)
+            {
+                double sum = 0.0;
+                for (int j = 0; j < k; ++j)
+                {
+                    sum += Q[i + j * k] * T[j + col * k]; // Q(i,j)
+                }
+                X_out[i + col * k] = sum;
+            }
         }
     }
 }
 
 namespace ichol::solver
 {
-    // ------------------------- MPCG solver (CUDA 12) -------------------------
-    //
-    // This function is designed to be wrapped similarly to your pcg(...) interface.
-    // A is CSR on host (double). b,x are host dense vectors (double).
-    // preconds is a list of k preconditioners (IC factors, etc.).
-    //
-    // Math mapping (per iteration i):
-    //   r_i = b - A x_i
-    //   Z_{i+1} = [M1^{-1} r_i | ... | Mk^{-1} r_i]                         (n×k)
-    //   P_{i+1} = Z_{i+1} - sum_{j in window} P_j * pinv(P_j^T A P_j) * (P_j^T A Z_{i+1})
-    //   alpha_{i+1} = pinv(P_{i+1}^T A P_{i+1}) * (P_{i+1}^T r_i)          (k×1)
-    //   x_{i+1} = x_i + P_{i+1} * alpha_{i+1}
-    //   r_{i+1} = r_i - A P_{i+1} * alpha_{i+1}
-    //
     template <typename T_L>
     void mpcg(
         const std::vector<int> &h_csrRowPtrA,
@@ -303,12 +263,12 @@ namespace ichol::solver
         std::vector<double> &h_x,
         int maxits,
         double tol,
-        int restart, // 0 => treat as "full" (allocate maxits blocks)
+        int restart,
         int &iterations,
         double &finalRes)
     {
 
-        // ------------------------- Basic validation -------------------------
+        // Validation on dimensions
         const int n = static_cast<int>(h_csrRowPtrA.size()) - 1;
         if (n <= 0)
             throw std::runtime_error("mpcg: invalid n");
@@ -320,6 +280,7 @@ namespace ichol::solver
             throw std::runtime_error("mpcg: A nnz mismatch");
         const int64_t nnzA = (int64_t)h_valA.size();
 
+        // Validation on numerical values
         const int k = static_cast<int>(preconds.size());
         if (k <= 0)
             throw std::runtime_error("mpcg: need at least one preconditioner (k>=1)");
@@ -330,7 +291,7 @@ namespace ichol::solver
 
         const int m = (restart <= 0) ? maxits : restart; // truncation window length
 
-        // ------------------------- Create handles -------------------------
+        // Create CUDA handles
         cublasHandle_t cublas = nullptr;
         cusparseHandle_t cusparse = nullptr;
         CUBLAS_CHECK(cublasCreate(&cublas));
@@ -342,7 +303,7 @@ namespace ichol::solver
         CUBLAS_CHECK(cublasSetStream(cublas, stream));
         CUSPARSE_CHECK(cusparseSetStream(cusparse, stream));
 
-        // ------------------------- Upload CSR(A), b, x -------------------------
+        // Copy A, b, x to device
         int *d_rowPtrA = nullptr;
         int *d_colIndA = nullptr;
         double *d_valA = nullptr;
@@ -370,7 +331,7 @@ namespace ichol::solver
         CUDA_CHECK(cudaMemcpyAsync(d_x, h_x.data(), n * sizeof(double),
                                    cudaMemcpyHostToDevice, stream));
 
-        // ------------------------- cuSPARSE descriptors for A and vectors -------------------------
+        // cuSPARSE descriptors for A and vectors
         cusparseSpMatDescr_t matA = nullptr;
         CUSPARSE_CHECK(cusparseCreateCsr(
             &matA,
@@ -507,14 +468,13 @@ namespace ichol::solver
             CUSPARSE_SPMM_ALG_DEFAULT,
             d_spmmBuf));
 
-        // ------------------------- Main MPCG loop -------------------------
+        // MPCG loop
         iterations = 0;
         finalRes = 0.0;
 
         for (int iter = 0; iter < maxits; ++iter)
         {
-            // Step: compute residual norm ||r||
-            // This block realizes: res = ||r||_2 via cuBLAS nrm2
+            // residual norm ||r|| via cuBLAS nrm2
             double res = 0.0;
             CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, &res));
 
@@ -725,7 +685,6 @@ namespace ichol::solver
 
             iterations = iter + 1;
 
-            // If we are at the last iteration and didn't early-exit, record finalRes.
             if (iter == maxits - 1)
             {
                 double res_end = 0.0;
@@ -734,7 +693,6 @@ namespace ichol::solver
             }
         }
 
-        // If early-exit happened with finalRes unset in loop, set it now.
         if (finalRes == 0.0)
         {
             double res_end = 0.0;
@@ -742,12 +700,12 @@ namespace ichol::solver
             finalRes = res_end;
         }
 
-        // ------------------------- Download x -------------------------
+        // Copy x to host
         CUDA_CHECK(cudaMemcpyAsync(h_x.data(), d_x, n * sizeof(double),
                                    cudaMemcpyDeviceToHost, stream));
         CUDA_CHECK(cudaStreamSynchronize(stream));
 
-        // ------------------------- Cleanup -------------------------
+        // Cleanup
         if (dnB)
             CUSPARSE_CHECK(cusparseDestroyDnMat(dnB));
         if (dnC)

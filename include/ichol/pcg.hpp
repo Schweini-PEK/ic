@@ -47,22 +47,36 @@ namespace ichol::solver
     struct PrecondApply
     {
         // Apply z = M^{-1} r
-        // (runs on GPU; can use SpSV/SpSM or custom kernels)
         void (*apply)(void *ctx, const double *d_r, double *d_z, int n, cudaStream_t stream);
-        void *ctx; // points to preconditioner data (IC factors, ADI params, etc.)
+        void *ctx;
     };
 
+    /**
+     * @brief A basic implementation of Multi-Preconditioner Conjugate Gradient (MPCG) on GPU.
+     * 
+     * @param  restart 0 => treat as not truncated.
+     * 
+     * @details The math during iteration i:
+     * r_i = b - A x_i
+     * Z_{i+1} = [M1^{-1} r_i | ... | Mk^{-1} r_i] (n×k)
+     * P_{i+1} = Z_{i+1} - sum_{j in window} P_j * pinv(P_j^T A P_j) * (P_j^T A Z_{i+1})
+     * alpha_{i+1} = pinv(P_{i+1}^T A P_{i+1}) * (P_{i+1}^T r_i) (k×1)
+     * x_{i+1} = x_i + P_{i+1} * alpha_{i+1}
+     * r_{i+1} = r_i - A P_{i+1} * alpha_{i+1}
+     * 
+     * @note currently pinv is realized on CPU.
+     */
     template <typename T_L>
     void mpcg(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
         const std::vector<double> &h_valA,
-        const std::vector<ichol::precond::PrecondApply>& preconds,
+        const std::vector<ichol::precond::PrecondApply> &preconds,
         const std::vector<double> &h_b,
         std::vector<double> &h_x,
         int maxits,
         double tol,
-        int restart, // 0 => treat as "full" (allocate maxits blocks)
+        int restart,
         int &iterations,
         double &finalRes);
 
