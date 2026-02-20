@@ -1,5 +1,4 @@
 // src/backends/CUDA/adi_apply.cu
-// Compile this TU with nvcc and link into your test + solver target.
 
 #include <cuda_runtime.h>
 #include <stdexcept>
@@ -106,26 +105,26 @@ namespace ichol::precond
         }
     }
 
-    void apply_adi_dir(void *vctx,
-                       const double *d_r,
-                       double *d_z,
-                       int N,
-                       cudaStream_t stream)
+    void apply_adi3d_dir(void *vctx,
+                         const double *d_r,
+                         double *d_z,
+                         int N,
+                         cudaStream_t stream)
     {
         if (!vctx)
-            throw std::runtime_error("apply_adi_dir: null ctx");
+            throw std::runtime_error("apply_adi3d_dir: null ctx");
         const ADIContext *ctx = reinterpret_cast<const ADIContext *>(vctx);
         const int n = ctx->grid_n;
 
         if (n <= 0)
-            throw std::runtime_error("apply_adi_dir: ctx->grid_n <= 0");
+            throw std::runtime_error("apply_adi3d_dir: ctx->grid_n <= 0");
         if (n > ADI_MAX_N)
-            throw std::runtime_error("apply_adi_dir: grid_n too large for ADI_MAX_N");
+            throw std::runtime_error("apply_adi3d_dir: grid_n too large for ADI_MAX_N");
 
         // Optional consistency check: N should equal n^3.
         const int64_t N_expected = 1LL * n * n * n;
         if ((int64_t)N != N_expected)
-            throw std::runtime_error("apply_adi_dir: N != n^3 (ctx mismatch)");
+            throw std::runtime_error("apply_adi3d_dir: N != n^3 (ctx mismatch)");
 
         const int lines = n * n; // number of independent 1D systems
         const int block = 256;
@@ -133,6 +132,55 @@ namespace ichol::precond
 
         // This launch realizes: z = M_dir^{-1} r (batched 1D Poisson line-solves).
         k_adi_tridiag_solve_lines<<<grid, block, 0, stream>>>(d_r, d_z, n, (int)ctx->dir);
+    }
+
+    __global__ void k_adi2d_tridiag_solve(const double *r, double *z, int n,
+                                          int dir_int, double epsilon)
+    {
+        const int line = blockIdx.x * blockDim.x + threadIdx.x;
+        if (line >= n)
+            return;
+
+        int start = (dir_int == (int)ADIDirection2D::X) ? (line * n) : line;
+        int stride = (dir_int == (int)ADIDirection2D::X) ? 1 : n;
+
+        // Coefficients: a = -val, b = 2*val, c = -val
+        // For X: val = 1.0. For Y: val = epsilon.
+        const double val = (dir_int == (int)ADIDirection2D::X) ? 1.0 : epsilon;
+        const double b_coeff = 2.0 * val;
+        const double ac_coeff = -1.0 * val;
+
+        double cprime[256]; // Shared or local memory
+        double dprime[256];
+
+        // Forward sweep
+        double denom = b_coeff;
+        cprime[0] = ac_coeff / denom;
+        dprime[0] = r[start] / denom;
+
+        for (int i = 1; i < n; ++i)
+        {
+            denom = b_coeff - ac_coeff * cprime[i - 1];
+            cprime[i] = ac_coeff / denom;
+            dprime[i] = (r[start + i * stride] - ac_coeff * dprime[i - 1]) / denom;
+        }
+
+        // Back substitution
+        double x_curr = dprime[n - 1];
+        z[start + (n - 1) * stride] = x_curr;
+        for (int i = n - 2; i >= 0; --i)
+        {
+            x_curr = dprime[i] - cprime[i] * x_curr;
+            z[start + i * stride] = x_curr;
+        }
+    }
+
+    void apply_adi2d_dir(void *vctx, const double *d_r, double *d_z, int N, cudaStream_t stream)
+    {
+        auto ctx = reinterpret_cast<ADI2DContext *>(vctx);
+        int threads = 128;
+        int blocks = (ctx->n + threads - 1) / threads;
+        k_adi2d_tridiag_solve<<<blocks, threads, 0, stream>>>(d_r, d_z, ctx->n, (int)ctx->dir, ctx->epsilon);
     }
 
 } // namespace ichol::precond

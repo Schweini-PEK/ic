@@ -41,6 +41,9 @@ namespace ichol::io
 
     template <typename T>
     ichol::matrix::CsrMatrix<T> gen_3dpoi(int n);
+
+    template <typename T>
+    ichol::matrix::CsrMatrix<T> gen_2dpoi(int n, double epsilon);
 } // namespace ichol::io
 
 #endif // ICHOL_MTX_READ_HPP

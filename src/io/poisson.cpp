@@ -108,4 +108,65 @@ namespace ichol::io
     }
 
     template ichol::matrix::CsrMatrix<double> gen_3dpoi(int n);
+
+    template <typename T>
+    ichol::matrix::CsrMatrix<T> gen_2dpoi(int n, double epsilon)
+    {
+        const int N = n * n;
+        const int nnz = N + 4 * n * (n - 1); // 5-point stencil
+
+        ichol::matrix::CsrMatrix<T> A;
+        A.num_rows = N;
+        A.num_cols = N;
+        A.nnz = nnz;
+        A.row_ptr.resize(N + 1);
+        A.col_ind.reserve(nnz);
+        A.values.reserve(nnz);
+
+        auto id = [n](int x, int y)
+        { return x + y * n; };
+
+        int nnz_so_far = 0;
+        for (int y = 0; y < n; ++y)
+        {
+            for (int x = 0; x < n; ++x)
+            {
+                const int i = id(x, y);
+                A.row_ptr[i] = nnz_so_far;
+
+                if (y > 0)
+                { // Y-minus (scaled by epsilon)
+                    A.col_ind.push_back(id(x, y - 1));
+                    A.values.push_back(static_cast<T>(-epsilon));
+                    nnz_so_far++;
+                }
+                if (x > 0)
+                { // X-minus
+                    A.col_ind.push_back(id(x - 1, y));
+                    A.values.push_back(static_cast<T>(-1.0));
+                    nnz_so_far++;
+                }
+                // Diagonal: 2.0 (from X) + 2.0*epsilon (from Y)
+                A.col_ind.push_back(i);
+                A.values.push_back(static_cast<T>(2.0 + 2.0 * epsilon));
+                nnz_so_far++;
+
+                if (x < n - 1)
+                { // X-plus
+                    A.col_ind.push_back(id(x + 1, y));
+                    A.values.push_back(static_cast<T>(-1.0));
+                    nnz_so_far++;
+                }
+                if (y < n - 1)
+                { // Y-plus (scaled by epsilon)
+                    A.col_ind.push_back(id(x, y + 1));
+                    A.values.push_back(static_cast<T>(-epsilon));
+                    nnz_so_far++;
+                }
+            }
+        }
+        A.row_ptr[N] = nnz_so_far;
+        return A;
+    }
+    template ichol::matrix::CsrMatrix<double> gen_2dpoi(int n, double epsilon);
 }
