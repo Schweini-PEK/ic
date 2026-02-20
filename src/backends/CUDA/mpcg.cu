@@ -1,12 +1,9 @@
 // src/solver/mpcg_cuda.cu
-//
-// Implementation choices (baseline):
-// - The "pinv" on small k×k matrices is done on CPU via a self-contained
-//   Jacobi eigen-decomposition pseudo-inverse (copy small matrices host<->device).
-//
+
 #include <cuda_runtime.h>
 #include <cusparse.h>
 #include <cublas_v2.h>
+#include <cusolverDn.h>
 
 #include <vector>
 #include <cmath>
@@ -18,9 +15,6 @@
 #include "ichol/pcg.hpp"
 #include "ichol/preconditioner.hpp"
 
-namespace
-{
-    // ------------------------- Error handling -------------------------
 #define CUDA_CHECK(call)                                           \
     do                                                             \
     {                                                              \
@@ -52,203 +46,104 @@ namespace
         }                                             \
     } while (0)
 
-    // ------------------------- CPU: Jacobi eigen-decomposition for symmetric k×k -------------------------
-    // Baseline pinv for small symmetric matrices G (k×k):
-    //   G ≈ Q diag(lambda) Q^T
-    //   pinv(G) = Q diag(1/lambda_i if lambda_i > thresh else 0) Q^T
-    //
-    // This is used to realize MATLAB pinv(G) in mpcg.m.
-    //
-    // Notes:
-    // - Designed for small k (e.g., 1..32).
-    // - G is symmetrized before factorization (0.5*(G+G^T)).
-    //
-    static void symmetrize_inplace(std::vector<double> &A, int k)
+#define CUSOLVER_CHECK(call)                            \
+    do                                                  \
+    {                                                   \
+        cusolverStatus_t _s = (call);                   \
+        if (_s != CUSOLVER_STATUS_SUCCESS)              \
+        {                                               \
+            throw std::runtime_error("cuSOLVER error"); \
+        }                                               \
+    } while (0)
+
+// ------------------------- Device kernels -------------------------
+
+__global__ void k_row_scaling(double *T, const double *S_inv, int k, int nrhs)
+{
+    int row = threadIdx.x;
+    if (row < k)
     {
-        for (int j = 0; j < k; ++j)
-        {
-            for (int i = j + 1; i < k; ++i)
-            {
-                double aij = A[i + j * k];
-                double aji = A[j + i * k];
-                double s = 0.5 * (aij + aji);
-                A[i + j * k] = s;
-                A[j + i * k] = s;
-            }
-        }
-    }
-
-    static void jacobi_eig_sym(const std::vector<double> &A_in, int k,
-                               std::vector<double> &Q_out,
-                               std::vector<double> &eval_out,
-                               int max_sweeps = 50,
-                               double tol = 1e-12)
-    {
-        // A (working copy), Q initialized to identity
-        std::vector<double> A = A_in;
-        Q_out.assign(k * k, 0.0);
-        eval_out.assign(k, 0.0);
-        for (int i = 0; i < k; ++i)
-            Q_out[i + i * k] = 1.0;
-
-        auto idx = [k](int r, int c)
-        { return r + c * k; }; // column-major k×k
-
-        for (int sweep = 0; sweep < max_sweeps; ++sweep)
-        {
-            // Find largest off-diagonal magnitude
-            int p = 0, q = 1;
-            double max_off = 0.0;
-            for (int j = 0; j < k; ++j)
-            {
-                for (int i = 0; i < j; ++i)
-                {
-                    double v = std::abs(A[idx(i, j)]);
-                    if (v > max_off)
-                    {
-                        max_off = v;
-                        p = i;
-                        q = j;
-                    }
-                }
-            }
-            if (max_off < tol)
-                break;
-
-            double app = A[idx(p, p)];
-            double aqq = A[idx(q, q)];
-            double apq = A[idx(p, q)];
-
-            // Jacobi rotation parameters
-            double tau = (aqq - app) / (2.0 * apq);
-            double t = (tau >= 0.0)
-                           ? 1.0 / (tau + std::sqrt(1.0 + tau * tau))
-                           : -1.0 / (-tau + std::sqrt(1.0 + tau * tau));
-            double c = 1.0 / std::sqrt(1.0 + t * t);
-            double s = t * c;
-
-            // Apply rotation to A: A <- J^T A J
-            // Update rows/cols p,q
-            for (int i = 0; i < k; ++i)
-            {
-                if (i == p || i == q)
-                    continue;
-                double aip = A[idx(i, p)];
-                double aiq = A[idx(i, q)];
-                // New entries in columns p,q
-                A[idx(i, p)] = c * aip - s * aiq;
-                A[idx(i, q)] = s * aip + c * aiq;
-            }
-            for (int i = 0; i < k; ++i)
-            {
-                if (i == p || i == q)
-                    continue;
-                // Mirror symmetry
-                A[idx(p, i)] = A[idx(i, p)];
-                A[idx(q, i)] = A[idx(i, q)];
-            }
-
-            // Update diagonal & apq
-            double app_new = c * c * app - 2.0 * s * c * apq + s * s * aqq;
-            double aqq_new = s * s * app + 2.0 * s * c * apq + c * c * aqq;
-            A[idx(p, p)] = app_new;
-            A[idx(q, q)] = aqq_new;
-            A[idx(p, q)] = 0.0;
-            A[idx(q, p)] = 0.0;
-
-            // Update eigenvectors: Q <- Q J
-            for (int i = 0; i < k; ++i)
-            {
-                double qip = Q_out[idx(i, p)];
-                double qiq = Q_out[idx(i, q)];
-                Q_out[idx(i, p)] = c * qip - s * qiq;
-                Q_out[idx(i, q)] = s * qip + c * qiq;
-            }
-        }
-
-        // Eigenvalues are diagonal
-        for (int i = 0; i < k; ++i)
-            eval_out[i] = A[idx(i, i)];
-    }
-
-    // Compute X = pinv(G) * B, where:
-    // - G is symmetric (k×k)
-    // - B is (k×nrhs) in column-major with ldB=k
-    // - X is (k×nrhs) in column-major with ldX=k
-    //
-    // This realizes the MATLAB blocks:
-    //   Y = pinv(Gj) * C
-    //   alpha = pinv(Gnew) * rhs
-    static void pinv_sym_apply(const std::vector<double> &G_in, int k,
-                               const std::vector<double> &B_in, int nrhs,
-                               std::vector<double> &X_out,
-                               double rcond = 1e-12)
-    {
-        // Symmetrize G to guard numerical drift
-        std::vector<double> G = G_in;
-        symmetrize_inplace(G, k);
-
-        // Eigendecompose G
-        std::vector<double> Q, eval;
-        jacobi_eig_sym(G, k, Q, eval);
-
-        // Determine threshold for pseudo-inverse
-        double max_abs = 0.0;
-        for (int i = 0; i < k; ++i)
-            max_abs = std::max(max_abs, std::abs(eval[i]));
-        double thresh = rcond * (max_abs > 0.0 ? max_abs : 1.0);
-
-        // Precompute inv eigenvalues
-        std::vector<double> inv_eval(k, 0.0);
-        for (int i = 0; i < k; ++i)
-        {
-            if (std::abs(eval[i]) > thresh)
-                inv_eval[i] = 1.0 / eval[i];
-            else
-                inv_eval[i] = 0.0; // pseudo-inverse: drop small eigenvalues
-        }
-
-        // X = Q * diag(inv_eval) * (Q^T * B)
-        X_out.assign(k * nrhs, 0.0);
-
-        // T = Q^T * B : (k×nrhs)
-        std::vector<double> T(k * nrhs, 0.0);
+        double s = S_inv[row];
         for (int col = 0; col < nrhs; ++col)
         {
-            for (int i = 0; i < k; ++i)
-            {
-                double sum = 0.0;
-                for (int j = 0; j < k; ++j)
-                {
-                    sum += Q[j + i * k] * B_in[j + col * k]; // Q^T: (i,j) = Q(j,i)
-                }
-                T[i + col * k] = sum;
-            }
-        }
-
-        // Scale rows by inv_eval: T <- diag(inv_eval) * T
-        for (int col = 0; col < nrhs; ++col)
-        {
-            for (int i = 0; i < k; ++i)
-            {
-                T[i + col * k] *= inv_eval[i];
-            }
-        }
-
-        // X = Q * T
-        for (int col = 0; col < nrhs; ++col)
-        {
-            for (int i = 0; i < k; ++i)
-            {
-                double sum = 0.0;
-                for (int j = 0; j < k; ++j)
-                {
-                    sum += Q[i + j * k] * T[j + col * k]; // Q(i,j)
-                }
-                X_out[i + col * k] = sum;
-            }
+            T[row + col * k] *= s;
         }
     }
+}
+
+// ------------------------- SVD Pseudo-Inverse (cuSOLVER) -------------------------
+// Compute X = pinv(G) * B using Singular Value Decomposition
+static void pinv_svd_cuda(cusolverDnHandle_t cusolver,
+                          cublasHandle_t cublas,
+                          const double *d_G, int k,
+                          const double *d_B, int nrhs,
+                          double *d_X,
+                          cudaStream_t stream,
+                          double rcond = 1e-15)
+{
+    // cusolverDnDgesvd overwrites input matrix, create a working copy
+    double *d_G_copy;
+    CUDA_CHECK(cudaMallocAsync(&d_G_copy, k * k * sizeof(double), stream));
+    CUDA_CHECK(cudaMemcpyAsync(d_G_copy, d_G, k * k * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+
+    double *d_S, *d_U, *d_VT;
+    CUDA_CHECK(cudaMallocAsync(&d_S, k * sizeof(double), stream));
+    CUDA_CHECK(cudaMallocAsync(&d_U, k * k * sizeof(double), stream));
+    CUDA_CHECK(cudaMallocAsync(&d_VT, k * k * sizeof(double), stream));
+
+    int lwork = 0;
+    CUSOLVER_CHECK(cusolverDnDgesvd_bufferSize(cusolver, k, k, &lwork));
+    double *d_work;
+    CUDA_CHECK(cudaMallocAsync(&d_work, lwork * sizeof(double), stream));
+
+    int *d_info;
+    CUDA_CHECK(cudaMallocAsync(&d_info, sizeof(int), stream));
+
+    // 1. Compute SVD: G = U * S * VT
+    CUSOLVER_CHECK(cusolverDnDgesvd(cusolver, 'A', 'A', k, k, d_G_copy, k, d_S, d_U, k, d_VT, k, d_work, lwork, nullptr, d_info));
+
+    // 2. Threshold singular values
+    std::vector<double> h_S(k);
+    CUDA_CHECK(cudaMemcpyAsync(h_S.data(), d_S, k * sizeof(double), cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    double max_s = h_S[0]; // S is sorted descending
+    double thresh = rcond * max_s;
+    std::vector<double> h_S_inv(k, 0.0);
+    for (int i = 0; i < k; ++i)
+    {
+        if (h_S[i] > thresh)
+            h_S_inv[i] = 1.0 / h_S[i];
+    }
+
+    double *d_S_inv;
+    CUDA_CHECK(cudaMallocAsync(&d_S_inv, k * sizeof(double), stream));
+    CUDA_CHECK(cudaMemcpyAsync(d_S_inv, h_S_inv.data(), k * sizeof(double), cudaMemcpyHostToDevice, stream));
+
+    // 3. Solve: X = V * S_inv * U^T * B
+    double *d_T1;
+    CUDA_CHECK(cudaMallocAsync(&d_T1, k * nrhs * sizeof(double), stream));
+
+    double one = 1.0, zero = 0.0;
+
+    // T1 = U^T * B
+    CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N, k, nrhs, k, &one, d_U, k, d_B, k, &zero, d_T1, k));
+
+    // T1 = S_inv * T1
+    k_row_scaling<<<1, k, 0, stream>>>(d_T1, d_S_inv, k, nrhs);
+
+    // X = V * T1 (cuSOLVER provides VT, so V is VT^T)
+    CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N, k, nrhs, k, &one, d_VT, k, d_T1, k, &zero, d_X, k));
+
+    // Cleanup
+    CUDA_CHECK(cudaFreeAsync(d_G_copy, stream));
+    CUDA_CHECK(cudaFreeAsync(d_S, stream));
+    CUDA_CHECK(cudaFreeAsync(d_U, stream));
+    CUDA_CHECK(cudaFreeAsync(d_VT, stream));
+    CUDA_CHECK(cudaFreeAsync(d_work, stream));
+    CUDA_CHECK(cudaFreeAsync(d_info, stream));
+    CUDA_CHECK(cudaFreeAsync(d_S_inv, stream));
+    CUDA_CHECK(cudaFreeAsync(d_T1, stream));
 }
 
 namespace ichol::solver
@@ -267,8 +162,6 @@ namespace ichol::solver
         int &iterations,
         double &finalRes)
     {
-
-        // Validation on dimensions
         const int n = static_cast<int>(h_csrRowPtrA.size()) - 1;
         if (n <= 0)
             throw std::runtime_error("mpcg: invalid n");
@@ -278,39 +171,37 @@ namespace ichol::solver
             throw std::runtime_error("mpcg: x size mismatch");
         if ((int)h_csrColIndA.size() != (int)h_valA.size())
             throw std::runtime_error("mpcg: A nnz mismatch");
-        const int64_t nnzA = (int64_t)h_valA.size();
 
-        // Validation on numerical values
+        const int64_t nnzA = (int64_t)h_valA.size();
         const int k = static_cast<int>(preconds.size());
+
         if (k <= 0)
-            throw std::runtime_error("mpcg: need at least one preconditioner (k>=1)");
+            throw std::runtime_error("mpcg: need at least one preconditioner");
         if (maxits <= 0)
             throw std::runtime_error("mpcg: maxits must be > 0");
         if (tol <= 0.0)
             throw std::runtime_error("mpcg: tol must be > 0");
 
-        const int m = (restart <= 0) ? maxits : restart; // truncation window length
+        const int m = (restart <= 0) ? maxits : restart;
 
-        // Create CUDA handles
         cublasHandle_t cublas = nullptr;
         cusparseHandle_t cusparse = nullptr;
+        cusolverDnHandle_t cusolver = nullptr;
+
         CUBLAS_CHECK(cublasCreate(&cublas));
         CUSPARSE_CHECK(cusparseCreate(&cusparse));
+        CUSOLVER_CHECK(cusolverDnCreate(&cusolver));
 
-        // Use a dedicated stream for all ops (baseline).
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         CUBLAS_CHECK(cublasSetStream(cublas, stream));
         CUSPARSE_CHECK(cusparseSetStream(cusparse, stream));
+        CUSOLVER_CHECK(cusolverDnSetStream(cusolver, stream));
 
-        // Copy A, b, x to device
         int *d_rowPtrA = nullptr;
         int *d_colIndA = nullptr;
         double *d_valA = nullptr;
-        double *d_b = nullptr;
-        double *d_x = nullptr;
-        double *d_r = nullptr;
-        double *d_tmp = nullptr;
+        double *d_b = nullptr, *d_x = nullptr, *d_r = nullptr, *d_tmp = nullptr;
 
         CUDA_CHECK(cudaMalloc((void **)&d_rowPtrA, (n + 1) * sizeof(int)));
         CUDA_CHECK(cudaMalloc((void **)&d_colIndA, nnzA * sizeof(int)));
@@ -320,165 +211,78 @@ namespace ichol::solver
         CUDA_CHECK(cudaMalloc((void **)&d_r, n * sizeof(double)));
         CUDA_CHECK(cudaMalloc((void **)&d_tmp, n * sizeof(double)));
 
-        CUDA_CHECK(cudaMemcpyAsync(d_rowPtrA, h_csrRowPtrA.data(), (n + 1) * sizeof(int),
-                                   cudaMemcpyHostToDevice, stream));
-        CUDA_CHECK(cudaMemcpyAsync(d_colIndA, h_csrColIndA.data(), nnzA * sizeof(int),
-                                   cudaMemcpyHostToDevice, stream));
-        CUDA_CHECK(cudaMemcpyAsync(d_valA, h_valA.data(), nnzA * sizeof(double),
-                                   cudaMemcpyHostToDevice, stream));
-        CUDA_CHECK(cudaMemcpyAsync(d_b, h_b.data(), n * sizeof(double),
-                                   cudaMemcpyHostToDevice, stream));
-        CUDA_CHECK(cudaMemcpyAsync(d_x, h_x.data(), n * sizeof(double),
-                                   cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_rowPtrA, h_csrRowPtrA.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_colIndA, h_csrColIndA.data(), nnzA * sizeof(int), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_valA, h_valA.data(), nnzA * sizeof(double), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_b, h_b.data(), n * sizeof(double), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_x, h_x.data(), n * sizeof(double), cudaMemcpyHostToDevice, stream));
 
-        // cuSPARSE descriptors for A and vectors
         cusparseSpMatDescr_t matA = nullptr;
-        CUSPARSE_CHECK(cusparseCreateCsr(
-            &matA,
-            n, n, nnzA,
-            d_rowPtrA, d_colIndA, d_valA,
-            CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
-            CUSPARSE_INDEX_BASE_ZERO,
-            CUDA_R_64F));
+        CUSPARSE_CHECK(cusparseCreateCsr(&matA, n, n, nnzA, d_rowPtrA, d_colIndA, d_valA,
+                                         CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F));
 
-        // DnVec descriptors for SpMV (used to form initial residual r0 = b - A x0)
         cusparseDnVecDescr_t vecX = nullptr, vecTmp = nullptr;
         CUSPARSE_CHECK(cusparseCreateDnVec(&vecX, n, d_x, CUDA_R_64F));
         CUSPARSE_CHECK(cusparseCreateDnVec(&vecTmp, n, d_tmp, CUDA_R_64F));
 
-        // ------------------------- Compute initial residual r = b - A*x -------------------------
-        // Step: r0 = b - A*x0
-        //   - copy r <- b
-        //   - tmp <- A*x via cuSPARSE SpMV
-        //   - r <- r - tmp via cuBLAS AXPY
         CUDA_CHECK(cudaMemcpyAsync(d_r, d_b, n * sizeof(double), cudaMemcpyDeviceToDevice, stream));
 
         size_t spmv_bufSize = 0;
         void *d_spmvBuf = nullptr;
         double one = 1.0, zero = 0.0, minus_one = -1.0;
 
-        // This block realizes: tmp = A * x  using cuSPARSE SpMV
-        CUSPARSE_CHECK(cusparseSpMV_bufferSize(
-            cusparse,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &one,
-            matA,
-            vecX,
-            &zero,
-            vecTmp,
-            CUDA_R_64F,
-            CUSPARSE_SPMV_ALG_DEFAULT,
-            &spmv_bufSize));
+        CUSPARSE_CHECK(cusparseSpMV_bufferSize(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, matA, vecX,
+                                               &zero, vecTmp, CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, &spmv_bufSize));
         CUDA_CHECK(cudaMalloc(&d_spmvBuf, spmv_bufSize));
 
-        CUSPARSE_CHECK(cusparseSpMV(
-            cusparse,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &one,
-            matA,
-            vecX,
-            &zero,
-            vecTmp,
-            CUDA_R_64F,
-            CUSPARSE_SPMV_ALG_DEFAULT,
-            d_spmvBuf));
+        CUSPARSE_CHECK(cusparseSpMV(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, matA, vecX,
+                                    &zero, vecTmp, CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, d_spmvBuf));
 
-        // This block realizes: r = r - tmp  using cuBLAS daxpy
         CUBLAS_CHECK(cublasDaxpy(cublas, n, &minus_one, d_tmp, 1, d_r, 1));
 
-        // ------------------------- Norm(b) for stopping criterion -------------------------
         double bnorm = 0.0;
-        // This block realizes: bnorm = ||b||_2  using cuBLAS nrm2
         CUBLAS_CHECK(cublasDnrm2(cublas, n, d_b, 1, &bnorm));
         if (bnorm == 0.0)
-            bnorm = 1.0; // avoid division by zero in relative stopping
+            bnorm = 1.0;
 
-        // ------------------------- Allocate dense blocks (n×k) -------------------------
-        // Znew: n×k, Pnew: n×k, Wnew: n×k (Wnew = A*Pnew)
-        double *d_Znew = nullptr;
-        double *d_Pnew = nullptr;
-        double *d_Wnew = nullptr;
+        double *d_Znew = nullptr, *d_Pnew = nullptr, *d_Wnew = nullptr;
         CUDA_CHECK(cudaMalloc((void **)&d_Znew, (size_t)n * k * sizeof(double)));
         CUDA_CHECK(cudaMalloc((void **)&d_Pnew, (size_t)n * k * sizeof(double)));
         CUDA_CHECK(cudaMalloc((void **)&d_Wnew, (size_t)n * k * sizeof(double)));
 
-        // ------------------------- Allocate ring buffers for last m blocks -------------------------
-        // P_hist[slot] : n×k, W_hist[slot] : n×k, G_hist[slot] : k×k
-        double *d_P_hist = nullptr;
-        double *d_W_hist = nullptr;
-        double *d_G_hist = nullptr;
+        double *d_P_hist = nullptr, *d_W_hist = nullptr, *d_G_hist = nullptr;
         CUDA_CHECK(cudaMalloc((void **)&d_P_hist, (size_t)m * n * k * sizeof(double)));
         CUDA_CHECK(cudaMalloc((void **)&d_W_hist, (size_t)m * n * k * sizeof(double)));
         CUDA_CHECK(cudaMalloc((void **)&d_G_hist, (size_t)m * k * k * sizeof(double)));
 
-        // ------------------------- Small device buffers (k×k, k×1) -------------------------
-        double *d_C = nullptr;     // C = Wj^T * Znew (k×k)
-        double *d_Gnew = nullptr;  // Gnew = Pnew^T * Wnew (k×k)
-        double *d_rhs = nullptr;   // rhs = Pnew^T * r (k×1)
-        double *d_Y = nullptr;     // Y = pinv(Gj) * C (k×k)
-        double *d_alpha = nullptr; // alpha = pinv(Gnew) * rhs (k×1)
+        double *d_C = nullptr, *d_Gnew = nullptr, *d_rhs = nullptr, *d_Y = nullptr, *d_alpha = nullptr;
         CUDA_CHECK(cudaMalloc((void **)&d_C, (size_t)k * k * sizeof(double)));
         CUDA_CHECK(cudaMalloc((void **)&d_Gnew, (size_t)k * k * sizeof(double)));
         CUDA_CHECK(cudaMalloc((void **)&d_rhs, (size_t)k * sizeof(double)));
         CUDA_CHECK(cudaMalloc((void **)&d_Y, (size_t)k * k * sizeof(double)));
         CUDA_CHECK(cudaMalloc((void **)&d_alpha, (size_t)k * sizeof(double)));
 
-        // Host-side small matrices/vectors for CPU pinv
-        std::vector<double> h_G(k * k), h_C(k * k), h_Y(k * k), h_rhs(k), h_alpha(k);
-
-        // ------------------------- cuSPARSE SpMM descriptors for A * (dense n×k) -------------------------
-        // Dense matrices are column-major with leading dimension ld = n.
         cusparseDnMatDescr_t dnB = nullptr, dnC = nullptr;
-        CUSPARSE_CHECK(cusparseCreateDnMat(
-            &dnB, n, k, n,
-            d_Pnew, CUDA_R_64F, CUSPARSE_ORDER_COL));
-        CUSPARSE_CHECK(cusparseCreateDnMat(
-            &dnC, n, k, n,
-            d_Wnew, CUDA_R_64F, CUSPARSE_ORDER_COL));
+        CUSPARSE_CHECK(cusparseCreateDnMat(&dnB, n, k, n, d_Pnew, CUDA_R_64F, CUSPARSE_ORDER_COL));
+        CUSPARSE_CHECK(cusparseCreateDnMat(&dnC, n, k, n, d_Wnew, CUDA_R_64F, CUSPARSE_ORDER_COL));
 
-        // Preprocess SpMM because matA stays constant across iterations
         size_t spmm_bufSize = 0;
         void *d_spmmBuf = nullptr;
-
-        // This block realizes: Wnew = A * Pnew  via cuSPARSE SpMM
-        CUSPARSE_CHECK(cusparseSpMM_bufferSize(
-            cusparse,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &one,
-            matA,
-            dnB,
-            &zero,
-            dnC,
-            CUDA_R_64F,
-            CUSPARSE_SPMM_ALG_DEFAULT,
-            &spmm_bufSize));
+        CUSPARSE_CHECK(cusparseSpMM_bufferSize(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                               &one, matA, dnB, &zero, dnC, CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &spmm_bufSize));
         CUDA_CHECK(cudaMalloc(&d_spmmBuf, spmm_bufSize));
 
-        CUSPARSE_CHECK(cusparseSpMM_preprocess(
-            cusparse,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &one,
-            matA,
-            dnB,
-            &zero,
-            dnC,
-            CUDA_R_64F,
-            CUSPARSE_SPMM_ALG_DEFAULT,
-            d_spmmBuf));
+        CUSPARSE_CHECK(cusparseSpMM_preprocess(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                               &one, matA, dnB, &zero, dnC, CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_spmmBuf));
 
-        // MPCG loop
         iterations = 0;
         finalRes = 0.0;
 
         for (int iter = 0; iter < maxits; ++iter)
         {
-            // residual norm ||r|| via cuBLAS nrm2
             double res = 0.0;
             CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, &res));
 
-            // Stopping criterion: ||r|| <= tol * ||b||
             if (res <= tol * bnorm)
             {
                 iterations = iter;
@@ -486,202 +290,64 @@ namespace ichol::solver
                 break;
             }
 
-            // ------------------------------------------------------------------
-            // Step (MATLAB): Z(:,istart:iend) = multiprecondition(..., r)
-            // Math: Znew = [M1^{-1} r | ... | Mk^{-1} r]  (n×k)
-            // ------------------------------------------------------------------
-            // Znew(:,t) = M_t^{-1} r  (Option A: callback)
             for (int t = 0; t < k; ++t)
             {
-                double *d_z_col = d_Znew + (size_t)t * n; // column t, ld=n
-
-                // This block realizes: z_t = M_t^{-1} r using preconds[t].apply(...)
+                double *d_z_col = d_Znew + (size_t)t * n;
                 preconds[t].apply(preconds[t].ctx, d_r, d_z_col, n, stream);
             }
 
-            // ------------------------------------------------------------------
-            // Step: Pnew = Znew  (initialize new search block)
-            // In MATLAB: P(:,istart:iend)=Z(:,istart:iend)
-            // ------------------------------------------------------------------
-            CUDA_CHECK(cudaMemcpyAsync(d_Pnew, d_Znew, (size_t)n * k * sizeof(double),
-                                       cudaMemcpyDeviceToDevice, stream));
+            CUDA_CHECK(cudaMemcpyAsync(d_Pnew, d_Znew, (size_t)n * k * sizeof(double), cudaMemcpyDeviceToDevice, stream));
 
-            // ------------------------------------------------------------------
-            // Step (MATLAB loop over previous blocks):
-            //   Pnew = Pnew - Pj * pinv(Pj^T A Pj) * (Pj^T A Znew)
-            // We implement:
-            //   C = Pj^T A Znew  == (A Pj)^T Znew == Wj^T Znew
-            //   Y = pinv(Gj) * C,  where Gj = Pj^T A Pj == Pj^T Wj
-            //   Pnew -= Pj * Y
-            // ------------------------------------------------------------------
-            const int hist_count = std::min(iter, m); // number of stored blocks available
+            //
+            const int hist_count = std::min(iter, m);
             for (int j = iter - hist_count; j < iter; ++j)
             {
                 const int slot = j % m;
 
-                double *d_Pj = d_P_hist + (size_t)slot * n * k; // n×k
-                double *d_Wj = d_W_hist + (size_t)slot * n * k; // n×k
-                double *d_Gj = d_G_hist + (size_t)slot * k * k; // k×k
+                double *d_Pj = d_P_hist + (size_t)slot * n * k;
+                double *d_Wj = d_W_hist + (size_t)slot * n * k;
+                double *d_Gj = d_G_hist + (size_t)slot * k * k;
 
-                // 1) C = Wj^T * Znew  (k×k)
-                // This block realizes: C = (A Pj)^T * Znew = Pj^T A Znew
-                // using cuBLAS GEMM: C = Wj^T Znew
-                CUBLAS_CHECK(cublasDgemm(
-                    cublas,
-                    CUBLAS_OP_T, CUBLAS_OP_N,
-                    k, k, n,
-                    &one,
-                    d_Wj, n,
-                    d_Znew, n,
-                    &zero,
-                    d_C, k));
+                // C = Wj^T * Pnew (Modified Gram-Schmidt update using Pnew instead of Znew)
+                CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N, k, k, n,
+                                         &one, d_Wj, n, d_Pnew, n, &zero, d_C, k));
 
-                // Copy Gj and C to CPU for pinv
-                CUDA_CHECK(cudaMemcpyAsync(h_G.data(), d_Gj, (size_t)k * k * sizeof(double),
-                                           cudaMemcpyDeviceToHost, stream));
-                CUDA_CHECK(cudaMemcpyAsync(h_C.data(), d_C, (size_t)k * k * sizeof(double),
-                                           cudaMemcpyDeviceToHost, stream));
-                CUDA_CHECK(cudaStreamSynchronize(stream));
+                // Y = pinv(Gj) * C
+                pinv_svd_cuda(cusolver, cublas, d_Gj, k, d_C, k, d_Y, stream, 1e-15);
 
-                // 2) Y = pinv(Gj) * C   (k×k), CPU baseline
-                // This realizes MATLAB: pinv(Pj^T A Pj) * (Pj^T A Znew)
-                pinv_sym_apply(h_G, k, h_C, /*nrhs=*/k, h_Y, /*rcond=*/1e-12);
-
-                // Copy Y back to GPU
-                CUDA_CHECK(cudaMemcpyAsync(d_Y, h_Y.data(), (size_t)k * k * sizeof(double),
-                                           cudaMemcpyHostToDevice, stream));
-
-                // 3) Pnew = Pnew - Pj * Y  (n×k)
-                // This realizes MATLAB: Pnew -= Pj * (...) using cuBLAS GEMM
-                CUBLAS_CHECK(cublasDgemm(
-                    cublas,
-                    CUBLAS_OP_N, CUBLAS_OP_N,
-                    n, k, k,
-                    &minus_one,
-                    d_Pj, n,
-                    d_Y, k,
-                    &one,
-                    d_Pnew, n));
+                // Pnew = Pnew - Pj * Y
+                CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_N, CUBLAS_OP_N, n, k, k,
+                                         &minus_one, d_Pj, n, d_Y, k, &one, d_Pnew, n));
             }
 
-            // ------------------------------------------------------------------
-            // Step: Wnew = A * Pnew  (n×k)
-            // This realizes MATLAB's repeated "A*Pnew" in alpha/residual update
-            // using cuSPARSE SpMM.
-            // ------------------------------------------------------------------
             CUSPARSE_CHECK(cusparseDnMatSetValues(dnB, d_Pnew));
             CUSPARSE_CHECK(cusparseDnMatSetValues(dnC, d_Wnew));
-            CUSPARSE_CHECK(cusparseSpMM(
-                cusparse,
-                CUSPARSE_OPERATION_NON_TRANSPOSE,
-                CUSPARSE_OPERATION_NON_TRANSPOSE,
-                &one,
-                matA,
-                dnB,
-                &zero,
-                dnC,
-                CUDA_R_64F,
-                CUSPARSE_SPMM_ALG_DEFAULT,
-                d_spmmBuf));
+            CUSPARSE_CHECK(cusparseSpMM(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                        &one, matA, dnB, &zero, dnC, CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_spmmBuf));
 
-            // ------------------------------------------------------------------
-            // Step: Gnew = Pnew^T * Wnew  (k×k)
-            // Math: Gnew = P_{i+1}^T A P_{i+1}
-            // This realizes MATLAB: (Pnew'*A*Pnew) using cuBLAS GEMM
-            // ------------------------------------------------------------------
-            CUBLAS_CHECK(cublasDgemm(
-                cublas,
-                CUBLAS_OP_T, CUBLAS_OP_N,
-                k, k, n,
-                &one,
-                d_Pnew, n,
-                d_Wnew, n,
-                &zero,
-                d_Gnew, k));
+            // Gnew = Pnew^T * Wnew
+            CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N, k, k, n,
+                                     &one, d_Pnew, n, d_Wnew, n, &zero, d_Gnew, k));
 
-            // ------------------------------------------------------------------
-            // Step: rhs = Pnew^T * r  (k×1)
-            // This realizes MATLAB: (Pnew' * r) using cuBLAS GEMV
-            // ------------------------------------------------------------------
-            CUBLAS_CHECK(cublasDgemv(
-                cublas,
-                CUBLAS_OP_T,
-                n, k,
-                &one,
-                d_Pnew, n,
-                d_r, 1,
-                &zero,
-                d_rhs, 1));
+            // rhs = Pnew^T * r
+            CUBLAS_CHECK(cublasDgemv(cublas, CUBLAS_OP_T, n, k,
+                                     &one, d_Pnew, n, d_r, 1, &zero, d_rhs, 1));
 
-            // Copy Gnew and rhs to CPU for pinv solve
-            CUDA_CHECK(cudaMemcpyAsync(h_G.data(), d_Gnew, (size_t)k * k * sizeof(double),
-                                       cudaMemcpyDeviceToHost, stream));
-            CUDA_CHECK(cudaMemcpyAsync(h_rhs.data(), d_rhs, (size_t)k * sizeof(double),
-                                       cudaMemcpyDeviceToHost, stream));
-            CUDA_CHECK(cudaStreamSynchronize(stream));
+            // alpha = pinv(Gnew) * rhs
+            pinv_svd_cuda(cusolver, cublas, d_Gnew, k, d_rhs, 1, d_alpha, stream, 1e-15);
 
-            // ------------------------------------------------------------------
-            // Step: alpha = pinv(Gnew) * rhs
-            // This realizes MATLAB: alpha = pinv(Pnew'*A*Pnew) * (Pnew'*r)
-            // CPU baseline pinv for k×k
-            // ------------------------------------------------------------------
-            {
-                // Treat rhs as k×1 (nrhs=1)
-                std::vector<double> rhs_mat = h_rhs; // already length k
-                pinv_sym_apply(h_G, k, rhs_mat, /*nrhs=*/1, h_alpha, /*rcond=*/1e-12);
-            }
+            // x = x + Pnew * alpha
+            CUBLAS_CHECK(cublasDgemv(cublas, CUBLAS_OP_N, n, k,
+                                     &one, d_Pnew, n, d_alpha, 1, &one, d_x, 1));
 
-            // Copy alpha back to GPU
-            CUDA_CHECK(cudaMemcpyAsync(d_alpha, h_alpha.data(), (size_t)k * sizeof(double),
-                                       cudaMemcpyHostToDevice, stream));
+            // r = r - Wnew * alpha
+            CUBLAS_CHECK(cublasDgemv(cublas, CUBLAS_OP_N, n, k,
+                                     &minus_one, d_Wnew, n, d_alpha, 1, &one, d_r, 1));
 
-            // ------------------------------------------------------------------
-            // Step: x = x + Pnew * alpha
-            // This realizes MATLAB: x(:,i+1)=x(:,i)+Pnew*alpha
-            // using cuBLAS GEMV with beta=1 (in-place accumulate)
-            // ------------------------------------------------------------------
-            CUBLAS_CHECK(cublasDgemv(
-                cublas,
-                CUBLAS_OP_N,
-                n, k,
-                &one,
-                d_Pnew, n,
-                d_alpha, 1,
-                &one,
-                d_x, 1));
-
-            // ------------------------------------------------------------------
-            // Step: r = r - Wnew * alpha
-            // This realizes MATLAB: r(:,i+1)=r(:,i)-A*Pnew*alpha
-            // using cuBLAS GEMV with alpha=-1, beta=1
-            // ------------------------------------------------------------------
-            CUBLAS_CHECK(cublasDgemv(
-                cublas,
-                CUBLAS_OP_N,
-                n, k,
-                &minus_one,
-                d_Wnew, n,
-                d_alpha, 1,
-                &one,
-                d_r, 1));
-
-            // ------------------------------------------------------------------
-            // Cache current block into ring:
-            //   P_hist[slot] = Pnew
-            //   W_hist[slot] = Wnew
-            //   G_hist[slot] = Gnew
-            // This realizes storing P_j and (P_j^T A P_j) needed for future projections.
-            // ------------------------------------------------------------------
             const int slot = iter % m;
-            CUDA_CHECK(cudaMemcpyAsync(d_P_hist + (size_t)slot * n * k, d_Pnew,
-                                       (size_t)n * k * sizeof(double),
-                                       cudaMemcpyDeviceToDevice, stream));
-            CUDA_CHECK(cudaMemcpyAsync(d_W_hist + (size_t)slot * n * k, d_Wnew,
-                                       (size_t)n * k * sizeof(double),
-                                       cudaMemcpyDeviceToDevice, stream));
-            CUDA_CHECK(cudaMemcpyAsync(d_G_hist + (size_t)slot * k * k, d_Gnew,
-                                       (size_t)k * k * sizeof(double),
-                                       cudaMemcpyDeviceToDevice, stream));
+            CUDA_CHECK(cudaMemcpyAsync(d_P_hist + (size_t)slot * n * k, d_Pnew, (size_t)n * k * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+            CUDA_CHECK(cudaMemcpyAsync(d_W_hist + (size_t)slot * n * k, d_Wnew, (size_t)n * k * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+            CUDA_CHECK(cudaMemcpyAsync(d_G_hist + (size_t)slot * k * k, d_Gnew, (size_t)k * k * sizeof(double), cudaMemcpyDeviceToDevice, stream));
 
             iterations = iter + 1;
 
@@ -700,12 +366,9 @@ namespace ichol::solver
             finalRes = res_end;
         }
 
-        // Copy x to host
-        CUDA_CHECK(cudaMemcpyAsync(h_x.data(), d_x, n * sizeof(double),
-                                   cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaMemcpyAsync(h_x.data(), d_x, n * sizeof(double), cudaMemcpyDeviceToHost, stream));
         CUDA_CHECK(cudaStreamSynchronize(stream));
 
-        // Cleanup
         if (dnB)
             CUSPARSE_CHECK(cusparseDestroyDnMat(dnB));
         if (dnC)
@@ -747,6 +410,7 @@ namespace ichol::solver
         CUDA_CHECK(cudaStreamDestroy(stream));
         CUSPARSE_CHECK(cusparseDestroy(cusparse));
         CUBLAS_CHECK(cublasDestroy(cublas));
+        CUSOLVER_CHECK(cusolverDnDestroy(cusolver));
     }
 
     template void mpcg<double>(
