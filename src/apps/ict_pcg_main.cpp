@@ -300,11 +300,12 @@ namespace
             L_values_pcg.push_back(ichol::util::cast_fp_type<PcgT>(v));
 
         std::vector<double> y;
-        int iters = 0;
-        double finalRes = 0.0;
+        ichol::solver::PCGParams params;
+        params.maxits = 1000;
+        params.tol = 1e-10;
 
         auto pcg_start = std::chrono::high_resolution_clock::now();
-        ichol::solver::pcg<PcgT>(
+        ichol::solver::PCGResult pcg_result = ichol::solver::pcg<PcgT>(
             A.row_ptr,
             A.col_ind,
             A.values,
@@ -314,8 +315,7 @@ namespace
             b_tilde,
             y,
             D,
-            iters,
-            finalRes);
+            params);
         auto pcg_end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> pcg_duration = pcg_end - pcg_start;
         std::cout << "PCG time: " << pcg_duration.count() << " seconds.\n";
@@ -357,7 +357,7 @@ namespace
 
         std::cout << "nnz of L : " << L.values.size() << "\n";
         std::cout << "Scaled-system relative residual (B y = b_tilde): " << relresB << "\n";
-        std::cout << "Iterations taken by PCG: " << iters << "\n";
+        std::cout << "Iterations taken by PCG: " << pcg_result.iterations << "\n";
 
         return 0;
     }

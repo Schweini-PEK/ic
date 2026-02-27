@@ -1,39 +1,28 @@
-// src/solver/mpcg_cuda.cu
+// src/solver/mpcg.cu
 
 #include <cuda_runtime.h>
-#include <cusparse.h>
 #include <cublas_v2.h>
+#include <cusparse.h>
 #include <cusolverDn.h>
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 
 #include <vector>
-#include <cmath>
-#include <algorithm>
+#include <string>
 #include <stdexcept>
+#include <algorithm>
 #include <cstdint>
-#include <cstring>
+#include <cmath>
 
 #include "ichol/pcg.hpp"
 #include "ichol/preconditioner.hpp"
 
-#define CUDA_CHECK(call)                                           \
-    do                                                             \
-    {                                                              \
-        cudaError_t _e = (call);                                   \
-        if (_e != cudaSuccess)                                     \
-        {                                                          \
-            throw std::runtime_error(std::string("CUDA error: ") + \
-                                     cudaGetErrorString(_e));      \
-        }                                                          \
-    } while (0)
-
-#define CUSPARSE_CHECK(call)                            \
-    do                                                  \
-    {                                                   \
-        cusparseStatus_t _s = (call);                   \
-        if (_s != CUSPARSE_STATUS_SUCCESS)              \
-        {                                               \
-            throw std::runtime_error("cuSPARSE error"); \
-        }                                               \
+#define CUDA_CHECK(call)                                                              \
+    do                                                                                \
+    {                                                                                 \
+        cudaError_t _e = (call);                                                      \
+        if (_e != cudaSuccess)                                                        \
+            throw std::runtime_error(std::string("CUDA: ") + cudaGetErrorString(_e)); \
     } while (0)
 
 #define CUBLAS_CHECK(call)                            \
@@ -41,9 +30,15 @@
     {                                                 \
         cublasStatus_t _s = (call);                   \
         if (_s != CUBLAS_STATUS_SUCCESS)              \
-        {                                             \
-            throw std::runtime_error("cuBLAS error"); \
-        }                                             \
+            throw std::runtime_error("cuBLAS Error"); \
+    } while (0)
+
+#define CUSPARSE_CHECK(call)                            \
+    do                                                  \
+    {                                                   \
+        cusparseStatus_t _s = (call);                   \
+        if (_s != CUSPARSE_STATUS_SUCCESS)              \
+            throw std::runtime_error("cuSPARSE Error"); \
     } while (0)
 
 #define CUSOLVER_CHECK(call)                            \
@@ -51,339 +46,954 @@
     {                                                   \
         cusolverStatus_t _s = (call);                   \
         if (_s != CUSOLVER_STATUS_SUCCESS)              \
-        {                                               \
-            throw std::runtime_error("cuSOLVER error"); \
-        }                                               \
+            throw std::runtime_error("cuSOLVER Error"); \
     } while (0)
 
-// ------------------------- Device kernels -------------------------
+struct CublasScalars
+{
+    // cuBLAS APIs take host pointers to scalar alpha/beta values.
+    // Keep both fp32/fp64 constants in one place so we can pick at runtime.
+    float s32_one = 1.0f;
+    float s32_zero = 0.0f;
+    float s32_m_one = -1.0f;
+
+    double s64_one = 1.0;
+    double s64_zero = 0.0;
+    double s64_m_one = -1.0;
+
+    // Return pointer to scalar with the right host type for selected compute type.
+    void *one(cublasComputeType_t ct) { return (ct == CUBLAS_COMPUTE_64F) ? (void *)&s64_one : (void *)&s32_one; }
+    void *zero(cublasComputeType_t ct) { return (ct == CUBLAS_COMPUTE_64F) ? (void *)&s64_zero : (void *)&s32_zero; }
+    void *m_one(cublasComputeType_t ct) { return (ct == CUBLAS_COMPUTE_64F) ? (void *)&s64_m_one : (void *)&s32_m_one; }
+};
+
+struct PrecisionMap
+{
+    cudaDataType_t data_type;
+    cublasComputeType_t compute_type;
+    size_t el_size;
+};
+
+/**
+ * Map user precision choice to CUDA data type and cuBLAS compute type.
+ */
+static PrecisionMap get_precision_map(ichol::solver::ComputePrecision prec, ichol::solver::ComputePrecision /*acc*/)
+{
+    PrecisionMap m{};
+    if (prec == ichol::solver::ComputePrecision::FP64)
+    {
+        m.data_type = CUDA_R_64F;
+        m.compute_type = CUBLAS_COMPUTE_64F;
+        m.el_size = 8;
+    }
+    else
+    {
+        if (prec == ichol::solver::ComputePrecision::FP16)
+            m.data_type = CUDA_R_16F;
+        else if (prec == ichol::solver::ComputePrecision::BF16)
+            m.data_type = CUDA_R_16BF;
+        else
+            m.data_type = CUDA_R_32F;
+
+        if (prec == ichol::solver::ComputePrecision::TF32)
+            m.compute_type = CUBLAS_COMPUTE_32F_FAST_TF32;
+        else
+            m.compute_type = CUBLAS_COMPUTE_32F;
+
+        m.el_size = (prec == ichol::solver::ComputePrecision::FP16 ||
+                     prec == ichol::solver::ComputePrecision::BF16)
+                        ? 2
+                        : 4;
+    }
+    return m;
+}
+
+/**
+ * Debug helper to print a device matrix in column-major order.
+ */
+static void print_gpu_matrix(const char *name, const double *d_mat, int rows, int cols, cudaStream_t stream)
+{
+    std::vector<double> h_mat(rows * cols);
+    cudaMemcpyAsync(h_mat.data(), d_mat, rows * cols * sizeof(double), cudaMemcpyDeviceToHost, stream);
+    cudaStreamSynchronize(stream);
+    printf("%s:\n", name);
+    for (int i = 0; i < rows; ++i)
+    {
+        for (int j = 0; j < cols; ++j)
+        {
+            printf("%12.4e ", h_mat[i + j * rows]);
+        }
+        printf("\n");
+    }
+}
+
+struct StorageMap
+{
+    cudaDataType_t data_type;
+    size_t el_size;
+};
+
+/**
+ * Map user precision choice to CUDA data type for history storage buffers.
+ */
+static StorageMap get_storage_map(ichol::solver::ComputePrecision prec)
+{
+    StorageMap m{};
+    if (prec == ichol::solver::ComputePrecision::FP64)
+    {
+        m.data_type = CUDA_R_64F;
+        m.el_size = 8;
+    }
+    else if (prec == ichol::solver::ComputePrecision::FP16)
+    {
+        m.data_type = CUDA_R_16F;
+        m.el_size = 2;
+    }
+    else if (prec == ichol::solver::ComputePrecision::BF16)
+    {
+        m.data_type = CUDA_R_16BF;
+        m.el_size = 2;
+    }
+    else
+    {
+        m.data_type = CUDA_R_32F;
+        m.el_size = 4;
+    }
+    return m;
+}
+
+static double get_safe_rcond(ichol::solver::ComputePrecision prec, double base_rcond)
+{
+    // rcond controls singular-value cutoff in pseudo-inverse:
+    // singular values <= rcond * sigma_max are treated as zero.
+    //
+    // Lower precision needs a larger cutoff to avoid unstable inversions.
+    if (prec == ichol::solver::ComputePrecision::FP64)
+        return base_rcond;
+    if (prec == ichol::solver::ComputePrecision::FP32 || prec == ichol::solver::ComputePrecision::TF32)
+        return std::max(base_rcond, 1e-7);
+    return std::max(base_rcond, 1e-3);
+}
+
+__global__ void k_cast_d2any(const double *src, void *dst, int N, ichol::solver::ComputePrecision prec)
+{
+    // Generic elementwise cast kernel:
+    // each thread handles one index i.
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N)
+        return;
+
+    if (prec == ichol::solver::ComputePrecision::FP64)
+        ((double *)dst)[i] = src[i];
+    else if (prec == ichol::solver::ComputePrecision::FP32 || prec == ichol::solver::ComputePrecision::TF32)
+        ((float *)dst)[i] = (float)src[i];
+    else if (prec == ichol::solver::ComputePrecision::FP16)
+        ((__half *)dst)[i] = (__half)src[i];
+    else if (prec == ichol::solver::ComputePrecision::BF16)
+        ((__nv_bfloat16 *)dst)[i] = (__nv_bfloat16)src[i];
+}
+
+__global__ void k_cast_any2d_vec(const void *src, double *dst, int N, ichol::solver::ComputePrecision prec)
+{
+    // Reverse cast: lower-precision storage back to fp64 workspace.
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N)
+        return;
+
+    if (prec == ichol::solver::ComputePrecision::FP64)
+        dst[i] = ((const double *)src)[i];
+    else if (prec == ichol::solver::ComputePrecision::FP32 || prec == ichol::solver::ComputePrecision::TF32)
+        dst[i] = (double)((const float *)src)[i];
+    else if (prec == ichol::solver::ComputePrecision::FP16)
+        dst[i] = (double)((const __half *)src)[i];
+    else if (prec == ichol::solver::ComputePrecision::BF16)
+        dst[i] = (double)((const __nv_bfloat16 *)src)[i];
+}
+
+__global__ void k_cast_f2d_mat(const float *src, double *dst, int N)
+{
+    // Specialized cast for GEMM outputs produced in fp32.
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N)
+        return;
+    dst[i] = (double)src[i];
+}
 
 __global__ void k_row_scaling(double *T, const double *S_inv, int k, int nrhs)
 {
+    // T is k x nrhs (column-major).
+    // One block with k threads; thread "row" scales one row across all rhs cols.
+    // This applies diag(S_inv) * T.
     int row = threadIdx.x;
     if (row < k)
     {
         double s = S_inv[row];
         for (int col = 0; col < nrhs; ++col)
-        {
             T[row + col * k] *= s;
+    }
+}
+
+struct PinvSVDWorkspace
+{
+    double *d_G_copy = nullptr;
+    double *d_S = nullptr;
+    double *d_U = nullptr;
+    double *d_VT = nullptr;
+    double *d_work = nullptr;
+    double *d_S_inv = nullptr;
+    double *d_T1 = nullptr;
+    int *d_info = nullptr;
+    int lwork = 0;
+    int k = 0;
+    int max_nrhs = 0;
+};
+
+// For very small systems, cuSOLVER launch/setup overhead can dominate.
+// This kernel solves G * X = B using in-kernel LU with partial pivoting.
+// It runs with one thread because k is tiny (<= 32).
+__global__ void k_small_lu_solve(
+    const double *G,
+    const double *B,
+    double *X,
+    int k,
+    int nrhs,
+    double rcond)
+{
+    if (threadIdx.x != 0 || blockIdx.x != 0)
+        return;
+
+    constexpr int KMAX = 32;
+    double A[KMAX * KMAX];
+    double RHS[KMAX * KMAX];
+
+    double max_abs = 0.0;
+    for (int col = 0; col < k; ++col)
+    {
+        for (int row = 0; row < k; ++row)
+        {
+            const double v = G[row + col * k];
+            A[row + col * k] = v;
+            max_abs = fmax(max_abs, fabs(v));
+        }
+    }
+    for (int col = 0; col < nrhs; ++col)
+        for (int row = 0; row < k; ++row)
+            RHS[row + col * k] = B[row + col * k];
+
+    const double pivot_tol = fmax(1e-15, rcond * fmax(max_abs, 1.0));
+
+    // LU factorization with partial pivoting.
+    for (int col = 0; col < k; ++col)
+    {
+        int piv = col;
+        double piv_abs = fabs(A[col + col * k]);
+        for (int row = col + 1; row < k; ++row)
+        {
+            const double cur = fabs(A[row + col * k]);
+            if (cur > piv_abs)
+            {
+                piv_abs = cur;
+                piv = row;
+            }
+        }
+
+        if (piv != col)
+        {
+            for (int j = col; j < k; ++j)
+            {
+                const double tmp = A[col + j * k];
+                A[col + j * k] = A[piv + j * k];
+                A[piv + j * k] = tmp;
+            }
+            for (int j = 0; j < nrhs; ++j)
+            {
+                const double tmp = RHS[col + j * k];
+                RHS[col + j * k] = RHS[piv + j * k];
+                RHS[piv + j * k] = tmp;
+            }
+        }
+
+        // Diagonal floor avoids numerical blow-up on near-singular columns.
+        if (fabs(A[col + col * k]) < pivot_tol)
+            A[col + col * k] = (A[col + col * k] < 0.0) ? -pivot_tol : pivot_tol;
+
+        const double inv_diag = 1.0 / A[col + col * k];
+        for (int row = col + 1; row < k; ++row)
+        {
+            const double f = A[row + col * k] * inv_diag;
+            A[row + col * k] = 0.0;
+            for (int j = col + 1; j < k; ++j)
+                A[row + j * k] -= f * A[col + j * k];
+            for (int j = 0; j < nrhs; ++j)
+                RHS[row + j * k] -= f * RHS[col + j * k];
+        }
+    }
+
+    // Back-substitution.
+    for (int j = 0; j < nrhs; ++j)
+    {
+        for (int i = k - 1; i >= 0; --i)
+        {
+            double sum = RHS[i + j * k];
+            for (int c = i + 1; c < k; ++c)
+                sum -= A[i + c * k] * X[c + j * k];
+            double d = A[i + i * k];
+            if (fabs(d) < pivot_tol)
+                d = (d < 0.0) ? -pivot_tol : pivot_tol;
+            X[i + j * k] = sum / d;
         }
     }
 }
 
-// ------------------------- SVD Pseudo-Inverse (cuSOLVER) -------------------------
-// Compute X = pinv(G) * B using Singular Value Decomposition
-static void pinv_svd_cuda(cusolverDnHandle_t cusolver,
-                          cublasHandle_t cublas,
-                          const double *d_G, int k,
-                          const double *d_B, int nrhs,
-                          double *d_X,
-                          cudaStream_t stream,
-                          double rcond = 1e-15)
+/**
+ * k_small_pinv_jacobi_svd:
+ * Performs Moore-Penrose Pseudo-inverse for G * X = B for small K.
+ * Uses a one-sided Jacobi SVD algorithm.
+ */
+__global__ void k_small_pinv_jacobi_svd(
+    const double *G, // k x k
+    const double *B, // k x nrhs
+    double *X,       // k x nrhs
+    int k,
+    int nrhs,
+    double rcond)
 {
-    // cusolverDnDgesvd overwrites input matrix, create a working copy
-    double *d_G_copy;
-    CUDA_CHECK(cudaMallocAsync(&d_G_copy, k * k * sizeof(double), stream));
-    CUDA_CHECK(cudaMemcpyAsync(d_G_copy, d_G, k * k * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+    // Use a single thread for k <= 32 to avoid shared memory sync overhead
+    if (threadIdx.x != 0 || blockIdx.x != 0)
+        return;
 
-    double *d_S, *d_U, *d_VT;
-    CUDA_CHECK(cudaMallocAsync(&d_S, k * sizeof(double), stream));
-    CUDA_CHECK(cudaMallocAsync(&d_U, k * k * sizeof(double), stream));
-    CUDA_CHECK(cudaMallocAsync(&d_VT, k * k * sizeof(double), stream));
+    constexpr int KMAX = 32;
+    double U[KMAX * KMAX];
+    double V[KMAX * KMAX];
+    double S[KMAX];
 
-    int lwork = 0;
-    CUSOLVER_CHECK(cusolverDnDgesvd_bufferSize(cusolver, k, k, &lwork));
-    double *d_work;
-    CUDA_CHECK(cudaMallocAsync(&d_work, lwork * sizeof(double), stream));
-
-    int *d_info;
-    CUDA_CHECK(cudaMallocAsync(&d_info, sizeof(int), stream));
-
-    // 1. Compute SVD: G = U * S * VT
-    CUSOLVER_CHECK(cusolverDnDgesvd(cusolver, 'A', 'A', k, k, d_G_copy, k, d_S, d_U, k, d_VT, k, d_work, lwork, nullptr, d_info));
-
-    // 2. Threshold singular values
-    std::vector<double> h_S(k);
-    CUDA_CHECK(cudaMemcpyAsync(h_S.data(), d_S, k * sizeof(double), cudaMemcpyDeviceToHost, stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-
-    double max_s = h_S[0]; // S is sorted descending
-    double thresh = rcond * max_s;
-    std::vector<double> h_S_inv(k, 0.0);
+    // Initialize U as G and V as Identity
     for (int i = 0; i < k; ++i)
     {
-        if (h_S[i] > thresh)
-            h_S_inv[i] = 1.0 / h_S[i];
+        for (int j = 0; j < k; ++j)
+        {
+            U[i + j * k] = G[i + j * k];
+            V[i + j * k] = (i == j) ? 1.0 : 0.0;
+        }
     }
 
-    double *d_S_inv;
-    CUDA_CHECK(cudaMallocAsync(&d_S_inv, k * sizeof(double), stream));
-    CUDA_CHECK(cudaMemcpyAsync(d_S_inv, h_S_inv.data(), k * sizeof(double), cudaMemcpyHostToDevice, stream));
+    // One-sided Jacobi SVD iterations
+    for (int iter = 0; iter < 20; ++iter)
+    {
+        for (int i = 0; i < k - 1; ++i)
+        {
+            for (int j = i + 1; j < k; ++j)
+            {
+                double a = 0, b = 0, c = 0;
+                for (int m = 0; m < k; ++m)
+                {
+                    a += U[m + i * k] * U[m + i * k];
+                    b += U[m + j * k] * U[m + j * k];
+                    c += U[m + i * k] * U[m + j * k];
+                }
 
-    // 3. Solve: X = V * S_inv * U^T * B
-    double *d_T1;
-    CUDA_CHECK(cudaMallocAsync(&d_T1, k * nrhs * sizeof(double), stream));
+                if (abs(c) <= 1e-15 * sqrt(a * b))
+                    continue;
+
+                double zeta = (b - a) / (2.0 * c);
+                double t = (zeta > 0 ? 1.0 : -1.0) / (abs(zeta) + sqrt(1.0 + zeta * zeta));
+                double cos_th = 1.0 / sqrt(1.0 + t * t);
+                double sin_th = cos_th * t;
+
+                for (int m = 0; m < k; ++m)
+                {
+                    double u_i = U[m + i * k];
+                    double u_j = U[m + j * k];
+                    U[m + i * k] = cos_th * u_i - sin_th * u_j;
+                    U[m + j * k] = sin_th * u_i + cos_th * u_j;
+
+                    double v_i = V[m + i * k];
+                    double v_j = V[m + j * k];
+                    V[m + i * k] = cos_th * v_i - sin_th * v_j;
+                    V[m + j * k] = sin_th * v_i + cos_th * v_j;
+                }
+            }
+        }
+    }
+
+    // Compute singular values (norms of columns of U) and normalize U
+    for (int j = 0; j < k; ++j)
+    {
+        double norm = 0;
+        for (int i = 0; i < k; ++i)
+            norm += U[i + j * k] * U[i + j * k];
+        S[j] = sqrt(norm);
+        if (S[j] > 1e-15)
+        {
+            for (int i = 0; i < k; ++i)
+                U[i + j * k] /= S[j];
+        }
+    }
+
+    // Thresholding (pinv logic)
+    double s_max = 0;
+    for (int i = 0; i < k; ++i)
+        if (S[i] > s_max)
+            s_max = S[i];
+    double threshold = rcond * s_max;
+
+    // Solve: X = V * S_inv * U^T * B
+    for (int rhs_col = 0; rhs_col < nrhs; ++rhs_col)
+    {
+        double ut_b[KMAX];
+        for (int i = 0; i < k; ++i)
+        {
+            double sum = 0;
+            for (int m = 0; m < k; ++m)
+                sum += U[m + i * k] * B[m + rhs_col * k];
+            ut_b[i] = (S[i] > threshold) ? (sum / S[i]) : 0.0;
+        }
+
+        for (int i = 0; i < k; ++i)
+        {
+            double res = 0;
+            for (int m = 0; m < k; ++m)
+                res += V[i + m * k] * ut_b[m];
+            X[i + rhs_col * k] = res;
+        }
+    }
+}
+
+__global__ void k_build_s_inv_from_s(const double *S, double *S_inv, int k, double rcond)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= k)
+        return;
+
+    double a = rcond * S[0];
+    const double thresh = fmax(a, 1e-15);
+    const double si = S[i];
+    S_inv[i] = (si > thresh) ? (1.0 / si) : 0.0;
+}
+
+static void pinv_svd_cuda(
+    cusolverDnHandle_t cusolver,
+    cublasHandle_t cublas,
+    const double *d_G,
+    int k,
+    const double *d_B,
+    int nrhs,
+    double *d_X,
+    cudaStream_t stream,
+    double rcond,
+    PinvSVDWorkspace &ws)
+{
+    // Solve X = pinv(G) * B using SVD on GPU.
+    //
+    // For G = U * diag(S) * V^T, Moore-Penrose pseudo-inverse is:
+    // pinv(G) = V * diag(S_inv) * U^T, where small singular values are dropped.
+    //
+    // We then compute:
+    // T1 = U^T * B
+    // T1 = diag(S_inv) * T1
+    // X  = V * T1
+    //
+    // This is used for small kxk systems that can be ill-conditioned.
+    // Fast path for tiny systems: direct LU solve in one kernel launch.
+    if (k <= 32)
+    {
+        // k_small_lu_solve<<<1, 1, 0, stream>>>(d_G, d_B, d_X, k, nrhs, rcond);
+        k_small_pinv_jacobi_svd<<<1, 1, 0, stream>>>(d_G, d_B, d_X, k, nrhs, rcond);
+        return;
+    }
+
+    if (k != ws.k || nrhs > ws.max_nrhs)
+        throw std::runtime_error("pinv_svd_cuda: workspace shape mismatch");
+
+    CUDA_CHECK(cudaMemcpyAsync(ws.d_G_copy, d_G, k * k * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+
+    // Full SVD: all singular vectors (jobu='A', jobvt='A').
+    CUSOLVER_CHECK(cusolverDnDgesvd(
+        cusolver, 'A', 'A',
+        k, k,
+        ws.d_G_copy, k,
+        ws.d_S,
+        ws.d_U, k,
+        ws.d_VT, k,
+        ws.d_work, ws.lwork,
+        nullptr,
+        ws.d_info));
+
+    // Build reciprocal singular values with thresholding on device:
+    // S_inv[i] = 1/S[i] if S[i] > rcond*S[0], else 0.
+    const int threads = 128;
+    const int blocks = (k + threads - 1) / threads;
+    k_build_s_inv_from_s<<<blocks, threads, 0, stream>>>(ws.d_S, ws.d_S_inv, k, rcond);
 
     double one = 1.0, zero = 0.0;
-
-    // T1 = U^T * B
-    CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N, k, nrhs, k, &one, d_U, k, d_B, k, &zero, d_T1, k));
-
-    // T1 = S_inv * T1
-    k_row_scaling<<<1, k, 0, stream>>>(d_T1, d_S_inv, k, nrhs);
-
-    // X = V * T1 (cuSOLVER provides VT, so V is VT^T)
-    CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N, k, nrhs, k, &one, d_VT, k, d_T1, k, &zero, d_X, k));
-
-    // Cleanup
-    CUDA_CHECK(cudaFreeAsync(d_G_copy, stream));
-    CUDA_CHECK(cudaFreeAsync(d_S, stream));
-    CUDA_CHECK(cudaFreeAsync(d_U, stream));
-    CUDA_CHECK(cudaFreeAsync(d_VT, stream));
-    CUDA_CHECK(cudaFreeAsync(d_work, stream));
-    CUDA_CHECK(cudaFreeAsync(d_info, stream));
-    CUDA_CHECK(cudaFreeAsync(d_S_inv, stream));
-    CUDA_CHECK(cudaFreeAsync(d_T1, stream));
+    // d_T1 = U^T * B
+    CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N, k, nrhs, k, &one, ws.d_U, k, d_B, k, &zero, ws.d_T1, k));
+    // d_T1 = diag(S_inv) * d_T1
+    k_row_scaling<<<1, k, 0, stream>>>(ws.d_T1, ws.d_S_inv, k, nrhs);
+    // d_X = V * d_T1  (note: cuSOLVER gives V^T, so V is VT^T)
+    CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N, k, nrhs, k, &one, ws.d_VT, k, ws.d_T1, k, &zero, d_X, k));
 }
 
 namespace ichol::solver
 {
+
     template <typename T_L>
-    void mpcg(
+    PCGResult mpcg(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
         const std::vector<double> &h_valA,
         const std::vector<ichol::precond::PrecondApply> &preconds,
         const std::vector<double> &h_b,
         std::vector<double> &h_x,
-        int maxits,
-        double tol,
-        int restart,
-        int &iterations,
-        double &finalRes)
+        const PCGParams &params)
     {
-        const int n = static_cast<int>(h_csrRowPtrA.size()) - 1;
-        if (n <= 0)
-            throw std::runtime_error("mpcg: invalid n");
-        if ((int)h_b.size() != n)
-            throw std::runtime_error("mpcg: b size mismatch");
-        if ((int)h_x.size() != n)
-            throw std::runtime_error("mpcg: x size mismatch");
-        if ((int)h_csrColIndA.size() != (int)h_valA.size())
-            throw std::runtime_error("mpcg: A nnz mismatch");
-
+        const int n = static_cast<int>(h_b.size());                           // matrix size
+        const int k = static_cast<int>(preconds.size());                      // # of precond
+        const int m = (params.restart <= 0) ? params.maxits : params.restart; // history size (0 or negative means no restarts, i.e. full history up to maxits)
         const int64_t nnzA = (int64_t)h_valA.size();
-        const int k = static_cast<int>(preconds.size());
 
-        if (k <= 0)
-            throw std::runtime_error("mpcg: need at least one preconditioner");
-        if (maxits <= 0)
-            throw std::runtime_error("mpcg: maxits must be > 0");
-        if (tol <= 0.0)
-            throw std::runtime_error("mpcg: tol must be > 0");
-
-        const int m = (restart <= 0) ? maxits : restart;
-
-        cublasHandle_t cublas = nullptr;
-        cusparseHandle_t cusparse = nullptr;
-        cusolverDnHandle_t cusolver = nullptr;
-
+        // Create library handles and bind them to one non-blocking stream so
+        // all operations are ordered on the same stream.
+        cublasHandle_t cublas;
         CUBLAS_CHECK(cublasCreate(&cublas));
+        cusparseHandle_t cusparse;
         CUSPARSE_CHECK(cusparseCreate(&cusparse));
+        cusolverDnHandle_t cusolver;
         CUSOLVER_CHECK(cusolverDnCreate(&cusolver));
 
-        cudaStream_t stream = nullptr;
+        cudaStream_t stream;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         CUBLAS_CHECK(cublasSetStream(cublas, stream));
         CUSPARSE_CHECK(cusparseSetStream(cusparse, stream));
         CUSOLVER_CHECK(cusolverDnSetStream(cusolver, stream));
 
-        int *d_rowPtrA = nullptr;
-        int *d_colIndA = nullptr;
-        double *d_valA = nullptr;
-        double *d_b = nullptr, *d_x = nullptr, *d_r = nullptr, *d_tmp = nullptr;
+        CublasScalars scalars;
+        PinvSVDWorkspace pinv_ws{};
 
-        CUDA_CHECK(cudaMalloc((void **)&d_rowPtrA, (n + 1) * sizeof(int)));
-        CUDA_CHECK(cudaMalloc((void **)&d_colIndA, nnzA * sizeof(int)));
-        CUDA_CHECK(cudaMalloc((void **)&d_valA, nnzA * sizeof(double)));
-        CUDA_CHECK(cudaMalloc((void **)&d_b, n * sizeof(double)));
-        CUDA_CHECK(cudaMalloc((void **)&d_x, n * sizeof(double)));
-        CUDA_CHECK(cudaMalloc((void **)&d_r, n * sizeof(double)));
-        CUDA_CHECK(cudaMalloc((void **)&d_tmp, n * sizeof(double)));
+        // Precision controls:
+        PrecisionMap g_map = get_precision_map(params.prec_gemm, params.prec_acc);
 
-        CUDA_CHECK(cudaMemcpyAsync(d_rowPtrA, h_csrRowPtrA.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream));
-        CUDA_CHECK(cudaMemcpyAsync(d_colIndA, h_csrColIndA.data(), nnzA * sizeof(int), cudaMemcpyHostToDevice, stream));
-        CUDA_CHECK(cudaMemcpyAsync(d_valA, h_valA.data(), nnzA * sizeof(double), cudaMemcpyHostToDevice, stream));
-        CUDA_CHECK(cudaMemcpyAsync(d_b, h_b.data(), n * sizeof(double), cudaMemcpyHostToDevice, stream));
-        CUDA_CHECK(cudaMemcpyAsync(d_x, h_x.data(), n * sizeof(double), cudaMemcpyHostToDevice, stream));
+        StorageMap P_hist_map = get_storage_map(params.store_P_hist);
+        StorageMap W_hist_map = get_storage_map(params.store_W_hist);
 
-        cusparseSpMatDescr_t matA = nullptr;
-        CUSPARSE_CHECK(cusparseCreateCsr(&matA, n, n, nnzA, d_rowPtrA, d_colIndA, d_valA,
-                                         CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F));
+        int *d_rowPtrA = nullptr, *d_colIndA = nullptr;
+        double *d_valA = nullptr, *d_b = nullptr, *d_x = nullptr, *d_r = nullptr, *d_tmp = nullptr;
 
-        cusparseDnVecDescr_t vecX = nullptr, vecTmp = nullptr;
+        CUDA_CHECK(cudaMalloc(&d_rowPtrA, (size_t)(n + 1) * sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&d_colIndA, (size_t)nnzA * sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&d_valA, (size_t)nnzA * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_b, (size_t)n * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_x, (size_t)n * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_r, (size_t)n * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_tmp, (size_t)n * sizeof(double)));
+
+        // Upload host problem data to GPU.
+        CUDA_CHECK(cudaMemcpyAsync(d_rowPtrA, h_csrRowPtrA.data(), (size_t)(n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_colIndA, h_csrColIndA.data(), (size_t)nnzA * sizeof(int), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_valA, h_valA.data(), (size_t)nnzA * sizeof(double), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_b, h_b.data(), (size_t)n * sizeof(double), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_x, h_x.data(), (size_t)n * sizeof(double), cudaMemcpyHostToDevice, stream));
+
+        void *d_Pnew_low = nullptr, *d_Wnew_low = nullptr, *d_Wj_low = nullptr;
+        float *d_C_gemm = nullptr;
+
+        // Extra low-precision buffers only needed when GEMM is not fp64.
+        if (params.prec_gemm != ComputePrecision::FP64)
+        {
+            CUDA_CHECK(cudaMalloc(&d_Pnew_low, (size_t)n * k * g_map.el_size));
+            CUDA_CHECK(cudaMalloc(&d_Wnew_low, (size_t)n * k * g_map.el_size));
+            CUDA_CHECK(cudaMalloc(&d_Wj_low, (size_t)n * k * g_map.el_size));
+            CUDA_CHECK(cudaMalloc(&d_C_gemm, (size_t)k * k * sizeof(float)));
+        }
+
+        const size_t nk = (size_t)n * (size_t)k;
+
+        // Main block vectors (all n x k, column-major):
+        // Znew: preconditioned directions (raw)
+        // Pnew: orthogonalized search directions
+        // Wnew: A * Pnew
+        double *d_Znew = nullptr, *d_Pnew = nullptr, *d_Wnew = nullptr;
+        double *d_G_hist = nullptr, *d_C = nullptr, *d_Gnew = nullptr, *d_rhs = nullptr, *d_Y = nullptr, *d_alpha = nullptr;
+
+        CUDA_CHECK(cudaMalloc(&d_Znew, nk * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_Pnew, nk * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_Wnew, nk * sizeof(double)));
+
+        CUDA_CHECK(cudaMalloc(&d_G_hist, (size_t)m * (size_t)k * (size_t)k * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_C, (size_t)k * (size_t)k * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_Gnew, (size_t)k * (size_t)k * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_rhs, (size_t)k * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_Y, (size_t)k * (size_t)k * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_alpha, (size_t)k * sizeof(double)));
+
+        // Workspace for repeated pseudo-inverse solves on larger systems.
+        // For k <= 32 we use the tiny LU kernel path and skip this allocation.
+        if (k > 32)
+        {
+            pinv_ws.k = k;
+            pinv_ws.max_nrhs = k;
+            CUSOLVER_CHECK(cusolverDnDgesvd_bufferSize(cusolver, k, k, &pinv_ws.lwork));
+            CUDA_CHECK(cudaMalloc(&pinv_ws.d_G_copy, (size_t)k * (size_t)k * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&pinv_ws.d_S, (size_t)k * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&pinv_ws.d_U, (size_t)k * (size_t)k * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&pinv_ws.d_VT, (size_t)k * (size_t)k * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&pinv_ws.d_work, (size_t)pinv_ws.lwork * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&pinv_ws.d_S_inv, (size_t)k * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&pinv_ws.d_T1, (size_t)k * (size_t)k * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&pinv_ws.d_info, sizeof(int)));
+        }
+
+        double *d_P_hist64 = nullptr, *d_W_hist64 = nullptr;
+        void *d_P_histLP = nullptr, *d_W_histLP = nullptr;
+
+        // Circular history buffers (size m) store previous P/W/G blocks.
+        // Can be fp64 or compressed precision depending on params.
+        if (params.store_P_hist == ComputePrecision::FP64)
+            CUDA_CHECK(cudaMalloc(&d_P_hist64, (size_t)m * nk * sizeof(double)));
+        else
+            CUDA_CHECK(cudaMalloc(&d_P_histLP, (size_t)m * nk * P_hist_map.el_size));
+
+        if (params.store_W_hist == ComputePrecision::FP64)
+            CUDA_CHECK(cudaMalloc(&d_W_hist64, (size_t)m * nk * sizeof(double)));
+        else
+            CUDA_CHECK(cudaMalloc(&d_W_histLP, (size_t)m * nk * W_hist_map.el_size));
+
+        double *d_Pj_tmp = nullptr, *d_Wj_tmp = nullptr;
+        if (d_P_histLP)
+            CUDA_CHECK(cudaMalloc(&d_Pj_tmp, nk * sizeof(double)));
+        if (d_W_histLP)
+            CUDA_CHECK(cudaMalloc(&d_Wj_tmp, nk * sizeof(double)));
+
+        void *d_scratch_LP = nullptr;
+        size_t max_lp_size = std::max(P_hist_map.el_size, W_hist_map.el_size);
+        // Scratch buffer for round-trip quantization when storing in lower precision.
+        if (params.store_P_hist != ComputePrecision::FP64 || params.store_W_hist != ComputePrecision::FP64)
+        {
+            CUDA_CHECK(cudaMalloc(&d_scratch_LP, nk * max_lp_size));
+        }
+
+        // Create cuSPARSE descriptors:
+        // matA: sparse CSR matrix A
+        // dnB/dnC: dense n x k mats for SpMM
+        // vecX/vecTmp: dense vectors for SpMV
+        cusparseSpMatDescr_t matA;
+        CUSPARSE_CHECK(cusparseCreateCsr(
+            &matA, n, n, nnzA,
+            d_rowPtrA, d_colIndA, d_valA,
+            CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
+            CUSPARSE_INDEX_BASE_ZERO,
+            CUDA_R_64F));
+
+        cusparseDnMatDescr_t dnB, dnC;
+        CUSPARSE_CHECK(cusparseCreateDnMat(&dnB, n, k, n, d_Pnew, CUDA_R_64F, CUSPARSE_ORDER_COL));
+        CUSPARSE_CHECK(cusparseCreateDnMat(&dnC, n, k, n, d_Wnew, CUDA_R_64F, CUSPARSE_ORDER_COL));
+
+        cusparseDnVecDescr_t vecX, vecTmp;
         CUSPARSE_CHECK(cusparseCreateDnVec(&vecX, n, d_x, CUDA_R_64F));
         CUSPARSE_CHECK(cusparseCreateDnVec(&vecTmp, n, d_tmp, CUDA_R_64F));
 
-        CUDA_CHECK(cudaMemcpyAsync(d_r, d_b, n * sizeof(double), cudaMemcpyDeviceToDevice, stream));
-
         size_t spmv_bufSize = 0;
         void *d_spmvBuf = nullptr;
-        double one = 1.0, zero = 0.0, minus_one = -1.0;
 
-        CUSPARSE_CHECK(cusparseSpMV_bufferSize(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, matA, vecX,
-                                               &zero, vecTmp, CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, &spmv_bufSize));
+        CUSPARSE_CHECK(cusparseSpMV_bufferSize(
+            cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
+            &scalars.s64_one, matA, vecX,
+            &scalars.s64_zero, vecTmp,
+            CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, &spmv_bufSize));
         CUDA_CHECK(cudaMalloc(&d_spmvBuf, spmv_bufSize));
 
-        CUSPARSE_CHECK(cusparseSpMV(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, matA, vecX,
-                                    &zero, vecTmp, CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, d_spmvBuf));
+        // tmp = A * x
+        CUSPARSE_CHECK(cusparseSpMV(
+            cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
+            &scalars.s64_one, matA, vecX,
+            &scalars.s64_zero, vecTmp,
+            CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, d_spmvBuf));
 
-        CUBLAS_CHECK(cublasDaxpy(cublas, n, &minus_one, d_tmp, 1, d_r, 1));
+        // Initial residual r = b - A*x
+        CUDA_CHECK(cudaMemcpyAsync(d_r, d_b, (size_t)n * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+        CUBLAS_CHECK(cublasDaxpy(cublas, n, &scalars.s64_m_one, d_tmp, 1, d_r, 1));
 
+        // Use ||b|| as denominator for relative residual stopping criterion.
         double bnorm = 0.0;
         CUBLAS_CHECK(cublasDnrm2(cublas, n, d_b, 1, &bnorm));
         if (bnorm == 0.0)
             bnorm = 1.0;
 
-        double *d_Znew = nullptr, *d_Pnew = nullptr, *d_Wnew = nullptr;
-        CUDA_CHECK(cudaMalloc((void **)&d_Znew, (size_t)n * k * sizeof(double)));
-        CUDA_CHECK(cudaMalloc((void **)&d_Pnew, (size_t)n * k * sizeof(double)));
-        CUDA_CHECK(cudaMalloc((void **)&d_Wnew, (size_t)n * k * sizeof(double)));
-
-        double *d_P_hist = nullptr, *d_W_hist = nullptr, *d_G_hist = nullptr;
-        CUDA_CHECK(cudaMalloc((void **)&d_P_hist, (size_t)m * n * k * sizeof(double)));
-        CUDA_CHECK(cudaMalloc((void **)&d_W_hist, (size_t)m * n * k * sizeof(double)));
-        CUDA_CHECK(cudaMalloc((void **)&d_G_hist, (size_t)m * k * k * sizeof(double)));
-
-        double *d_C = nullptr, *d_Gnew = nullptr, *d_rhs = nullptr, *d_Y = nullptr, *d_alpha = nullptr;
-        CUDA_CHECK(cudaMalloc((void **)&d_C, (size_t)k * k * sizeof(double)));
-        CUDA_CHECK(cudaMalloc((void **)&d_Gnew, (size_t)k * k * sizeof(double)));
-        CUDA_CHECK(cudaMalloc((void **)&d_rhs, (size_t)k * sizeof(double)));
-        CUDA_CHECK(cudaMalloc((void **)&d_Y, (size_t)k * k * sizeof(double)));
-        CUDA_CHECK(cudaMalloc((void **)&d_alpha, (size_t)k * sizeof(double)));
-
-        cusparseDnMatDescr_t dnB = nullptr, dnC = nullptr;
-        CUSPARSE_CHECK(cusparseCreateDnMat(&dnB, n, k, n, d_Pnew, CUDA_R_64F, CUSPARSE_ORDER_COL));
-        CUSPARSE_CHECK(cusparseCreateDnMat(&dnC, n, k, n, d_Wnew, CUDA_R_64F, CUSPARSE_ORDER_COL));
-
         size_t spmm_bufSize = 0;
         void *d_spmmBuf = nullptr;
-        CUSPARSE_CHECK(cusparseSpMM_bufferSize(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                               &one, matA, dnB, &zero, dnC, CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &spmm_bufSize));
+
+        CUSPARSE_CHECK(cusparseSpMM_bufferSize(
+            cusparse,
+            CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+            &scalars.s64_one, matA, dnB,
+            &scalars.s64_zero, dnC,
+            CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &spmm_bufSize));
         CUDA_CHECK(cudaMalloc(&d_spmmBuf, spmm_bufSize));
 
-        CUSPARSE_CHECK(cusparseSpMM_preprocess(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                               &one, matA, dnB, &zero, dnC, CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_spmmBuf));
+        PCGResult result{};
+        const int threads = 256;
+        const int blocks_nk = (int)((nk + (size_t)threads - 1) / (size_t)threads);
+        const int blocks_kk = (int)(((size_t)k * (size_t)k + (size_t)threads - 1) / (size_t)threads);
+        double hist_rcond = get_safe_rcond(params.store_P_hist, params.rcond_base);
 
-        iterations = 0;
-        finalRes = 0.0;
-
-        for (int iter = 0; iter < maxits; ++iter)
+        // Main MPCG iteration.
+        for (int iter = 0; iter < params.maxits; ++iter)
         {
-            double res = 0.0;
-            CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, &res));
-
-            if (res <= tol * bnorm)
+            // Check convergence: ||r|| <= tol * ||b||
+            double res_norm = 0.0;
+            CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, &res_norm));
+            if (res_norm <= params.tol * bnorm)
             {
-                iterations = iter;
-                finalRes = res;
+                result.iterations = iter;
+                result.finalRes = res_norm;
                 break;
             }
 
-            for (int t = 0; t < k; ++t)
-            {
-                double *d_z_col = d_Znew + (size_t)t * n;
-                preconds[t].apply(preconds[t].ctx, d_r, d_z_col, n, stream);
-            }
-
-            CUDA_CHECK(cudaMemcpyAsync(d_Pnew, d_Znew, (size_t)n * k * sizeof(double), cudaMemcpyDeviceToDevice, stream));
-
-            //
-            const int hist_count = std::min(iter, m);
-            for (int j = iter - hist_count; j < iter; ++j)
-            {
-                const int slot = j % m;
-
-                double *d_Pj = d_P_hist + (size_t)slot * n * k;
-                double *d_Wj = d_W_hist + (size_t)slot * n * k;
-                double *d_Gj = d_G_hist + (size_t)slot * k * k;
-
-                // C = Wj^T * Pnew (Modified Gram-Schmidt update using Pnew instead of Znew)
-                CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N, k, k, n,
-                                         &one, d_Wj, n, d_Pnew, n, &zero, d_C, k));
-
-                // Y = pinv(Gj) * C
-                pinv_svd_cuda(cusolver, cublas, d_Gj, k, d_C, k, d_Y, stream, 1e-15);
-
-                // Pnew = Pnew - Pj * Y
-                CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_N, CUBLAS_OP_N, n, k, k,
-                                         &minus_one, d_Pj, n, d_Y, k, &one, d_Pnew, n));
-            }
-
+            // Keep descriptor pointers in sync with current data buffers.
             CUSPARSE_CHECK(cusparseDnMatSetValues(dnB, d_Pnew));
             CUSPARSE_CHECK(cusparseDnMatSetValues(dnC, d_Wnew));
-            CUSPARSE_CHECK(cusparseSpMM(cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                        &one, matA, dnB, &zero, dnC, CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_spmmBuf));
 
-            // Gnew = Pnew^T * Wnew
-            CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N, k, k, n,
-                                     &one, d_Pnew, n, d_Wnew, n, &zero, d_Gnew, k));
+            // Apply each preconditioner to the same residual r.
+            // Output columns form Znew(:, t).
+            for (int t = 0; t < k; ++t)
+                preconds[t].apply(preconds[t].ctx, d_r, d_Znew + (size_t)t * (size_t)n, n, stream);
 
-            // rhs = Pnew^T * r
-            CUBLAS_CHECK(cublasDgemv(cublas, CUBLAS_OP_T, n, k,
-                                     &one, d_Pnew, n, d_r, 1, &zero, d_rhs, 1));
+            // Start from Znew, then orthogonalize against history below.
+            CUDA_CHECK(cudaMemcpyAsync(d_Pnew, d_Znew, nk * sizeof(double), cudaMemcpyDeviceToDevice, stream));
 
-            // alpha = pinv(Gnew) * rhs
-            pinv_svd_cuda(cusolver, cublas, d_Gnew, k, d_rhs, 1, d_alpha, stream, 1e-15);
+            // Number of previous iterations currently available (capped by m).
+            const int hist_count = std::min(iter, m);
+            for (int jj = iter - hist_count; jj < iter; ++jj)
+            {
+                // Ring-buffer slot for historical block jj.
+                const int slot = jj % m;
+
+                double *d_Pj = nullptr;
+                double *d_Wj = nullptr;
+
+                if (d_P_hist64)
+                {
+                    // Fast path: history already in fp64.
+                    d_Pj = d_P_hist64 + (size_t)slot * nk;
+                }
+                else
+                {
+                    // Compressed path: cast slot -> temporary fp64 workspace.
+                    const size_t offB = (size_t)slot * nk * P_hist_map.el_size;
+                    const void *src = (const void *)((const char *)d_P_histLP + offB);
+                    k_cast_any2d_vec<<<blocks_nk, threads, 0, stream>>>(src, d_Pj_tmp, (int)nk, params.store_P_hist);
+                    d_Pj = d_Pj_tmp;
+                }
+
+                if (d_W_hist64)
+                {
+                    d_Wj = d_W_hist64 + (size_t)slot * nk;
+                }
+                else
+                {
+                    const size_t offB = (size_t)slot * nk * W_hist_map.el_size;
+                    const void *src = (const void *)((const char *)d_W_histLP + offB);
+                    k_cast_any2d_vec<<<blocks_nk, threads, 0, stream>>>(src, d_Wj_tmp, (int)nk, params.store_W_hist);
+                    d_Wj = d_Wj_tmp;
+                }
+
+                double *d_Gj = d_G_hist + (size_t)slot * (size_t)k * (size_t)k;
+
+                if (params.prec_gemm == ComputePrecision::FP64)
+                {
+                    // C = Wj^T * Pnew (k x k), computed directly in fp64.
+                    CUBLAS_CHECK(cublasGemmEx(
+                        cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                        k, k, n,
+                        scalars.one(g_map.compute_type),
+                        d_Wj, CUDA_R_64F, n,
+                        d_Pnew, CUDA_R_64F, n,
+                        scalars.zero(g_map.compute_type),
+                        d_C, CUDA_R_64F, k,
+                        g_map.compute_type, CUBLAS_GEMM_DEFAULT));
+                }
+                else
+                {
+                    // Cast inputs to selected low precision, run GEMM, cast result back.
+                    k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Wj, d_Wj_low, (int)nk, params.prec_gemm);
+                    k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Pnew, d_Pnew_low, (int)nk, params.prec_gemm);
+
+                    CUBLAS_CHECK(cublasGemmEx(
+                        cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                        k, k, n,
+                        scalars.one(g_map.compute_type),
+                        d_Wj_low, g_map.data_type, n,
+                        d_Pnew_low, g_map.data_type, n,
+                        scalars.zero(g_map.compute_type),
+                        d_C_gemm, CUDA_R_32F, k,
+                        g_map.compute_type, CUBLAS_GEMM_DEFAULT));
+
+                    k_cast_f2d_mat<<<blocks_kk, threads, 0, stream>>>(d_C_gemm, d_C, k * k);
+                }
+
+                // Solve Y = pinv(Gj) * C.
+                // Y are projection coefficients that remove old-direction components.
+                pinv_svd_cuda(cusolver, cublas, d_Gj, k, d_C, k, d_Y, stream, hist_rcond, pinv_ws);
+
+                if (params.verbose)
+                {
+                    printf("  [Iter %d] Orthogonalizing against history slot %d (jj=%d)\n", iter, slot, jj);
+                    print_gpu_matrix("  Gj", d_Gj, k, k, stream);
+                    print_gpu_matrix("  C (W_j^T P_new)", d_C, k, k, stream);
+                    print_gpu_matrix("  Y (Projection Coeffs)", d_Y, k, k, stream);
+                }
+                CUBLAS_CHECK(cublasDgemm(
+                    cublas, CUBLAS_OP_N, CUBLAS_OP_N,
+                    n, k, k,
+                    &scalars.s64_m_one,
+                    d_Pj, n,
+                    d_Y, k,
+                    &scalars.s64_one,
+                    d_Pnew, n));
+            }
+
+            if (params.store_P_hist != ComputePrecision::FP64)
+            {
+                // Optional "store precision" simulation:
+                // quantize then dequantize Pnew so later computations see that loss.
+                k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Pnew, d_scratch_LP, (int)nk, params.store_P_hist);
+                k_cast_any2d_vec<<<blocks_nk, threads, 0, stream>>>(d_scratch_LP, d_Pnew, (int)nk, params.store_P_hist);
+            }
+
+            // Wnew = A * Pnew (sparse-dense matrix multiply).
+            CUSPARSE_CHECK(cusparseSpMM(
+                cusparse,
+                CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                &scalars.s64_one, matA, dnB,
+                &scalars.s64_zero, dnC,
+                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_spmmBuf));
+
+            if (params.store_W_hist != ComputePrecision::FP64)
+            {
+                // Same quantize/dequantize for Wnew if requested.
+                k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Wnew, d_scratch_LP, (int)nk, params.store_W_hist);
+                k_cast_any2d_vec<<<blocks_nk, threads, 0, stream>>>(d_scratch_LP, d_Wnew, (int)nk, params.store_W_hist);
+            }
+
+            if (params.prec_gemm == ComputePrecision::FP64)
+            {
+                // Gnew = Pnew^T * Wnew (k x k Gram-like matrix).
+                CUBLAS_CHECK(cublasGemmEx(
+                    cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                    k, k, n,
+                    scalars.one(g_map.compute_type),
+                    d_Pnew, CUDA_R_64F, n,
+                    d_Wnew, CUDA_R_64F, n,
+                    scalars.zero(g_map.compute_type),
+                    d_Gnew, CUDA_R_64F, k,
+                    g_map.compute_type, CUBLAS_GEMM_DEFAULT));
+            }
+            else
+            {
+                // Low-precision GEMM path for Gnew.
+                k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Pnew, d_Pnew_low, (int)nk, params.prec_gemm);
+                k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Wnew, d_Wnew_low, (int)nk, params.prec_gemm);
+
+                CUBLAS_CHECK(cublasGemmEx(
+                    cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                    k, k, n,
+                    scalars.one(g_map.compute_type),
+                    d_Pnew_low, g_map.data_type, n,
+                    d_Wnew_low, g_map.data_type, n,
+                    scalars.zero(g_map.compute_type),
+                    d_C_gemm, CUDA_R_32F, k,
+                    g_map.compute_type, CUBLAS_GEMM_DEFAULT));
+
+                k_cast_f2d_mat<<<blocks_kk, threads, 0, stream>>>(d_C_gemm, d_Gnew, k * k);
+            }
+
+            // rhs = Pnew^T * r (size k)
+            CUBLAS_CHECK(cublasDgemv(
+                cublas, CUBLAS_OP_T,
+                n, k,
+                &scalars.s64_one,
+                d_Pnew, n,
+                d_r, 1,
+                &scalars.s64_zero,
+                d_rhs, 1));
+
+            // alpha = pinv(Gnew) * rhs (block step coefficients).
+            pinv_svd_cuda(cusolver, cublas, d_Gnew, k, d_rhs, 1, d_alpha, stream, hist_rcond, pinv_ws);
+
+            if (params.verbose)
+            {
+                printf("[Iter %d] res_norm = %e\n", iter, res_norm);
+                print_gpu_matrix("Gnew (P_new^T W_new)", d_Gnew, k, k, stream);
+                print_gpu_matrix("rhs (P_new^T r)", d_rhs, k, 1, stream);
+                print_gpu_matrix("alpha", d_alpha, k, 1, stream);
+            }
 
             // x = x + Pnew * alpha
-            CUBLAS_CHECK(cublasDgemv(cublas, CUBLAS_OP_N, n, k,
-                                     &one, d_Pnew, n, d_alpha, 1, &one, d_x, 1));
+            CUBLAS_CHECK(cublasDgemv(
+                cublas, CUBLAS_OP_N,
+                n, k,
+                &scalars.s64_one,
+                d_Pnew, n,
+                d_alpha, 1,
+                &scalars.s64_one,
+                d_x, 1));
 
             // r = r - Wnew * alpha
-            CUBLAS_CHECK(cublasDgemv(cublas, CUBLAS_OP_N, n, k,
-                                     &minus_one, d_Wnew, n, d_alpha, 1, &one, d_r, 1));
+            CUBLAS_CHECK(cublasDgemv(
+                cublas, CUBLAS_OP_N,
+                n, k,
+                &scalars.s64_m_one,
+                d_Wnew, n,
+                d_alpha, 1,
+                &scalars.s64_one,
+                d_r, 1));
 
+            // Save current blocks/matrix in ring-buffer slot for future orthogonalization.
             const int slot = iter % m;
-            CUDA_CHECK(cudaMemcpyAsync(d_P_hist + (size_t)slot * n * k, d_Pnew, (size_t)n * k * sizeof(double), cudaMemcpyDeviceToDevice, stream));
-            CUDA_CHECK(cudaMemcpyAsync(d_W_hist + (size_t)slot * n * k, d_Wnew, (size_t)n * k * sizeof(double), cudaMemcpyDeviceToDevice, stream));
-            CUDA_CHECK(cudaMemcpyAsync(d_G_hist + (size_t)slot * k * k, d_Gnew, (size_t)k * k * sizeof(double), cudaMemcpyDeviceToDevice, stream));
 
-            iterations = iter + 1;
-
-            if (iter == maxits - 1)
+            if (d_P_hist64)
             {
-                double res_end = 0.0;
-                CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, &res_end));
-                finalRes = res_end;
+                double *Pdst = d_P_hist64 + (size_t)slot * nk;
+                CUDA_CHECK(cudaMemcpyAsync(Pdst, d_Pnew, nk * sizeof(double), cudaMemcpyDeviceToDevice, stream));
             }
+            else
+            {
+                const size_t offB = (size_t)slot * nk * P_hist_map.el_size;
+                void *dstP = (void *)((char *)d_P_histLP + offB);
+                k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Pnew, dstP, (int)nk, params.store_P_hist);
+            }
+
+            if (d_W_hist64)
+            {
+                double *Wdst = d_W_hist64 + (size_t)slot * nk;
+                CUDA_CHECK(cudaMemcpyAsync(Wdst, d_Wnew, nk * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+            }
+            else
+            {
+                const size_t offB = (size_t)slot * nk * W_hist_map.el_size;
+                void *dstW = (void *)((char *)d_W_histLP + offB);
+                k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Wnew, dstW, (int)nk, params.store_W_hist);
+            }
+
+            double *Gdst = d_G_hist + (size_t)slot * (size_t)k * (size_t)k;
+            CUDA_CHECK(cudaMemcpyAsync(Gdst, d_Gnew, k * k * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+
+            result.iterations = iter + 1;
         }
 
-        if (finalRes == 0.0)
-        {
-            double res_end = 0.0;
-            CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, &res_end));
-            finalRes = res_end;
-        }
-
-        CUDA_CHECK(cudaMemcpyAsync(h_x.data(), d_x, n * sizeof(double), cudaMemcpyDeviceToHost, stream));
+        // Copy final solution back to host and wait for all queued GPU work.
+        CUDA_CHECK(cudaMemcpyAsync(h_x.data(), d_x, (size_t)n * sizeof(double), cudaMemcpyDeviceToHost, stream));
         CUDA_CHECK(cudaStreamSynchronize(stream));
 
-        if (dnB)
-            CUSPARSE_CHECK(cusparseDestroyDnMat(dnB));
-        if (dnC)
-            CUSPARSE_CHECK(cusparseDestroyDnMat(dnC));
-        if (vecX)
-            CUSPARSE_CHECK(cusparseDestroyDnVec(vecX));
-        if (vecTmp)
-            CUSPARSE_CHECK(cusparseDestroyDnVec(vecTmp));
-        if (matA)
-            CUSPARSE_CHECK(cusparseDestroySpMat(matA));
+        // Cleanup descriptors, buffers, and handles.
+        CUSPARSE_CHECK(cusparseDestroyDnMat(dnB));
+        CUSPARSE_CHECK(cusparseDestroyDnMat(dnC));
+        CUSPARSE_CHECK(cusparseDestroyDnVec(vecX));
+        CUSPARSE_CHECK(cusparseDestroyDnVec(vecTmp));
+        CUSPARSE_CHECK(cusparseDestroySpMat(matA));
 
-        if (d_spmvBuf)
-            CUDA_CHECK(cudaFree(d_spmvBuf));
-        if (d_spmmBuf)
-            CUDA_CHECK(cudaFree(d_spmmBuf));
+        CUDA_CHECK(cudaFree(d_spmvBuf));
+        CUDA_CHECK(cudaFree(d_spmmBuf));
 
         CUDA_CHECK(cudaFree(d_rowPtrA));
         CUDA_CHECK(cudaFree(d_colIndA));
@@ -397,32 +1007,60 @@ namespace ichol::solver
         CUDA_CHECK(cudaFree(d_Pnew));
         CUDA_CHECK(cudaFree(d_Wnew));
 
-        CUDA_CHECK(cudaFree(d_P_hist));
-        CUDA_CHECK(cudaFree(d_W_hist));
-        CUDA_CHECK(cudaFree(d_G_hist));
+        if (d_P_hist64)
+            CUDA_CHECK(cudaFree(d_P_hist64));
+        if (d_W_hist64)
+            CUDA_CHECK(cudaFree(d_W_hist64));
+        if (d_P_histLP)
+            CUDA_CHECK(cudaFree(d_P_histLP));
+        if (d_W_histLP)
+            CUDA_CHECK(cudaFree(d_W_histLP));
 
+        if (d_Pj_tmp)
+            CUDA_CHECK(cudaFree(d_Pj_tmp));
+        if (d_Wj_tmp)
+            CUDA_CHECK(cudaFree(d_Wj_tmp));
+        if (d_scratch_LP)
+            CUDA_CHECK(cudaFree(d_scratch_LP));
+
+        CUDA_CHECK(cudaFree(d_G_hist));
         CUDA_CHECK(cudaFree(d_C));
         CUDA_CHECK(cudaFree(d_Gnew));
         CUDA_CHECK(cudaFree(d_rhs));
         CUDA_CHECK(cudaFree(d_Y));
         CUDA_CHECK(cudaFree(d_alpha));
+        CUDA_CHECK(cudaFree(pinv_ws.d_G_copy));
+        CUDA_CHECK(cudaFree(pinv_ws.d_S));
+        CUDA_CHECK(cudaFree(pinv_ws.d_U));
+        CUDA_CHECK(cudaFree(pinv_ws.d_VT));
+        CUDA_CHECK(cudaFree(pinv_ws.d_work));
+        CUDA_CHECK(cudaFree(pinv_ws.d_S_inv));
+        CUDA_CHECK(cudaFree(pinv_ws.d_T1));
+        CUDA_CHECK(cudaFree(pinv_ws.d_info));
+
+        if (d_Pnew_low)
+        {
+            CUDA_CHECK(cudaFree(d_Pnew_low));
+            CUDA_CHECK(cudaFree(d_Wnew_low));
+            CUDA_CHECK(cudaFree(d_Wj_low));
+            CUDA_CHECK(cudaFree(d_C_gemm));
+        }
 
         CUDA_CHECK(cudaStreamDestroy(stream));
         CUSPARSE_CHECK(cusparseDestroy(cusparse));
         CUBLAS_CHECK(cublasDestroy(cublas));
         CUSOLVER_CHECK(cusolverDnDestroy(cusolver));
+
+        return result;
     }
 
-    template void mpcg<double>(
-        const std::vector<int> &h_csrRowPtrA,
-        const std::vector<int> &h_csrColIndA,
-        const std::vector<double> &h_valA,
-        const std::vector<ichol::precond::PrecondApply> &preconds,
-        const std::vector<double> &h_b,
-        std::vector<double> &h_x,
-        int maxits,
-        double tol,
-        int restart,
-        int &iterations,
-        double &finalRes);
+    template PCGResult mpcg<double>(
+        const std::vector<int> &,
+        const std::vector<int> &,
+        const std::vector<double> &,
+        const std::vector<ichol::precond::PrecondApply> &,
+        const std::vector<double> &,
+        std::vector<double> &,
+        const PCGParams &);
+
 } // namespace ichol::solver

@@ -9,7 +9,7 @@
 namespace ichol::precond
 {
 
-    static constexpr int ADI_MAX_N = 256;
+    static constexpr int ADI_MAX_N = 2048;
 
     // Solve n-length tridiagonal system with constant coefficients:
     //   a = -1 (subdiag), b = 2 (diag), c = -1 (superdiag)
@@ -150,8 +150,8 @@ namespace ichol::precond
         const double b_coeff = 2.0 * val;
         const double ac_coeff = -1.0 * val;
 
-        double cprime[256]; // Shared or local memory
-        double dprime[256];
+        double cprime[ADI_MAX_N]; // Shared or local memory
+        double dprime[ADI_MAX_N];
 
         // Forward sweep
         double denom = b_coeff;

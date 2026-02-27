@@ -92,7 +92,7 @@ static std::string get_mtx_path()
     if (!g_cli.mtx_path.empty()) return g_cli.mtx_path;
     const char* p = std::getenv("ICHOL_MTX");
     if (p && *p) return std::string(p);
-    return std::string("/tmp/ic/test/data/nasa2146.mtx");
+    return std::string("test/data/nasa2146.mtx");
 }
 
 static cholmod_sparse* to_cholmod_sparse_lower_csc(const ichol::matrix::CscMatrix<double>& A,
@@ -327,15 +327,12 @@ TEST(SupernodalSymbolic, Once_OursVsCHOLMOD)
     const int n = A.num_cols;
     std::cout << "[SymbolicOnce] n=" << n << " nnz=" << A.nnz << "\n";
 
-    ichol::SuperNodeOptions snopt;
-    snopt.approximate = false;
-
     ichol::SymbolicOptions symopt;
     symopt.ordering = ichol::Ordering::AMD;
 
     // --- time ours (includes CHOLMOD analyze + apply permutation, if any) ---
     const auto t0 = Clock::now();
-    (void)ichol::symbolic::supernodal_ll_analyze_fast(A, snopt, symopt);
+    (void)ichol::symbolic::supernodal_analyze(A, symopt);
     const auto t1 = Clock::now();
 
     // --- CHOLMOD setup ---
@@ -380,16 +377,13 @@ TEST(SupernodalNumeric, OursCPUAndGPU_Vs_CHOLMOD_SupernodalLL)
 
     const int n = A.num_cols;
 
-    ichol::SuperNodeOptions snopt;
-    snopt.approximate = false;
-
     ichol::SymbolicOptions symopt;
     symopt.ordering = ichol::Ordering::AMD;
 
     // --- our analyze (permutes A_sym in-place) ---
     auto A_sym = A;
     const auto ts0 = Clock::now();
-    auto plan = ichol::symbolic::supernodal_ll_analyze_fast(A_sym, snopt, symopt);
+    auto plan = ichol::symbolic::supernodal_analyze(A_sym, symopt);
     const auto ts1 = Clock::now();
     const double ours_sym_ms = elapsed_ms(ts0, ts1);
 

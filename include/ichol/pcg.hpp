@@ -7,6 +7,44 @@
 
 namespace ichol::solver
 {
+    enum class ComputePrecision
+    {
+        FP64,     // Standard Double
+        FP32,     // Standard Float
+        TF32,     // Tensor Float 32 (Internal to H100)
+        FP16,     // Half Precision
+        BF16,     // Brain Float 16
+        FP8_E4M3, // Hopper FP8 (Max precision)
+        FP8_E5M2  // Hopper FP8 (Max dynamic range)
+    };
+
+    struct PCGParams
+    {
+        int maxits = 500;
+        double tol = 1e-10;
+        int restart = 0;
+
+        ComputePrecision prec_gemm = ComputePrecision::FP64;
+        ComputePrecision prec_spmm = ComputePrecision::FP64;
+        ComputePrecision prec_precond = ComputePrecision::FP64;
+        ComputePrecision prec_acc = ComputePrecision::FP64;
+
+        ComputePrecision store_P_hist = ComputePrecision::FP64;
+        ComputePrecision store_W_hist = ComputePrecision::FP64;
+
+        double rcond_base = 1e-15;
+
+        ichol::precond::PrecondApply *custom_precond = nullptr;
+
+        bool verbose = false;
+    };
+
+    struct PCGResult
+    {
+        int iterations = 0;
+        double finalRes = 0.0;
+    };
+
     /**
      * @brief Solves a linear system with PCG on GPU.
      *
@@ -26,11 +64,10 @@ namespace ichol::solver
      * @param h_valL       Nonzero values for factor L (host) in precision T_L.
      * @param h_b          Right-hand side vector b (host).
      * @param h_x          Solution vector x (host, output).
-     * @param iterations   Number of iterations performed (output).
-     * @param finalRes     Final residual norm (output).
+     * @param params       Solver parameters.
      */
     template <typename T_L>
-    void pcg(
+    PCGResult pcg(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
         const std::vector<double> &h_valA,
@@ -40,22 +77,13 @@ namespace ichol::solver
         const std::vector<double> &h_b,
         std::vector<double> &h_x,
         const std::vector<double> &h_D,
-        int &iterations,
-        double &finalRes);
-
-    template <typename T>
-    struct PrecondApply
-    {
-        // Apply z = M^{-1} r
-        void (*apply)(void *ctx, const double *d_r, double *d_z, int n, cudaStream_t stream);
-        void *ctx;
-    };
+        const PCGParams &params = PCGParams{});
 
     /**
      * @brief A basic implementation of Multi-Preconditioner Conjugate Gradient (MPCG) on GPU.
-     * 
+     *
      * @param  restart 0 => treat as not truncated.
-     * 
+     *
      * @details The math during iteration i:
      * r_i = b - A x_i
      * Z_{i+1} = [M1^{-1} r_i | ... | Mk^{-1} r_i] (n×k)
@@ -63,23 +91,16 @@ namespace ichol::solver
      * alpha_{i+1} = pinv(P_{i+1}^T A P_{i+1}) * (P_{i+1}^T r_i) (k×1)
      * x_{i+1} = x_i + P_{i+1} * alpha_{i+1}
      * r_{i+1} = r_i - A P_{i+1} * alpha_{i+1}
-     * 
-     * @note currently pinv is realized on CPU.
      */
     template <typename T_L>
-    void mpcg(
+    PCGResult mpcg(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
         const std::vector<double> &h_valA,
         const std::vector<ichol::precond::PrecondApply> &preconds,
         const std::vector<double> &h_b,
         std::vector<double> &h_x,
-        int maxits,
-        double tol,
-        int restart,
-        int &iterations,
-        double &finalRes);
-
+        const PCGParams &params);
 } // namespace ichol::solver
 
 #endif // ICHOL_PCG_HPP

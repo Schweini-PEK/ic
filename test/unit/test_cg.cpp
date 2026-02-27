@@ -34,12 +34,12 @@ TEST(ICPCG, Solves2x2_Double)
     std::vector<double> b = {1.0, 2.0};
 
     std::vector<double> x;
-    int iters = 0;
-    double finalRes = 0.0;
-
     std::vector<double> D = {1.0, 1.0}; // No scaling
+    ichol::solver::PCGParams params;
+    params.maxits = 1000;
+    params.tol = 1e-10;
 
-    ichol::solver::pcg<double>(
+    ichol::solver::PCGResult result = ichol::solver::pcg<double>(
         rowPtrA,
         colIndA,
         valA,
@@ -49,8 +49,7 @@ TEST(ICPCG, Solves2x2_Double)
         b,
         x,
         D,
-        iters,
-        finalRes);
+        params);
 
     ASSERT_EQ(x.size(), 2);
 
@@ -60,6 +59,6 @@ TEST(ICPCG, Solves2x2_Double)
     EXPECT_NEAR(x[0], x_true_0, 1e-10);
     EXPECT_NEAR(x[1], x_true_1, 1e-10);
 
-    EXPECT_LT(finalRes, 1e-10);
-    EXPECT_LT(iters, 50);
+    EXPECT_LT(result.finalRes, 1e-10);
+    EXPECT_LT(result.iterations, 50);
 }

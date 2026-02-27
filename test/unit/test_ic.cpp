@@ -66,14 +66,15 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
               << sym_plan.factor_pattern.col_ind_L.size() << "\n";
 
     std::vector<double> y;
-    int iters = 0;
-    double finalRes = 0.0;
+    ichol::solver::PCGParams params;
+    params.maxits = 1000;
+    params.tol = 1e-10;
 
     /*
     Solve B y = b_tilde with preconditioner from L,
     where LL^T \approx D^{-1} A D^{-1} + \alpha I
     */
-    ichol::solver::pcg<half_float::half>(
+    ichol::solver::PCGResult result = ichol::solver::pcg<half_float::half>(
         A.row_ptr,
         A.col_ind,
         A.values,
@@ -83,8 +84,7 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
         b_tilde,
         y,
         D,
-        iters,
-        finalRes);
+        params);
 
     auto vec_norm = [](const std::vector<double> &v)
     {
@@ -128,9 +128,9 @@ TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
     std::cout << "Scaled-system relative residual (B y = b_tilde): "
               << relresB << "\n";
     std::cout << "Iterations taken by PCG: "
-              << iters << "\n";
+              << result.iterations << "\n";
     std::cout << "Final residual from CG (reported ||r||_2): "
-              << finalRes << "\n";
+              << result.finalRes << "\n";
 }
 
 int main(int argc, char **argv)

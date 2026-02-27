@@ -321,7 +321,7 @@ static ichol::symbolic::LevelSets build_level_sets_csr_diag_last(
 namespace ichol::solver
 {
     template <typename T_L>
-    void pcg(
+    PCGResult pcg(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
         const std::vector<double> &h_valA,
@@ -331,8 +331,7 @@ namespace ichol::solver
         const std::vector<double> &h_b,
         std::vector<double> &h_x,
         const std::vector<double> &h_D,
-        int &iterations,
-        double &finalRes)
+        const PCGParams &params)
     {
         /*
         I. Allocate A, L on GPU
@@ -349,61 +348,19 @@ namespace ichol::solver
 
         using SolveT = std::conditional_t<L_is_fp64, double, std::conditional_t<L_is_fp32, float, __half>>;
 
-        // Build host SolveT values for L
-        std::vector<SolveT> h_valL_solve(nnzL);
-        if constexpr (L_is_fp64)
-        {
-            for (int i = 0; i < nnzL; ++i)
-                h_valL_solve[i] = static_cast<double>(h_valL[i]);
-        }
-        else if constexpr (L_is_fp32)
-        {
-            for (int i = 0; i < nnzL; ++i)
-                h_valL_solve[i] = static_cast<float>(h_valL[i]);
-        }
-        else
-        {
-            for (int i = 0; i < nnzL; ++i)
-                h_valL_solve[i] = __float2half_rn(static_cast<float>(h_valL[i]));
-        }
-
-        // Build CSR(L^T) on host with diag-last.
-        std::vector<int> h_csrRowPtrLt, h_csrColIndLt;
-        std::vector<SolveT> h_valLt_solve;
-        build_csr_trans<SolveT>(
-            n, h_csrRowPtrL, h_csrColIndL, h_valL_solve,
-            h_csrRowPtrLt, h_csrColIndLt, h_valLt_solve);
-
-        // Build level sets for L (lower) and L^T (upper).
-        const ichol::symbolic::LevelSets levelsets_L =
-            build_level_sets_csr_diag_last(n, h_csrRowPtrL, h_csrColIndL, false);
-
-        const ichol::symbolic::LevelSets levelsets_Lt =
-            build_level_sets_csr_diag_last(n, h_csrRowPtrLt, h_csrColIndLt, true);
-
         cudaStream_t stream = 0;
+        PCGResult result{};
+        const bool use_custom_precond = (params.custom_precond != nullptr && params.custom_precond->apply != nullptr);
 
-        // Persistent plans
+        // Persistent plans and IC triangular-solve data for legacy preconditioning path.
         SpTRSVLevelsetsPlan sptrsv_plan_L;
         SpTRSVLevelsetsPlan sptrsv_plan_Lt;
-
-        int rc_plan = sptrsv_plan_L.init(levelsets_L, stream);
-        if (rc_plan != 0)
-        {
-            std::cerr << "ERROR: SpTRSV plan init (L) failed, code " << rc_plan << "\n";
-            iterations = 0;
-            finalRes = std::numeric_limits<double>::infinity();
-            return;
-        }
-
-        rc_plan = sptrsv_plan_Lt.init(levelsets_Lt, stream);
-        if (rc_plan != 0)
-        {
-            std::cerr << "ERROR: SpTRSV plan init (L^T) failed, code " << rc_plan << "\n";
-            iterations = 0;
-            finalRes = std::numeric_limits<double>::infinity();
-            return;
-        }
+        DeviceBuffer<int> d_csrRowPtrL;
+        DeviceBuffer<int> d_csrColIndL;
+        DeviceBuffer<SolveT> d_valL;
+        DeviceBuffer<int> d_csrRowPtrLt;
+        DeviceBuffer<int> d_csrColIndLt;
+        DeviceBuffer<SolveT> d_valLt;
 
         std::vector<double> h_diagA(n, 0.0);
         for (int i = 0; i < n; ++i)
@@ -427,50 +384,99 @@ namespace ichol::solver
         CusparseSpMat spMatA;
         spMatA.create(n, n, nnzA, d_csrRowPtrA.get(), d_csrColIndA.get(), d_valA.get());
 
-        // Copy L (CSR) to device (indices + values in SolveT)
-        DeviceBuffer<int> d_csrRowPtrL(n + 1);
-        DeviceBuffer<int> d_csrColIndL(nnzL);
-        DeviceBuffer<SolveT> d_valL(nnzL);
-        CUDA_CHECK(cudaMemcpy(d_csrRowPtrL.get(), h_csrRowPtrL.data(),
-                              (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_csrColIndL.get(), h_csrColIndL.data(),
-                              nnzL * sizeof(int), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_valL.get(), h_valL_solve.data(),
-                              nnzL * sizeof(SolveT), cudaMemcpyHostToDevice));
+        if (!use_custom_precond)
+        {
+            // Build host SolveT values for L
+            std::vector<SolveT> h_valL_solve(nnzL);
+            if constexpr (L_is_fp64)
+            {
+                for (int i = 0; i < nnzL; ++i)
+                    h_valL_solve[i] = static_cast<double>(h_valL[i]);
+            }
+            else if constexpr (L_is_fp32)
+            {
+                for (int i = 0; i < nnzL; ++i)
+                    h_valL_solve[i] = static_cast<float>(h_valL[i]);
+            }
+            else
+            {
+                for (int i = 0; i < nnzL; ++i)
+                    h_valL_solve[i] = __float2half_rn(static_cast<float>(h_valL[i]));
+            }
 
-        // Copy L^T (CSR) to device (indices + values in SolveT)
-        DeviceBuffer<int> d_csrRowPtrLt(n + 1);
-        DeviceBuffer<int> d_csrColIndLt(nnzL);
-        DeviceBuffer<SolveT> d_valLt(nnzL);
-        CUDA_CHECK(cudaMemcpy(d_csrRowPtrLt.get(), h_csrRowPtrLt.data(),
-                              (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_csrColIndLt.get(), h_csrColIndLt.data(),
-                              nnzL * sizeof(int), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_valLt.get(), h_valLt_solve.data(),
-                              nnzL * sizeof(SolveT), cudaMemcpyHostToDevice));
+            // Build CSR(L^T) on host with diag-last.
+            std::vector<int> h_csrRowPtrLt, h_csrColIndLt;
+            std::vector<SolveT> h_valLt_solve;
+            build_csr_trans<SolveT>(
+                n, h_csrRowPtrL, h_csrColIndL, h_valL_solve,
+                h_csrRowPtrLt, h_csrColIndLt, h_valLt_solve);
+
+            // Build level sets for L (lower) and L^T (upper).
+            const ichol::symbolic::LevelSets levelsets_L =
+                build_level_sets_csr_diag_last(n, h_csrRowPtrL, h_csrColIndL, false);
+            const ichol::symbolic::LevelSets levelsets_Lt =
+                build_level_sets_csr_diag_last(n, h_csrRowPtrLt, h_csrColIndLt, true);
+
+            int rc_plan = sptrsv_plan_L.init(levelsets_L, stream);
+            if (rc_plan != 0)
+            {
+                std::cerr << "ERROR: SpTRSV plan init (L) failed, code " << rc_plan << "\n";
+                result.finalRes = std::numeric_limits<double>::infinity();
+                return result;
+            }
+
+            rc_plan = sptrsv_plan_Lt.init(levelsets_Lt, stream);
+            if (rc_plan != 0)
+            {
+                std::cerr << "ERROR: SpTRSV plan init (L^T) failed, code " << rc_plan << "\n";
+                result.finalRes = std::numeric_limits<double>::infinity();
+                return result;
+            }
+
+            // Copy L (CSR) to device (indices + values in SolveT)
+            d_csrRowPtrL.alloc(n + 1);
+            d_csrColIndL.alloc(nnzL);
+            d_valL.alloc(nnzL);
+            CUDA_CHECK(cudaMemcpy(d_csrRowPtrL.get(), h_csrRowPtrL.data(),
+                                  (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(d_csrColIndL.get(), h_csrColIndL.data(),
+                                  nnzL * sizeof(int), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(d_valL.get(), h_valL_solve.data(),
+                                  nnzL * sizeof(SolveT), cudaMemcpyHostToDevice));
+
+            // Copy L^T (CSR) to device (indices + values in SolveT)
+            d_csrRowPtrLt.alloc(n + 1);
+            d_csrColIndLt.alloc(nnzL);
+            d_valLt.alloc(nnzL);
+            CUDA_CHECK(cudaMemcpy(d_csrRowPtrLt.get(), h_csrRowPtrLt.data(),
+                                  (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(d_csrColIndLt.get(), h_csrColIndLt.data(),
+                                  nnzL * sizeof(int), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(d_valLt.get(), h_valLt_solve.data(),
+                                  nnzL * sizeof(SolveT), cudaMemcpyHostToDevice));
+        }
 
         // 3) Allocate vectors x, b, etc. in double
         DeviceBuffer<double> d_x(n);
         DeviceBuffer<double> d_b(n);
-        CUDA_CHECK(cudaMemset(d_x.get(), 0, n * sizeof(double))); // x=0 initial
+        if (static_cast<int>(h_x.size()) == n)
+        {
+            CUDA_CHECK(cudaMemcpy(d_x.get(), h_x.data(), n * sizeof(double), cudaMemcpyHostToDevice));
+        }
+        else
+        {
+            CUDA_CHECK(cudaMemset(d_x.get(), 0, n * sizeof(double)));
+        }
         CUDA_CHECK(cudaMemcpy(d_b.get(), h_b.data(), n * sizeof(double), cudaMemcpyHostToDevice));
-
-        // new: set up D
-        DeviceBuffer<double> d_D(n);
-        CUDA_CHECK(cudaMemcpy(d_D.get(), h_D.data(), n * sizeof(double), cudaMemcpyHostToDevice));
-
-        DeviceBuffer<double> d_Dr(n);
 
         int block = 256;
         int grid = (n + block - 1) / block;
-        ew_mul<<<grid, block>>>(n, d_D.get(), d_b.get(), d_Dr.get()); // d_Dr = D .* d_b
 
-        /**
-         * Note that \tilde{b} = D^{-1} b is passed into this func.
-         * This computes the norm of original b for convergence check:
-         */
+        // Match MPCG stopping rule: ||r|| <= tol * ||b||.
         double bnorm = 0.0;
-        CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_Dr.get(), 1, &bnorm));
+        CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_b.get(), 1, &bnorm));
+        if (bnorm == 0.0)
+            bnorm = 1.0;
 
         // For A * p
         CusparseDnVec vecP_dev;
@@ -518,31 +524,30 @@ namespace ichol::solver
         DeviceBuffer<SolveT> d_r_work_buf;
         DeviceBuffer<SolveT> d_w_work_buf;
         DeviceBuffer<SolveT> d_z_work_buf;
-        if constexpr (std::is_same_v<SolveT, double>)
+        if (!use_custom_precond)
         {
-            d_r_work = reinterpret_cast<SolveT *>(d_r.get()); // alias
-            d_z_work = reinterpret_cast<SolveT *>(d_z.get()); // alias
-            d_w_work_buf.alloc(n);
-            d_w_work = d_w_work_buf.get();
-        }
-        else
-        {
-            d_r_work_buf.alloc(n);
-            d_w_work_buf.alloc(n);
-            d_z_work_buf.alloc(n);
-            d_r_work = d_r_work_buf.get();
-            d_w_work = d_w_work_buf.get();
-            d_z_work = d_z_work_buf.get();
+            if constexpr (std::is_same_v<SolveT, double>)
+            {
+                d_r_work = reinterpret_cast<SolveT *>(d_r.get()); // alias
+                d_z_work = reinterpret_cast<SolveT *>(d_z.get()); // alias
+                d_w_work_buf.alloc(n);
+                d_w_work = d_w_work_buf.get();
+            }
+            else
+            {
+                d_r_work_buf.alloc(n);
+                d_w_work_buf.alloc(n);
+                d_z_work_buf.alloc(n);
+                d_r_work = d_r_work_buf.get();
+                d_w_work = d_w_work_buf.get();
+                d_z_work = d_z_work_buf.get();
+            }
         }
 
         cudaMemcpy(d_r.get(), d_b.get(), n * sizeof(double), cudaMemcpyDeviceToDevice);
 
-        double nrmr0 = 0.0;
-        CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_r.get(), 1, &nrmr0));
-        double tol = 1e-6;
         double rho = 0.0, rhoOld = 0.0;
-        int maxIters = 1000;
-        iterations = 0;
+        const int maxIters = params.maxits;
 
         double sptrsv_total_ms = 0.0;
         int sptrsv_timed_iters = 0;
@@ -552,9 +557,15 @@ namespace ichol::solver
         for (int k = 1; k <= maxIters; k++)
         {
             // (1) z = M^-1 r
-            //   L * w = r
-            //   L^T * z = w
+            if (use_custom_precond)
             {
+                params.custom_precond->apply(params.custom_precond->ctx, d_r.get(), d_z.get(), n, stream);
+            }
+            else
+            {
+                // Legacy path:
+                //   L * w = r
+                //   L^T * z = w
                 if constexpr (!std::is_same_v<SolveT, double>)
                 {
                     cast_vec<SolveT, double><<<grid, block>>>(n, d_r.get(), d_r_work);
@@ -581,8 +592,8 @@ namespace ichol::solver
                     sptrsv_total_ms += static_cast<double>(iter_ms);
                     sptrsv_timed_iters += 1;
                     std::cerr << "ERROR: SpTRSV(L) failed with code " << rc1 << " at iter " << k << "\n";
-                    iterations = k;
-                    finalRes = std::numeric_limits<double>::infinity();
+                    result.iterations = k;
+                    result.finalRes = std::numeric_limits<double>::infinity();
                     break;
                 }
 
@@ -605,8 +616,8 @@ namespace ichol::solver
                     sptrsv_total_ms += static_cast<double>(iter_ms);
                     sptrsv_timed_iters += 1;
                     std::cerr << "ERROR: SpTRSV(L^T) failed with code " << rc2 << " at iter " << k << "\n";
-                    iterations = k;
-                    finalRes = std::numeric_limits<double>::infinity();
+                    result.iterations = k;
+                    result.finalRes = std::numeric_limits<double>::infinity();
                     break;
                 }
 
@@ -620,10 +631,13 @@ namespace ichol::solver
             // (2) rho = r^T z
             rhoOld = rho;
             CUBLAS_CHECK(cublasDdot(cublasHandle, n, d_r.get(), 1, d_z.get(), 1, &rho));
-            float iter_ms = 0.0f;
-            CUDA_CHECK(cudaEventElapsedTime(&iter_ms, sptrsv_start, sptrsv_stop));
-            sptrsv_total_ms += static_cast<double>(iter_ms);
-            sptrsv_timed_iters += 1;
+            if (!use_custom_precond)
+            {
+                float iter_ms = 0.0f;
+                CUDA_CHECK(cudaEventElapsedTime(&iter_ms, sptrsv_start, sptrsv_stop));
+                sptrsv_total_ms += static_cast<double>(iter_ms);
+                sptrsv_timed_iters += 1;
+            }
 
             // (3) p update
             if (k == 1)
@@ -672,8 +686,8 @@ namespace ichol::solver
             if (denom <= 0.0 || std::isnan(denom) || std::isinf(denom))
             {
                 std::cerr << "ERROR: denom invalid in iter " << k << ": " << denom << "\n";
-                iterations = k;
-                finalRes = std::numeric_limits<double>::infinity();
+                result.iterations = k;
+                result.finalRes = std::numeric_limits<double>::infinity();
                 break;
             }
 
@@ -686,32 +700,32 @@ namespace ichol::solver
             double negAlpha = -alpha;
             CUBLAS_CHECK(cublasDaxpy(cublasHandle, n, &negAlpha, d_q.get(), 1, d_r.get(), 1));
 
-            // (8) check convergence
-            ew_mul<<<grid, block>>>(n, d_D.get(), d_r.get(), d_Dr.get());
+            // (8) check convergence (same criterion as MPCG)
+            double res_norm = 0.0;
+            CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_r.get(), 1, &res_norm));
 
-            double nrmDr = 0.0;
-            CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_Dr.get(), 1, &nrmDr));
-
-            if (nrmDr / bnorm < tol)
+            if (res_norm <= params.tol * bnorm)
             {
-                iterations = k;
-                finalRes = nrmDr / bnorm;
+                result.iterations = k;
+                result.finalRes = res_norm;
                 break;
             }
 
-            if (std::isnan(nrmDr) || std::isinf(nrmDr))
+            if (std::isnan(res_norm) || std::isinf(res_norm))
             {
-                std::cerr << "ERROR: nrmDr is NaN or Inf in iteration " << k << ": " << nrmDr << std::endl;
-                iterations = k;
-                finalRes = std::numeric_limits<double>::infinity();
+                std::cerr << "ERROR: res_norm is NaN or Inf in iteration " << k << ": " << res_norm << std::endl;
+                result.iterations = k;
+                result.finalRes = std::numeric_limits<double>::infinity();
                 break;
             }
         }
 
-        if (iterations == 0)
+        if (result.iterations == 0)
         {
-            iterations = maxIters;
-            // finalRes = nrmDr / bnorm;
+            double res_norm = 0.0;
+            CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_r.get(), 1, &res_norm));
+            result.iterations = maxIters;
+            result.finalRes = res_norm;
         }
 
         double sptrsv_avg_ms = 0.0;
@@ -723,9 +737,11 @@ namespace ichol::solver
 
         std::cout << "SpTRSV total time (ms): " << sptrsv_total_ms
                   << ", avg per iteration (ms): " << sptrsv_avg_ms << "\n";
+
+        return result;
     }
 
-    template void pcg<double>(
+    template PCGResult pcg<double>(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
         const std::vector<double> &h_valA,
@@ -735,10 +751,9 @@ namespace ichol::solver
         const std::vector<double> &h_b,
         std::vector<double> &h_x,
         const std::vector<double> &h_D,
-        int &iterations,
-        double &finalRes);
+        const PCGParams &params);
 
-    template void pcg<float>(
+    template PCGResult pcg<float>(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
         const std::vector<double> &h_valA,
@@ -748,10 +763,9 @@ namespace ichol::solver
         const std::vector<double> &h_b,
         std::vector<double> &h_x,
         const std::vector<double> &h_D,
-        int &iterations,
-        double &finalRes);
+        const PCGParams &params);
 
-    template void pcg<half_float::half>(
+    template PCGResult pcg<half_float::half>(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
         const std::vector<double> &h_valA,
@@ -761,7 +775,6 @@ namespace ichol::solver
         const std::vector<double> &h_b,
         std::vector<double> &h_x,
         const std::vector<double> &h_D,
-        int &iterations,
-        double &finalRes);
+        const PCGParams &params);
 
 } // namespace ichol::solver

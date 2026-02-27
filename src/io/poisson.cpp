@@ -3,6 +3,23 @@
 #include <stdexcept>
 #include <vector>
 
+namespace
+{
+    void spmv(const ichol::matrix::CsrMatrix<double> &A, const std::vector<double> &x, std::vector<double> &y)
+    {
+        y.assign(A.num_rows, 0.0);
+        for (int i = 0; i < A.num_rows; ++i)
+        {
+            double sum = 0.0;
+            for (int p = A.row_ptr[i]; p < A.row_ptr[i + 1]; ++p)
+            {
+                sum += A.values[p] * x[A.col_ind[p]];
+            }
+            y[i] = sum;
+        }
+    }
+}
+
 namespace ichol::io
 {
     template <typename T>
@@ -168,5 +185,33 @@ namespace ichol::io
         A.row_ptr[N] = nnz_so_far;
         return A;
     }
+    
     template ichol::matrix::CsrMatrix<double> gen_2dpoi(int n, double epsilon);
+
+    std::vector<double> rhs_2d_poisson_manufactured(const ichol::matrix::CsrMatrix<double> &A, int n)
+    {
+        const int N = n * n;
+        if (A.num_rows != N)
+            throw std::runtime_error("A.num_rows != n*n");
+
+        const double h = 1.0 / (n + 1);
+        std::vector<double> u(N);
+
+        auto idx = [n](int ix, int iy)
+        { return ix + n * iy; }; // x-fast, y-slow
+
+        for (int iy = 0; iy < n; ++iy)
+        {
+            const double y = (iy + 1) * h;
+            for (int ix = 0; ix < n; ++ix)
+            {
+                const double x = (ix + 1) * h;
+                u[idx(ix, iy)] = std::cos(M_PI * x) * std::cos(M_PI * y);
+            }
+        }
+
+        std::vector<double> b;
+        spmv(A, u, b); // b = A*u
+        return b;
+    }
 }

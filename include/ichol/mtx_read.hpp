@@ -42,8 +42,22 @@ namespace ichol::io
     template <typename T>
     ichol::matrix::CsrMatrix<T> gen_3dpoi(int n);
 
+    /**
+     * Generate a 2D Poisson matrix in CSR format with a 5-point stencil, full version.
+     */
     template <typename T>
     ichol::matrix::CsrMatrix<T> gen_2dpoi(int n, double epsilon);
+
+    /**
+     * Generate the right-hand side vector b for a 2D Poisson problem with manufactured solution.
+     * 
+     * Here we assume A corresponds to the standard lexicographic ordering on an n-by-n interior grid
+     * over (0,1)^2 with h = 1/(n+1). The manufactured solution is u(x,y)=cos(pi x) cos(pi y), 
+     * and this function computes b = A*u accordingly.
+     * 
+     * @return The right-hand side vector b corresponding to the manufactured solution.
+     */
+    std::vector<double> rhs_2d_poisson_manufactured(const ichol::matrix::CsrMatrix<double> &A, int n);
 } // namespace ichol::io
 
 #endif // ICHOL_MTX_READ_HPP
