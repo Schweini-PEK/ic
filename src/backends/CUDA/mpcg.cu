@@ -108,25 +108,6 @@ static PrecisionMap get_precision_map(ichol::solver::ComputePrecision prec, icho
     return m;
 }
 
-/**
- * Debug helper to print a device matrix in column-major order.
- */
-static void print_gpu_matrix(const char *name, const double *d_mat, int rows, int cols, cudaStream_t stream)
-{
-    std::vector<double> h_mat(rows * cols);
-    cudaMemcpyAsync(h_mat.data(), d_mat, rows * cols * sizeof(double), cudaMemcpyDeviceToHost, stream);
-    cudaStreamSynchronize(stream);
-    printf("%s:\n", name);
-    for (int i = 0; i < rows; ++i)
-    {
-        for (int j = 0; j < cols; ++j)
-        {
-            printf("%12.4e ", h_mat[i + j * rows]);
-        }
-        printf("\n");
-    }
-}
-
 struct StorageMap
 {
     cudaDataType_t data_type;
@@ -367,12 +348,15 @@ __global__ void k_small_pinv_jacobi_svd(
     double V[KMAX * KMAX];
     double S[KMAX];
 
-    // Initialize U as G and V as Identity
+    // Initialize U as symmetrized G and V as Identity.
+    // G should be symmetric (P^T A P), but GEMM roundoff can introduce drift.
     for (int i = 0; i < k; ++i)
     {
         for (int j = 0; j < k; ++j)
         {
-            U[i + j * k] = G[i + j * k];
+            const double gij = G[i + j * k];
+            const double gji = G[j + i * k];
+            U[i + j * k] = 0.5 * (gij + gji);
             V[i + j * k] = (i == j) ? 1.0 : 0.0;
         }
     }
@@ -392,11 +376,11 @@ __global__ void k_small_pinv_jacobi_svd(
                     c += U[m + i * k] * U[m + j * k];
                 }
 
-                if (abs(c) <= 1e-15 * sqrt(a * b))
+                if (fabs(c) <= 1e-15 * sqrt(a * b))
                     continue;
 
                 double zeta = (b - a) / (2.0 * c);
-                double t = (zeta > 0 ? 1.0 : -1.0) / (abs(zeta) + sqrt(1.0 + zeta * zeta));
+                double t = (zeta > 0 ? 1.0 : -1.0) / (fabs(zeta) + sqrt(1.0 + zeta * zeta));
                 double cos_th = 1.0 / sqrt(1.0 + t * t);
                 double sin_th = cos_th * t;
 
@@ -435,7 +419,19 @@ __global__ void k_small_pinv_jacobi_svd(
     for (int i = 0; i < k; ++i)
         if (S[i] > s_max)
             s_max = S[i];
-    double threshold = rcond * s_max;
+    if (s_max == 0.0)
+    {
+        for (int rhs_col = 0; rhs_col < nrhs; ++rhs_col)
+        {
+            for (int i = 0; i < k; ++i)
+                X[i + rhs_col * k] = 0.0;
+        }
+        return;
+    }
+
+    // Robust threshold: relative + absolute floor.
+    double threshold = fmax(rcond * s_max, 1e-15 * s_max);
+    threshold = fmax(threshold, 1e-15);
 
     // Solve: X = V * S_inv * U^T * B
     for (int rhs_col = 0; rhs_col < nrhs; ++rhs_col)
@@ -731,10 +727,12 @@ namespace ichol::solver
         CUDA_CHECK(cudaMalloc(&d_spmmBuf, spmm_bufSize));
 
         PCGResult result{};
+        bool converged = false;
         const int threads = 256;
         const int blocks_nk = (int)((nk + (size_t)threads - 1) / (size_t)threads);
         const int blocks_kk = (int)(((size_t)k * (size_t)k + (size_t)threads - 1) / (size_t)threads);
         double hist_rcond = get_safe_rcond(params.store_P_hist, params.rcond_base);
+        hist_rcond = std::max(hist_rcond, 1e-15);
 
         // Main MPCG iteration.
         for (int iter = 0; iter < params.maxits; ++iter)
@@ -746,6 +744,7 @@ namespace ichol::solver
             {
                 result.iterations = iter;
                 result.finalRes = res_norm;
+                converged = true;
                 break;
             }
 
@@ -753,10 +752,18 @@ namespace ichol::solver
             CUSPARSE_CHECK(cusparseDnMatSetValues(dnB, d_Pnew));
             CUSPARSE_CHECK(cusparseDnMatSetValues(dnC, d_Wnew));
 
+            // CPU-side preconditioners may read d_r on host via D2H.
+            // Ensure all prior stream work that produces d_r is complete first.
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+
             // Apply each preconditioner to the same residual r.
             // Output columns form Znew(:, t).
             for (int t = 0; t < k; ++t)
+            {
+                // Each preconditioner owns only its column buffer.
+                CUDA_CHECK(cudaMemsetAsync(d_Znew + (size_t)t * (size_t)n, 0, (size_t)n * sizeof(double), stream));
                 preconds[t].apply(preconds[t].ctx, d_r, d_Znew + (size_t)t * (size_t)n, n, stream);
+            }
 
             // Start from Znew, then orthogonalize against history below.
             CUDA_CHECK(cudaMemcpyAsync(d_Pnew, d_Znew, nk * sizeof(double), cudaMemcpyDeviceToDevice, stream));
@@ -835,13 +842,6 @@ namespace ichol::solver
                 // Y are projection coefficients that remove old-direction components.
                 pinv_svd_cuda(cusolver, cublas, d_Gj, k, d_C, k, d_Y, stream, hist_rcond, pinv_ws);
 
-                if (params.verbose)
-                {
-                    printf("  [Iter %d] Orthogonalizing against history slot %d (jj=%d)\n", iter, slot, jj);
-                    print_gpu_matrix("  Gj", d_Gj, k, k, stream);
-                    print_gpu_matrix("  C (W_j^T P_new)", d_C, k, k, stream);
-                    print_gpu_matrix("  Y (Projection Coeffs)", d_Y, k, k, stream);
-                }
                 CUBLAS_CHECK(cublasDgemm(
                     cublas, CUBLAS_OP_N, CUBLAS_OP_N,
                     n, k, k,
@@ -850,6 +850,24 @@ namespace ichol::solver
                     d_Y, k,
                     &scalars.s64_one,
                     d_Pnew, n));
+            }
+
+            // Normalize each search-direction column to keep Gram diagonals well-scaled.
+            // Here we enforce ||p_t||_2 = 1.
+            for (int t = 0; t < k; ++t)
+            {
+                double *d_pt = d_Pnew + (size_t)t * (size_t)n;
+                double pnorm = 0.0;
+                CUBLAS_CHECK(cublasDnrm2(cublas, n, d_pt, 1, &pnorm));
+                if (pnorm > 1e-30)
+                {
+                    const double inv_pnorm = 1.0 / pnorm;
+                    CUBLAS_CHECK(cublasDscal(cublas, n, &inv_pnorm, d_pt, 1));
+                }
+                else
+                {
+                    CUDA_CHECK(cudaMemsetAsync(d_pt, 0, (size_t)n * sizeof(double), stream));
+                }
             }
 
             if (params.store_P_hist != ComputePrecision::FP64)
@@ -920,14 +938,6 @@ namespace ichol::solver
             // alpha = pinv(Gnew) * rhs (block step coefficients).
             pinv_svd_cuda(cusolver, cublas, d_Gnew, k, d_rhs, 1, d_alpha, stream, hist_rcond, pinv_ws);
 
-            if (params.verbose)
-            {
-                printf("[Iter %d] res_norm = %e\n", iter, res_norm);
-                print_gpu_matrix("Gnew (P_new^T W_new)", d_Gnew, k, k, stream);
-                print_gpu_matrix("rhs (P_new^T r)", d_rhs, k, 1, stream);
-                print_gpu_matrix("alpha", d_alpha, k, 1, stream);
-            }
-
             // x = x + Pnew * alpha
             CUBLAS_CHECK(cublasDgemv(
                 cublas, CUBLAS_OP_N,
@@ -947,6 +957,18 @@ namespace ichol::solver
                 d_alpha, 1,
                 &scalars.s64_one,
                 d_r, 1));
+
+            // Periodically reset recursive residual drift: r = b - A*x.
+            if ((iter + 1) % 50 == 0)
+            {
+                CUSPARSE_CHECK(cusparseSpMV(
+                    cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                    &scalars.s64_one, matA, vecX,
+                    &scalars.s64_zero, vecTmp,
+                    CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, d_spmvBuf));
+                CUDA_CHECK(cudaMemcpyAsync(d_r, d_b, (size_t)n * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+                CUBLAS_CHECK(cublasDaxpy(cublas, n, &scalars.s64_m_one, d_tmp, 1, d_r, 1));
+            }
 
             // Save current blocks/matrix in ring-buffer slot for future orthogonalization.
             const int slot = iter % m;
@@ -979,6 +1001,14 @@ namespace ichol::solver
             CUDA_CHECK(cudaMemcpyAsync(Gdst, d_Gnew, k * k * sizeof(double), cudaMemcpyDeviceToDevice, stream));
 
             result.iterations = iter + 1;
+        }
+
+        // If we stopped due to max iterations (or maxits==0), return the latest residual.
+        if (!converged)
+        {
+            double res_norm = 0.0;
+            CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, &res_norm));
+            result.finalRes = res_norm;
         }
 
         // Copy final solution back to host and wait for all queued GPU work.
@@ -1062,5 +1092,4 @@ namespace ichol::solver
         const std::vector<double> &,
         std::vector<double> &,
         const PCGParams &);
-
 } // namespace ichol::solver
