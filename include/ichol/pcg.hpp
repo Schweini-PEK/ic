@@ -33,6 +33,9 @@ namespace ichol::solver
         ComputePrecision store_W_hist = ComputePrecision::FP64;
 
         double rcond_base = 1e-15;
+        // If ||P_{i+1}||_A falls below this fraction of ||Z_{i+1}||_A,
+        // run one extra projection pass against the history window.
+        double projection_anorm_drop_tol = 0.25;
 
         ichol::precond::PrecondApply *custom_precond = nullptr;
 

@@ -2,7 +2,6 @@
 #include <vector>
 #include <utility>
 
-#include "factor/symbolic/super_sym.hpp"
 #include "factor/symbolic/supernodal_ll_plan.hpp"
 #include "ichol/matrix_formats.hpp"
 

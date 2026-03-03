@@ -28,6 +28,11 @@ namespace ichol::numeric
     void apply_prescaling(ichol::matrix::CsrMatrix<double> &A, const std::vector<double> &D);
 
     /**
+     * Apply consistent RHS scaling for A := D^{-1} A D^{-1}: b := D^{-1} b
+     */
+    void apply_rhs_prescaling(std::vector<double> &b, const std::vector<double> &D);
+
+    /**
      * Add a shift alpha to the diagonal of A in place: A(ii) := A(ii) + alpha
      */
     template <class T>
