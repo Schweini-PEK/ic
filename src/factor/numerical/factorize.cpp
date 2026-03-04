@@ -104,9 +104,12 @@ namespace ichol::numeric
                 num_plan.ic_info.shift_used = static_cast<double>(shift);
                 num_plan.ic_info.restarts = attempt;
 
-                std::cout << "Incomplete Cholesky factorization succeeded after "
-                          << attempt << " restarts, shift used: "
-                          << num_plan.ic_info.shift_used << "\n";
+                if (options.verbose)
+                {
+                    std::cout << "Incomplete Cholesky factorization succeeded after "
+                              << attempt << " restarts, shift used: "
+                              << num_plan.ic_info.shift_used << "\n";
+                }
 
                 return L;
             }

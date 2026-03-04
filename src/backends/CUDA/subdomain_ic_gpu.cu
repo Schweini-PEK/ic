@@ -305,6 +305,7 @@ namespace ichol::precond::detail
             ic_opts.pivot_shift_strategy = ichol::PivotShiftStrategy::None;
             ic_opts.algorithm = ichol::FactorizationAlgorithm::ICKDT;
             ic_opts.max_restarts = 1;
+            ic_opts.verbose = false;
             ic_opts.lfil = A_sub.num_rows;
             ic_opts.drop_tol = 0.0;
 

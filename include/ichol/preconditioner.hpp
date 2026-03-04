@@ -71,6 +71,19 @@ namespace ichol::precond
 
     template <typename T>
     void generateADIPreconditioners(int n, T epsilon, ichol::matrix::CsrMatrix<T> &Mx, ichol::matrix::CsrMatrix<T> &My);
+
+    ichol::matrix::CsrMatrix<double> build_block_diagonal_exact_preconditioner_3d(
+        const ichol::matrix::CsrMatrix<double> &A,
+        int n,
+        int sub_w,
+        int sub_h,
+        int sub_d);
+
+    ichol::matrix::CsrMatrix<double> build_block_diagonal_exact_preconditioner_2d(
+        const ichol::matrix::CsrMatrix<double> &A,
+        int n,
+        int sub_w,
+        int sub_h);
 } // namespace ichol::precond
 
 #endif // ICHOL_PRECONDITIONER_HPP

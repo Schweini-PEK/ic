@@ -40,6 +40,7 @@ namespace ichol::solver
         ichol::precond::PrecondApply *custom_precond = nullptr;
 
         bool verbose = false;
+        bool precond_full = false;
     };
 
     struct PCGResult

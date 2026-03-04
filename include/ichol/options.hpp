@@ -57,6 +57,7 @@ namespace ichol
         PivotShiftStrategy pivot_shift_strategy = PivotShiftStrategy::MachineEpsilon;
         FactorizationAlgorithm algorithm = FactorizationAlgorithm::ICKDT;
         int max_restarts = 5;
+        bool verbose = true;
 
         double static_shift = 1e-6; // For static shift strategy
         double pivot_tol = 0.0;     // For pivot check

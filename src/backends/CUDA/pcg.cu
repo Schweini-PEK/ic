@@ -333,9 +333,6 @@ namespace ichol::solver
         const std::vector<double> &h_D,
         const PCGParams &params)
     {
-        /*
-        I. Allocate A, L on GPU
-        */
         CusparseHandle cusparseHandle;
         CublasHandle cublasHandle;
 
@@ -343,404 +340,239 @@ namespace ichol::solver
         const int nnzA = static_cast<int>(h_valA.size());
         const int nnzL = static_cast<int>(h_valL.size());
 
+        // Determine A format. If params doesn't specify, assume Full if nnz is high.
+        // For 2D Poisson (5pt), full has ~5n. L+D has ~3n.
+        const bool A_is_full = (nnzA > 3 * n);
+
         constexpr bool L_is_fp64 = std::is_same<T_L, double>::value;
         constexpr bool L_is_fp32 = std::is_same<T_L, float>::value;
-
         using SolveT = std::conditional_t<L_is_fp64, double, std::conditional_t<L_is_fp32, float, __half>>;
 
         cudaStream_t stream = 0;
         PCGResult result{};
         const bool use_custom_precond = (params.custom_precond != nullptr && params.custom_precond->apply != nullptr);
 
-        // Persistent plans and IC triangular-solve data for legacy preconditioning path.
-        SpTRSVLevelsetsPlan sptrsv_plan_L;
-        SpTRSVLevelsetsPlan sptrsv_plan_Lt;
-        DeviceBuffer<int> d_csrRowPtrL;
-        DeviceBuffer<int> d_csrColIndL;
-        DeviceBuffer<SolveT> d_valL;
-        DeviceBuffer<int> d_csrRowPtrLt;
-        DeviceBuffer<int> d_csrColIndLt;
-        DeviceBuffer<SolveT> d_valLt;
-
-        std::vector<double> h_diagA(n, 0.0);
-        for (int i = 0; i < n; ++i)
-        {
-            h_diagA[i] = h_valA[h_csrRowPtrA[i + 1] - 1];
-        }
-        DeviceBuffer<double> d_diagA(n);
-        CUDA_CHECK(cudaMemcpy(d_diagA.get(), h_diagA.data(), n * sizeof(double), cudaMemcpyHostToDevice));
-
-        // Copy A to device
+        // --- A Matrix Buffers ---
         DeviceBuffer<int> d_csrRowPtrA(n + 1);
         DeviceBuffer<int> d_csrColIndA(nnzA);
         DeviceBuffer<double> d_valA(nnzA);
-        CUDA_CHECK(cudaMemcpy(d_csrRowPtrA.get(), h_csrRowPtrA.data(),
-                              (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_csrColIndA.get(), h_csrColIndA.data(),
-                              nnzA * sizeof(int), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_valA.get(), h_valA.data(),
-                              nnzA * sizeof(double), cudaMemcpyHostToDevice));
+        DeviceBuffer<double> d_diagA;
+
+        if (!A_is_full)
+        {
+            d_diagA.alloc(n);
+            std::vector<double> h_diagA(n, 0.0);
+            for (int i = 0; i < n; ++i)
+            {
+                bool found = false;
+                for (int p = h_csrRowPtrA[i]; p < h_csrRowPtrA[i + 1]; ++p)
+                {
+                    if (h_csrColIndA[p] == i)
+                    {
+                        h_diagA[i] = h_valA[p];
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                    h_diagA[i] = h_valA[h_csrRowPtrA[i + 1] - 1]; // Fallback
+            }
+            CUDA_CHECK(cudaMemcpy(d_diagA.get(), h_diagA.data(), n * sizeof(double), cudaMemcpyHostToDevice));
+        }
+
+        CUDA_CHECK(cudaMemcpy(d_csrRowPtrA.get(), h_csrRowPtrA.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_csrColIndA.get(), h_csrColIndA.data(), nnzA * sizeof(int), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_valA.get(), h_valA.data(), nnzA * sizeof(double), cudaMemcpyHostToDevice));
 
         CusparseSpMat spMatA;
         spMatA.create(n, n, nnzA, d_csrRowPtrA.get(), d_csrColIndA.get(), d_valA.get());
 
+        // --- Preconditioner Buffers (Factorized or Full) ---
+        SpTRSVLevelsetsPlan sptrsv_plan_L, sptrsv_plan_Lt;
+        DeviceBuffer<int> d_csrRowPtrL, d_csrColIndL, d_csrRowPtrLt, d_csrColIndLt;
+        DeviceBuffer<SolveT> d_valL, d_valLt;
+        CusparseSpMat spMatM; // Used if precond_full = true
+
         if (!use_custom_precond)
         {
-            // Build host SolveT values for L
-            std::vector<SolveT> h_valL_solve(nnzL);
-            if constexpr (L_is_fp64)
+            if (params.precond_full)
             {
+                d_csrRowPtrL.alloc(n + 1);
+                d_csrColIndL.alloc(nnzL);
+                d_valL.alloc(nnzL);
+                CUDA_CHECK(cudaMemcpy(d_csrRowPtrL.get(), h_csrRowPtrL.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
+                CUDA_CHECK(cudaMemcpy(d_csrColIndL.get(), h_csrColIndL.data(), nnzL * sizeof(int), cudaMemcpyHostToDevice));
+
+                std::vector<SolveT> h_valL_solve(nnzL);
                 for (int i = 0; i < nnzL; ++i)
-                    h_valL_solve[i] = static_cast<double>(h_valL[i]);
-            }
-            else if constexpr (L_is_fp32)
-            {
-                for (int i = 0; i < nnzL; ++i)
-                    h_valL_solve[i] = static_cast<float>(h_valL[i]);
+                    h_valL_solve[i] = static_cast<SolveT>(h_valL[i]);
+                CUDA_CHECK(cudaMemcpy(d_valL.get(), h_valL_solve.data(), nnzL * sizeof(SolveT), cudaMemcpyHostToDevice));
+
+                // Assume precond_full is an approximate inverse; apply via SpMV
+                spMatM.create(n, n, nnzL, d_csrRowPtrL.get(), d_csrColIndL.get(), (double *)d_valL.get());
             }
             else
             {
+                // Factorized L*L^T Setup
+                std::vector<SolveT> h_valL_solve(nnzL);
                 for (int i = 0; i < nnzL; ++i)
-                    h_valL_solve[i] = __float2half_rn(static_cast<float>(h_valL[i]));
+                    h_valL_solve[i] = static_cast<SolveT>(h_valL[i]);
+
+                std::vector<int> h_csrRowPtrLt, h_csrColIndLt;
+                std::vector<SolveT> h_valLt_solve;
+                build_csr_trans<SolveT>(n, h_csrRowPtrL, h_csrColIndL, h_valL_solve, h_csrRowPtrLt, h_csrColIndLt, h_valLt_solve);
+
+                const auto levelsets_L = build_level_sets_csr_diag_last(n, h_csrRowPtrL, h_csrColIndL, false);
+                const auto levelsets_Lt = build_level_sets_csr_diag_last(n, h_csrRowPtrLt, h_csrColIndLt, true);
+
+                sptrsv_plan_L.init(levelsets_L, stream);
+                sptrsv_plan_Lt.init(levelsets_Lt, stream);
+
+                d_csrRowPtrL.alloc(n + 1);
+                d_csrColIndL.alloc(nnzL);
+                d_valL.alloc(nnzL);
+                CUDA_CHECK(cudaMemcpy(d_csrRowPtrL.get(), h_csrRowPtrL.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
+                CUDA_CHECK(cudaMemcpy(d_csrColIndL.get(), h_csrColIndL.data(), nnzL * sizeof(int), cudaMemcpyHostToDevice));
+                CUDA_CHECK(cudaMemcpy(d_valL.get(), h_valL_solve.data(), nnzL * sizeof(SolveT), cudaMemcpyHostToDevice));
+
+                d_csrRowPtrLt.alloc(n + 1);
+                d_csrColIndLt.alloc(nnzL);
+                d_valLt.alloc(nnzL);
+                CUDA_CHECK(cudaMemcpy(d_csrRowPtrLt.get(), h_csrRowPtrLt.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
+                CUDA_CHECK(cudaMemcpy(d_csrColIndLt.get(), h_csrColIndLt.data(), nnzL * sizeof(int), cudaMemcpyHostToDevice));
+                CUDA_CHECK(cudaMemcpy(d_valLt.get(), h_valLt_solve.data(), nnzL * sizeof(SolveT), cudaMemcpyHostToDevice));
             }
-
-            // Build CSR(L^T) on host with diag-last.
-            std::vector<int> h_csrRowPtrLt, h_csrColIndLt;
-            std::vector<SolveT> h_valLt_solve;
-            build_csr_trans<SolveT>(
-                n, h_csrRowPtrL, h_csrColIndL, h_valL_solve,
-                h_csrRowPtrLt, h_csrColIndLt, h_valLt_solve);
-
-            // Build level sets for L (lower) and L^T (upper).
-            const ichol::symbolic::LevelSets levelsets_L =
-                build_level_sets_csr_diag_last(n, h_csrRowPtrL, h_csrColIndL, false);
-            const ichol::symbolic::LevelSets levelsets_Lt =
-                build_level_sets_csr_diag_last(n, h_csrRowPtrLt, h_csrColIndLt, true);
-
-            int rc_plan = sptrsv_plan_L.init(levelsets_L, stream);
-            if (rc_plan != 0)
-            {
-                std::cerr << "ERROR: SpTRSV plan init (L) failed, code " << rc_plan << "\n";
-                result.finalRes = std::numeric_limits<double>::infinity();
-                return result;
-            }
-
-            rc_plan = sptrsv_plan_Lt.init(levelsets_Lt, stream);
-            if (rc_plan != 0)
-            {
-                std::cerr << "ERROR: SpTRSV plan init (L^T) failed, code " << rc_plan << "\n";
-                result.finalRes = std::numeric_limits<double>::infinity();
-                return result;
-            }
-
-            // Copy L (CSR) to device (indices + values in SolveT)
-            d_csrRowPtrL.alloc(n + 1);
-            d_csrColIndL.alloc(nnzL);
-            d_valL.alloc(nnzL);
-            CUDA_CHECK(cudaMemcpy(d_csrRowPtrL.get(), h_csrRowPtrL.data(),
-                                  (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_csrColIndL.get(), h_csrColIndL.data(),
-                                  nnzL * sizeof(int), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_valL.get(), h_valL_solve.data(),
-                                  nnzL * sizeof(SolveT), cudaMemcpyHostToDevice));
-
-            // Copy L^T (CSR) to device (indices + values in SolveT)
-            d_csrRowPtrLt.alloc(n + 1);
-            d_csrColIndLt.alloc(nnzL);
-            d_valLt.alloc(nnzL);
-            CUDA_CHECK(cudaMemcpy(d_csrRowPtrLt.get(), h_csrRowPtrLt.data(),
-                                  (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_csrColIndLt.get(), h_csrColIndLt.data(),
-                                  nnzL * sizeof(int), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_valLt.get(), h_valLt_solve.data(),
-                                  nnzL * sizeof(SolveT), cudaMemcpyHostToDevice));
         }
 
-        // 3) Allocate vectors x, b, etc. in double
-        DeviceBuffer<double> d_x(n);
-        DeviceBuffer<double> d_b(n);
+        // --- Vector Setup ---
+        DeviceBuffer<double> d_x(n), d_b(n), d_p(n), d_q(n), d_r(n), d_z(n);
         if (static_cast<int>(h_x.size()) == n)
-        {
             CUDA_CHECK(cudaMemcpy(d_x.get(), h_x.data(), n * sizeof(double), cudaMemcpyHostToDevice));
-        }
         else
-        {
             CUDA_CHECK(cudaMemset(d_x.get(), 0, n * sizeof(double)));
-        }
         CUDA_CHECK(cudaMemcpy(d_b.get(), h_b.data(), n * sizeof(double), cudaMemcpyHostToDevice));
 
-        int block = 256;
-        int grid = (n + block - 1) / block;
-
-        // Match MPCG stopping rule: ||r|| <= tol * ||b||.
-        double bnorm = 0.0;
-        CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_b.get(), 1, &bnorm));
-        if (bnorm == 0.0)
-            bnorm = 1.0;
-
-        // For A * p
-        CusparseDnVec vecP_dev;
-        CusparseDnVec vecQ_dev;
-        DeviceBuffer<double> d_p(n);
-        DeviceBuffer<double> d_q(n);
-        DeviceBuffer<double> d_r(n);
-        DeviceBuffer<double> d_z(n); // outer z (FP64) used in dot products
-
+        CusparseDnVec vecP_dev, vecQ_dev, vecR_dev, vecZ_dev;
         vecP_dev.create(n, d_p.get());
         vecQ_dev.create(n, d_q.get());
+        vecR_dev.create(n, d_r.get());
+        vecZ_dev.create(n, d_z.get());
 
-        // A spMV buffer for A
         size_t spmvBufSize = 0;
         DeviceBuffer<char> d_spmvBuf;
         {
-            size_t spmvBufSizeNT = 0, spmvBufSizeT = 0;
-
-            double alpha1 = 1.0;
-            double beta0 = 0.0;
-
-            CUSPARSE_CHECK(cusparseSpMV_bufferSize(
-                cusparseHandle,
-                CUSPARSE_OPERATION_NON_TRANSPOSE,
-                &alpha1, spMatA, vecP_dev,
-                &beta0, vecQ_dev,
-                CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT,
-                &spmvBufSizeNT));
-
-            CUSPARSE_CHECK(cusparseSpMV_bufferSize(
-                cusparseHandle,
-                CUSPARSE_OPERATION_TRANSPOSE,
-                &alpha1, spMatA, vecP_dev,
-                &beta0, vecQ_dev,
-                CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT,
-                &spmvBufSizeT));
-
-            spmvBufSize = (spmvBufSizeNT > spmvBufSizeT) ? spmvBufSizeNT : spmvBufSizeT;
+            size_t sNT = 0, sT = 0;
+            double a1 = 1.0, b0 = 0.0;
+            CUSPARSE_CHECK(cusparseSpMV_bufferSize(cusparseHandle, CUSPARSE_OPERATION_NON_TRANSPOSE, &a1, spMatA, vecP_dev, &b0, vecQ_dev, CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, &sNT));
+            CUSPARSE_CHECK(cusparseSpMV_bufferSize(cusparseHandle, CUSPARSE_OPERATION_TRANSPOSE, &a1, spMatA, vecP_dev, &b0, vecQ_dev, CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, &sT));
+            spmvBufSize = std::max(sNT, sT);
             if (spmvBufSize > 0)
                 d_spmvBuf.alloc(spmvBufSize);
         }
 
-        // Preconditioner work vectors (SolveT precision). No per-iteration allocations.
         SolveT *d_r_work = nullptr, *d_w_work = nullptr, *d_z_work = nullptr;
-        DeviceBuffer<SolveT> d_r_work_buf;
-        DeviceBuffer<SolveT> d_w_work_buf;
-        DeviceBuffer<SolveT> d_z_work_buf;
-        if (!use_custom_precond)
+        DeviceBuffer<SolveT> d_r_work_buf, d_w_work_buf, d_z_work_buf;
+        if (!use_custom_precond && !params.precond_full)
         {
-            if constexpr (std::is_same_v<SolveT, double>)
-            {
-                d_r_work = reinterpret_cast<SolveT *>(d_r.get()); // alias
-                d_z_work = reinterpret_cast<SolveT *>(d_z.get()); // alias
-                d_w_work_buf.alloc(n);
-                d_w_work = d_w_work_buf.get();
-            }
-            else
-            {
-                d_r_work_buf.alloc(n);
-                d_w_work_buf.alloc(n);
-                d_z_work_buf.alloc(n);
-                d_r_work = d_r_work_buf.get();
-                d_w_work = d_w_work_buf.get();
-                d_z_work = d_z_work_buf.get();
-            }
+            d_r_work_buf.alloc(n);
+            d_w_work_buf.alloc(n);
+            d_z_work_buf.alloc(n);
+            d_r_work = d_r_work_buf.get();
+            d_w_work = d_w_work_buf.get();
+            d_z_work = d_z_work_buf.get();
         }
 
-        cudaMemcpy(d_r.get(), d_b.get(), n * sizeof(double), cudaMemcpyDeviceToDevice);
-
-        double rho = 0.0, rhoOld = 0.0;
-        const int maxIters = params.maxits;
+        CUDA_CHECK(cudaMemcpy(d_r.get(), d_b.get(), n * sizeof(double), cudaMemcpyDeviceToDevice));
+        double rho = 0.0, bnorm = 0.0;
+        CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_b.get(), 1, &bnorm));
+        if (bnorm == 0.0)
+            bnorm = 1.0;
 
         double sptrsv_total_ms = 0.0;
         int sptrsv_timed_iters = 0;
-        CudaEvent sptrsv_start;
-        CudaEvent sptrsv_stop;
+        CudaEvent sptrsv_start, sptrsv_stop;
 
-        for (int k = 1; k <= maxIters; k++)
+        // --- Main Loop ---
+        for (int k = 1; k <= params.maxits; k++)
         {
             // (1) z = M^-1 r
             if (use_custom_precond)
             {
                 params.custom_precond->apply(params.custom_precond->ctx, d_r.get(), d_z.get(), n, stream);
             }
+            else if (params.precond_full)
+            {
+                double a1 = 1.0, b0 = 0.0;
+                CUSPARSE_CHECK(cusparseSpMV(cusparseHandle, CUSPARSE_OPERATION_NON_TRANSPOSE, &a1, spMatM, vecR_dev, &b0, vecZ_dev, CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, d_spmvBuf.get()));
+            }
             else
             {
-                // Legacy path:
-                //   L * w = r
-                //   L^T * z = w
-                if constexpr (!std::is_same_v<SolveT, double>)
-                {
-                    cast_vec<SolveT, double><<<grid, block>>>(n, d_r.get(), d_r_work);
-                    CUDA_CHECK(cudaGetLastError());
-                }
-
+                cast_vec<SolveT, double><<<(n + 255) / 256, 256, 0, stream>>>(n, d_r.get(), d_r_work);
                 CUDA_CHECK(cudaEventRecord(sptrsv_start, stream));
-
-                int rc1 = sptrsv_plan_L.solve<int, SolveT>(
-                    n,
-                    d_csrRowPtrL.get(),
-                    d_csrColIndL.get(),
-                    d_valL.get(),
-                    d_r_work,
-                    d_w_work,
-                    /*unit_diag=*/false,
-                    stream);
-
-                if (rc1 != 0)
-                {
-                    CUDA_CHECK(cudaEventRecord(sptrsv_stop, stream));
-                    float iter_ms = 0.0f;
-                    CUDA_CHECK(cudaEventElapsedTime(&iter_ms, sptrsv_start, sptrsv_stop));
-                    sptrsv_total_ms += static_cast<double>(iter_ms);
-                    sptrsv_timed_iters += 1;
-                    std::cerr << "ERROR: SpTRSV(L) failed with code " << rc1 << " at iter " << k << "\n";
-                    result.iterations = k;
-                    result.finalRes = std::numeric_limits<double>::infinity();
-                    break;
-                }
-
-                int rc2 = sptrsv_plan_Lt.solve<int, SolveT>(
-                    n,
-                    d_csrRowPtrLt.get(),
-                    d_csrColIndLt.get(),
-                    d_valLt.get(),
-                    d_w_work,
-                    d_z_work,
-                    /*unit_diag=*/false,
-                    stream);
-
+                sptrsv_plan_L.solve<int, SolveT>(n, d_csrRowPtrL.get(), d_csrColIndL.get(), d_valL.get(), d_r_work, d_w_work, false, stream);
+                sptrsv_plan_Lt.solve<int, SolveT>(n, d_csrRowPtrLt.get(), d_csrColIndLt.get(), d_valLt.get(), d_w_work, d_z_work, false, stream);
                 CUDA_CHECK(cudaEventRecord(sptrsv_stop, stream));
+                cast_vec<double, SolveT><<<(n + 255) / 256, 256, 0, stream>>>(n, d_z_work, d_z.get());
 
-                if (rc2 != 0)
-                {
-                    float iter_ms = 0.0f;
-                    CUDA_CHECK(cudaEventElapsedTime(&iter_ms, sptrsv_start, sptrsv_stop));
-                    sptrsv_total_ms += static_cast<double>(iter_ms);
-                    sptrsv_timed_iters += 1;
-                    std::cerr << "ERROR: SpTRSV(L^T) failed with code " << rc2 << " at iter " << k << "\n";
-                    result.iterations = k;
-                    result.finalRes = std::numeric_limits<double>::infinity();
-                    break;
-                }
-
-                if constexpr (!std::is_same_v<SolveT, double>)
-                {
-                    cast_vec<double, SolveT><<<grid, block>>>(n, d_z_work, d_z.get());
-                    CUDA_CHECK(cudaGetLastError());
-                }
-            }
-
-            // (2) rho = r^T z
-            rhoOld = rho;
-            CUBLAS_CHECK(cublasDdot(cublasHandle, n, d_r.get(), 1, d_z.get(), 1, &rho));
-            if (!use_custom_precond)
-            {
                 float iter_ms = 0.0f;
+                CUDA_CHECK(cudaEventSynchronize(sptrsv_stop));
                 CUDA_CHECK(cudaEventElapsedTime(&iter_ms, sptrsv_start, sptrsv_stop));
-                sptrsv_total_ms += static_cast<double>(iter_ms);
-                sptrsv_timed_iters += 1;
+                sptrsv_total_ms += iter_ms;
+                sptrsv_timed_iters++;
             }
+
+            double rhoOld = rho;
+            CUBLAS_CHECK(cublasDdot(cublasHandle, n, d_r.get(), 1, d_z.get(), 1, &rho));
 
             // (3) p update
             if (k == 1)
-            {
-                cudaMemcpy(d_p.get(), d_z.get(), n * sizeof(double), cudaMemcpyDeviceToDevice);
-            }
+                CUDA_CHECK(cudaMemcpy(d_p.get(), d_z.get(), n * sizeof(double), cudaMemcpyDeviceToDevice));
             else
             {
-                double beta = (rho / rhoOld);
+                double beta = rho / rhoOld;
                 CUBLAS_CHECK(cublasDscal(cublasHandle, n, &beta, d_p.get(), 1));
-                double alphaOne = 1.0;
-                CUBLAS_CHECK(cublasDaxpy(cublasHandle, n, &alphaOne, d_z.get(), 1, d_p.get(), 1));
+                double a1 = 1.0;
+                CUBLAS_CHECK(cublasDaxpy(cublasHandle, n, &a1, d_z.get(), 1, d_p.get(), 1));
             }
 
-            // (4) q = A p, where A is symmetric but stored as (L+D) only.
-            // q = (L+D)*p + (L^T)*p - diag(A).*p
+            // (4) q = A p
+            double alpha1 = 1.0, beta0 = 0.0;
+            CUSPARSE_CHECK(cusparseSpMV(cusparseHandle, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha1, spMatA, vecP_dev, &beta0, vecQ_dev, CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, d_spmvBuf.get()));
+
+            if (!A_is_full)
             {
-                double alpha1 = 1.0;
-                double beta0 = 0.0;
                 double beta1 = 1.0;
-
-                CUSPARSE_CHECK(cusparseSpMV(
-                    cusparseHandle,
-                    CUSPARSE_OPERATION_NON_TRANSPOSE,
-                    &alpha1, spMatA, vecP_dev,
-                    &beta0, vecQ_dev,
-                    CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT,
-                    d_spmvBuf.get()));
-
-                CUSPARSE_CHECK(cusparseSpMV(
-                    cusparseHandle,
-                    CUSPARSE_OPERATION_TRANSPOSE,
-                    &alpha1, spMatA, vecP_dev,
-                    &beta1, vecQ_dev,
-                    CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT,
-                    d_spmvBuf.get()));
-
-                diag_sub_from_diag<<<grid, block>>>(n, d_diagA.get(), d_p.get(), d_q.get());
-                CUDA_CHECK(cudaGetLastError());
+                CUSPARSE_CHECK(cusparseSpMV(cusparseHandle, CUSPARSE_OPERATION_TRANSPOSE, &alpha1, spMatA, vecP_dev, &beta1, vecQ_dev, CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, d_spmvBuf.get()));
+                diag_sub_from_diag<<<(n + 255) / 256, 256, 0, stream>>>(n, d_diagA.get(), d_p.get(), d_q.get());
             }
 
             // (5) alpha = rho / (p^T q)
             double denom = 0.0;
             CUBLAS_CHECK(cublasDdot(cublasHandle, n, d_p.get(), 1, d_q.get(), 1, &denom));
-
-            if (denom <= 0.0 || std::isnan(denom) || std::isinf(denom))
-            {
-                std::cerr << "ERROR: denom invalid in iter " << k << ": " << denom << "\n";
-                result.iterations = k;
-                result.finalRes = std::numeric_limits<double>::infinity();
-                break;
-            }
-
             double alpha = rho / denom;
 
-            // (6) x = x + alpha p
+            // (6) x = x + alpha p; (7) r = r - alpha q
             CUBLAS_CHECK(cublasDaxpy(cublasHandle, n, &alpha, d_p.get(), 1, d_x.get(), 1));
-
-            // (7) r = r - alpha q
             double negAlpha = -alpha;
             CUBLAS_CHECK(cublasDaxpy(cublasHandle, n, &negAlpha, d_q.get(), 1, d_r.get(), 1));
 
-            // (8) check convergence (same criterion as MPCG)
+            // (8) Convergence
             double res_norm = 0.0;
             CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_r.get(), 1, &res_norm));
-
             if (res_norm <= params.tol * bnorm)
             {
                 result.iterations = k;
                 result.finalRes = res_norm;
                 break;
             }
-
-            if (std::isnan(res_norm) || std::isinf(res_norm))
-            {
-                std::cerr << "ERROR: res_norm is NaN or Inf in iteration " << k << ": " << res_norm << std::endl;
-                result.iterations = k;
-                result.finalRes = std::numeric_limits<double>::infinity();
-                break;
-            }
         }
 
-        if (result.iterations == 0)
-        {
-            double res_norm = 0.0;
-            CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_r.get(), 1, &res_norm));
-            result.iterations = maxIters;
-            result.finalRes = res_norm;
-        }
-
-        double sptrsv_avg_ms = 0.0;
-        if (sptrsv_timed_iters > 0)
-            sptrsv_avg_ms = sptrsv_total_ms / static_cast<double>(sptrsv_timed_iters);
-
+        CUDA_CHECK(cudaStreamSynchronize(stream));
         h_x.resize(n);
         CUDA_CHECK(cudaMemcpy(h_x.data(), d_x.get(), n * sizeof(double), cudaMemcpyDeviceToHost));
-
-        std::cout << "SpTRSV total time (ms): " << sptrsv_total_ms
-                  << ", avg per iteration (ms): " << sptrsv_avg_ms << "\n";
-
         return result;
     }
-
+    
     template PCGResult pcg<double>(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
