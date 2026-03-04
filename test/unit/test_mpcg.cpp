@@ -10,6 +10,8 @@
 #include <memory>
 #include <stdexcept>
 #include <utility>
+#include <future>
+#include <string>
 #include <cuda_runtime.h>
 
 #include "ichol/mtx_read.hpp"
@@ -382,6 +384,7 @@ TEST(MPCG, 2D_Poisson_DomainDecomposition)
         ic_opts.pivot_shift_strategy = ichol::PivotShiftStrategy::None;
         ic_opts.algorithm = ichol::FactorizationAlgorithm::ICKDT;
         ic_opts.max_restarts = 1;
+        ic_opts.verbose = false;
         ic_opts.lfil = A_sub.num_rows;
         ic_opts.drop_tol = 0.0;
 
@@ -422,13 +425,241 @@ TEST(MPCG, 2D_Poisson_DomainDecomposition)
               << " time=" << mpcg_secs << "s\n";
 }
 
+TEST(MPCG, 3D_Poisson_DD)
+{
+    const int n = 24;
+    auto A = ichol::io::gen_3dpoi<double>(n);
+
+    std::vector<double> b(A.num_rows);
+    {
+        std::mt19937 rng(20260303);
+        std::normal_distribution<double> dist(0.0, 1.0);
+        for (int i = 0; i < A.num_rows; ++i)
+            b[i] = dist(rng);
+    }
+    apply_unit_col_prescaling_system(A, b);
+    std::vector<double> x(A.num_rows, 0.0);
+
+    const ichol::precond::GridShape global_shape{n, n, n};
+    const ichol::precond::SubdomainSize subdomain_size{8, 8, 8};
+    const auto regions = ichol::precond::partition_subdomains(global_shape, subdomain_size);
+    ASSERT_FALSE(regions.empty());
+
+    ichol::precond::SubdomainPreconditionerOptions options;
+    options.kind = ichol::precond::SubdomainPreconditionerKind::ExactCholesky;
+
+    auto ctx_deleter = [](ichol::precond::SubdomainSpSVContext *p)
+    {
+        ichol::precond::destroy_subdomain_spsv_context(p);
+    };
+
+    std::vector<std::future<ichol::precond::SubdomainSpSVContext *>> futures;
+    futures.reserve(regions.size());
+    for (const auto &reg : regions)
+    {
+        futures.emplace_back(std::async(std::launch::async, [&A, &global_shape, reg, options]()
+                                        { return ichol::precond::create_subdomain_spsv_context(A, global_shape, reg, options); }));
+    }
+
+    std::vector<std::unique_ptr<ichol::precond::SubdomainSpSVContext, decltype(ctx_deleter)>> contexts;
+    contexts.reserve(regions.size());
+    for (auto &f : futures)
+    {
+        contexts.emplace_back(f.get(), ctx_deleter);
+    }
+
+    std::vector<ichol::precond::PrecondApply> preconds;
+    preconds.reserve(contexts.size());
+    for (auto &ctx : contexts)
+    {
+        preconds.push_back({&ichol::precond::apply_subdomain_exact_spsv, ctx.get()});
+    }
+
+    ichol::solver::PCGParams params;
+    params.maxits = 400;
+    params.tol = 1e-10;
+    params.restart = 0;
+    params.prec_gemm = ichol::solver::ComputePrecision::FP64;
+    params.prec_spmm = ichol::solver::ComputePrecision::FP64;
+    params.prec_precond = ichol::solver::ComputePrecision::FP64;
+    params.store_P_hist = ichol::solver::ComputePrecision::FP64;
+    params.store_W_hist = ichol::solver::ComputePrecision::FP64;
+
+    const double bnorm = std::sqrt(std::inner_product(b.begin(), b.end(), b.begin(), 0.0));
+    auto t0 = std::chrono::high_resolution_clock::now();
+    auto result = ichol::solver::mpcg<double>(
+        A.row_ptr, A.col_ind, A.values,
+        preconds, b, x, params);
+    auto t1 = std::chrono::high_resolution_clock::now();
+    const double secs = std::chrono::duration<double>(t1 - t0).count();
+
+    std::cout << "[MPCG 3D_Poisson_DD] n=" << n
+              << " N=" << A.num_rows
+              << " subdomains=" << regions.size()
+              << " subdomain_size=(" << subdomain_size.w << "," << subdomain_size.h << "," << subdomain_size.d << ")"
+              << " iters=" << result.iterations
+              << " finalRes=" << result.finalRes
+              << " time=" << secs << "s\n";
+
+    std::vector<double> x_pcg(A.num_rows, 0.0);
+    std::vector<double> h_D(A.num_rows, 1.0);
+    auto L_block = ichol::precond::build_block_diagonal_exact_preconditioner_3d(
+        A, n, subdomain_size.w, subdomain_size.h, subdomain_size.d);
+
+    ichol::solver::PCGParams pcg_params = params;
+    pcg_params.custom_precond = nullptr;
+
+    auto t2 = std::chrono::high_resolution_clock::now();
+    auto pcg_result = ichol::solver::pcg<double>(
+        A.row_ptr, A.col_ind, A.values,
+        L_block.row_ptr, L_block.col_ind, L_block.values,
+        b, x_pcg, h_D, pcg_params);
+    auto t3 = std::chrono::high_resolution_clock::now();
+    const double pcg_secs = std::chrono::duration<double>(t3 - t2).count();
+
+    std::cout << "[PCG 3D_Poisson_BlockDiagonal] n=" << n
+              << " N=" << A.num_rows
+              << " subdomain_size=(" << subdomain_size.w << "," << subdomain_size.h << "," << subdomain_size.d << ")"
+              << " iters=" << pcg_result.iterations
+              << " finalRes=" << pcg_result.finalRes
+              << " time=" << pcg_secs << "s\n";
+
+    EXPECT_GT(result.iterations, 0);
+    EXPECT_LT(result.finalRes, params.tol * (bnorm > 0.0 ? bnorm : 1.0));
+    EXPECT_GT(pcg_result.iterations, 0);
+    EXPECT_LT(pcg_result.finalRes, pcg_params.tol * (bnorm > 0.0 ? bnorm : 1.0));
+}
+
+TEST(MPCG, 2D_Poisson_DD)
+{
+    const int n = 100;
+    auto A = ichol::io::gen_2dpoi<double>(n, 1.0);
+
+    std::vector<double> b(A.num_rows);
+    {
+        std::mt19937 rng(20260303);
+        std::normal_distribution<double> dist(0.0, 1.0);
+        for (int i = 0; i < A.num_rows; ++i)
+            b[i] = dist(rng);
+    }
+    apply_unit_col_prescaling_system(A, b);
+    std::vector<double> x(A.num_rows, 0.0);
+
+    const ichol::precond::GridShape global_shape{n, n, 1};
+    const ichol::precond::SubdomainSize subdomain_size{8, 8, 1};
+    const auto regions = ichol::precond::partition_subdomains(global_shape, subdomain_size);
+    ASSERT_FALSE(regions.empty());
+
+    ichol::precond::SubdomainPreconditionerOptions options;
+    options.kind = ichol::precond::SubdomainPreconditionerKind::ExactCholesky;
+
+    auto ctx_deleter = [](ichol::precond::SubdomainSpSVContext *p)
+    {
+        ichol::precond::destroy_subdomain_spsv_context(p);
+    };
+
+    std::vector<std::unique_ptr<ichol::precond::SubdomainSpSVContext, decltype(ctx_deleter)>> contexts;
+    contexts.reserve(regions.size());
+    for (const auto &reg : regions)
+        contexts.emplace_back(
+            ichol::precond::create_subdomain_spsv_context(A, global_shape, reg, options),
+            ctx_deleter);
+
+    std::vector<ichol::precond::PrecondApply> preconds;
+    preconds.reserve(contexts.size());
+    for (auto &ctx : contexts)
+        preconds.push_back({&ichol::precond::apply_subdomain_exact_spsv, ctx.get()});
+
+    ichol::solver::PCGParams params;
+    params.maxits = 400;
+    params.tol = 1e-10;
+    params.restart = 0;
+    params.prec_gemm = ichol::solver::ComputePrecision::FP64;
+    params.prec_spmm = ichol::solver::ComputePrecision::FP64;
+    params.prec_precond = ichol::solver::ComputePrecision::FP64;
+    params.store_P_hist = ichol::solver::ComputePrecision::FP64;
+    params.store_W_hist = ichol::solver::ComputePrecision::FP64;
+
+    const double bnorm = std::sqrt(std::inner_product(b.begin(), b.end(), b.begin(), 0.0));
+    auto t0 = std::chrono::high_resolution_clock::now();
+    auto result = ichol::solver::mpcg<double>(
+        A.row_ptr, A.col_ind, A.values,
+        preconds, b, x, params);
+    auto t1 = std::chrono::high_resolution_clock::now();
+    const double secs = std::chrono::duration<double>(t1 - t0).count();
+
+    std::cout << "[MPCG 2D_Poisson_DD] n=" << n
+              << " N=" << A.num_rows
+              << " subdomains=" << regions.size()
+              << " subdomain_size=(" << subdomain_size.w << "," << subdomain_size.h << ",1)"
+              << " iters=" << result.iterations
+              << " finalRes=" << result.finalRes
+              << " time=" << secs << "s\n";
+
+    std::vector<double> x_pcg(A.num_rows, 0.0);
+    std::vector<double> h_D(A.num_rows, 1.0);
+    auto L_block = ichol::precond::build_block_diagonal_exact_preconditioner_2d(
+        A, n, subdomain_size.w, subdomain_size.h);
+
+    ichol::solver::PCGParams pcg_params = params;
+    pcg_params.custom_precond = nullptr;
+
+    auto t2 = std::chrono::high_resolution_clock::now();
+    auto pcg_result = ichol::solver::pcg<double>(
+        A.row_ptr, A.col_ind, A.values,
+        L_block.row_ptr, L_block.col_ind, L_block.values,
+        b, x_pcg, h_D, pcg_params);
+    auto t3 = std::chrono::high_resolution_clock::now();
+    const double pcg_secs = std::chrono::duration<double>(t3 - t2).count();
+
+    std::cout << "[PCG 2D_Poisson_BlockDiagonal_8xStar] n=" << n
+              << " N=" << A.num_rows
+              << " subdomain_size=(" << subdomain_size.w << "," << subdomain_size.h << ",1)"
+              << " iters=" << pcg_result.iterations
+              << " finalRes=" << pcg_result.finalRes
+              << " time=" << pcg_secs << "s\n";
+
+    EXPECT_GT(result.iterations, 0);
+    EXPECT_LT(result.finalRes, params.tol * (bnorm > 0.0 ? bnorm : 1.0));
+    EXPECT_GT(pcg_result.iterations, 0);
+    EXPECT_LT(pcg_result.finalRes, pcg_params.tol * (bnorm > 0.0 ? bnorm : 1.0));
+}
+
 int main(int argc, char **argv)
 {
     ::testing::InitGoogleTest(&argc, argv);
 
-    if (argc > 1)
+    std::string selected_case;
+    for (int i = 1; i < argc; ++i)
     {
-        MPCGTest::n = std::stoi(argv[1]);
+        const std::string arg = argv[i];
+        if (arg.rfind("--case=", 0) == 0)
+        {
+            selected_case = arg.substr(7);
+        }
+        else if (arg == "--case" && i + 1 < argc)
+        {
+            selected_case = argv[++i];
+        }
+        else if (arg.rfind("--n=", 0) == 0)
+        {
+            MPCGTest::n = std::stoi(arg.substr(4));
+        }
+        else if (!arg.empty() && arg[0] != '-')
+        {
+            try
+            {
+                MPCGTest::n = std::stoi(arg);
+            }
+            catch (...)
+            {
+                selected_case = arg;
+            }
+        }
     }
+
+    if (!selected_case.empty())
+        ::testing::GTEST_FLAG(filter) = selected_case;
+
     return RUN_ALL_TESTS();
 }

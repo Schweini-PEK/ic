@@ -215,7 +215,7 @@ __global__ void k_build_col_scale_from_gdiag(const double *G, double *col_scale,
     col_scale[i] = 1.0 / sqrt(gii);
 }
 
-__global__ void k_scale_cols(double *X, const double *col_scale, int n, int k)
+__global__ void k_fuse_scale_P_W(double *P, double *W, const double *col_scale, int n, int k)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int nk = n * k;
@@ -223,7 +223,9 @@ __global__ void k_scale_cols(double *X, const double *col_scale, int n, int k)
         return;
 
     const int col = idx / n;
-    X[idx] *= col_scale[col];
+    const double scale = col_scale[col];
+    P[idx] *= scale;
+    W[idx] *= scale;
 }
 
 __global__ void k_congruence_scale_gram(double *G, const double *col_scale, int k)
@@ -601,6 +603,17 @@ namespace ichol::solver
         CUSPARSE_CHECK(cusparseSetStream(cusparse, stream));
         CUSOLVER_CHECK(cusolverDnSetStream(cusolver, stream));
 
+        // One stream/event per preconditioner so their apply() calls can run concurrently.
+        std::vector<cudaStream_t> precond_streams(k);
+        std::vector<cudaEvent_t> precond_events(k);
+        cudaEvent_t main_stream_ready = nullptr;
+        CUDA_CHECK(cudaEventCreateWithFlags(&main_stream_ready, cudaEventDisableTiming));
+        for (int t = 0; t < k; ++t)
+        {
+            CUDA_CHECK(cudaStreamCreateWithFlags(&precond_streams[t], cudaStreamNonBlocking));
+            CUDA_CHECK(cudaEventCreateWithFlags(&precond_events[t], cudaEventDisableTiming));
+        }
+
         CublasScalars scalars;
         PinvSVDWorkspace pinv_ws{};
 
@@ -802,11 +815,18 @@ namespace ichol::solver
 
             // Apply each preconditioner to the same residual r.
             // Output columns form Znew(:, t).
+            CUDA_CHECK(cudaEventRecord(main_stream_ready, stream));
             for (int t = 0; t < k; ++t)
             {
-                // Each preconditioner owns only its column buffer.
-                CUDA_CHECK(cudaMemsetAsync(d_Znew + (size_t)t * (size_t)n, 0, (size_t)n * sizeof(double), stream));
-                preconds[t].apply(preconds[t].ctx, d_r, d_Znew + (size_t)t * (size_t)n, n, stream);
+                CUDA_CHECK(cudaStreamWaitEvent(precond_streams[t], main_stream_ready, 0));
+                const size_t offset = (size_t)t * (size_t)n;
+                CUDA_CHECK(cudaMemsetAsync(d_Znew + offset, 0, (size_t)n * sizeof(double), precond_streams[t]));
+                preconds[t].apply(preconds[t].ctx, d_r, d_Znew + offset, n, precond_streams[t]);
+                CUDA_CHECK(cudaEventRecord(precond_events[t], precond_streams[t]));
+            }
+            for (int t = 0; t < k; ++t)
+            {
+                CUDA_CHECK(cudaStreamWaitEvent(stream, precond_events[t], 0));
             }
 
             // Start from Znew, then orthogonalize against history below.
@@ -1002,8 +1022,7 @@ namespace ichol::solver
             // scale columns by 1/sqrt(diag(Gnew)) so diag(Pnew^T A Pnew) is close to 1.
             const int blocks_k = (k + threads - 1) / threads;
             k_build_col_scale_from_gdiag<<<blocks_k, threads, 0, stream>>>(d_Gnew, d_col_scale, k, 1e-30);
-            k_scale_cols<<<blocks_nk, threads, 0, stream>>>(d_Pnew, d_col_scale, n, k);
-            k_scale_cols<<<blocks_nk, threads, 0, stream>>>(d_Wnew, d_col_scale, n, k);
+            k_fuse_scale_P_W<<<blocks_nk, threads, 0, stream>>>(d_Pnew, d_Wnew, d_col_scale, n, k);
             k_congruence_scale_gram<<<blocks_kk, threads, 0, stream>>>(d_Gnew, d_col_scale, k);
 
             // rhs = Pnew^T * r (size k)
@@ -1157,6 +1176,13 @@ namespace ichol::solver
             CUDA_CHECK(cudaFree(d_Wj_low));
             CUDA_CHECK(cudaFree(d_C_gemm));
         }
+
+        for (int t = 0; t < k; ++t)
+        {
+            CUDA_CHECK(cudaEventDestroy(precond_events[t]));
+            CUDA_CHECK(cudaStreamDestroy(precond_streams[t]));
+        }
+        CUDA_CHECK(cudaEventDestroy(main_stream_ready));
 
         CUDA_CHECK(cudaStreamDestroy(stream));
         CUSPARSE_CHECK(cusparseDestroy(cusparse));
