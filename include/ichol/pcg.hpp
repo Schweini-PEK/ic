@@ -29,6 +29,9 @@ namespace ichol::solver
         ComputePrecision prec_precond = ComputePrecision::FP64;
         ComputePrecision prec_acc = ComputePrecision::FP64;
 
+        ComputePrecision store_Znew = ComputePrecision::FP64;
+        ComputePrecision store_Pnew = ComputePrecision::FP64;
+        ComputePrecision store_Wnew = ComputePrecision::FP64;
         ComputePrecision store_P_hist = ComputePrecision::FP64;
         ComputePrecision store_W_hist = ComputePrecision::FP64;
 

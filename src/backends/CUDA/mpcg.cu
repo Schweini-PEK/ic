@@ -65,54 +65,166 @@ struct CublasScalars
     void *one(cublasComputeType_t ct) { return (ct == CUBLAS_COMPUTE_64F) ? (void *)&s64_one : (void *)&s32_one; }
     void *zero(cublasComputeType_t ct) { return (ct == CUBLAS_COMPUTE_64F) ? (void *)&s64_zero : (void *)&s32_zero; }
     void *m_one(cublasComputeType_t ct) { return (ct == CUBLAS_COMPUTE_64F) ? (void *)&s64_m_one : (void *)&s32_m_one; }
+
+    const void *one(cudaDataType_t ct) const { return (ct == CUDA_R_64F) ? (const void *)&s64_one : (const void *)&s32_one; }
+    const void *zero(cudaDataType_t ct) const { return (ct == CUDA_R_64F) ? (const void *)&s64_zero : (const void *)&s32_zero; }
+    const void *m_one(cudaDataType_t ct) const { return (ct == CUDA_R_64F) ? (const void *)&s64_m_one : (const void *)&s32_m_one; }
+};
+
+struct DeviceCublasScalars
+{
+    float *d_s32 = nullptr;
+    double *d_s64 = nullptr;
+
+    const void *one(cublasComputeType_t ct) const { return (ct == CUBLAS_COMPUTE_64F) ? (const void *)(d_s64 + 0) : (const void *)(d_s32 + 0); }
+    const void *zero(cublasComputeType_t ct) const { return (ct == CUBLAS_COMPUTE_64F) ? (const void *)(d_s64 + 1) : (const void *)(d_s32 + 1); }
+    const void *m_one(cublasComputeType_t ct) const { return (ct == CUBLAS_COMPUTE_64F) ? (const void *)(d_s64 + 2) : (const void *)(d_s32 + 2); }
+
+    const double *one64() const { return d_s64 + 0; }
+    const double *zero64() const { return d_s64 + 1; }
+    const double *m_one64() const { return d_s64 + 2; }
 };
 
 struct PrecisionMap
 {
+    ichol::solver::ComputePrecision io_prec;
+    ichol::solver::ComputePrecision acc_prec;
     cudaDataType_t data_type;
+    cudaDataType_t output_type;
     cublasComputeType_t compute_type;
     size_t el_size;
 };
 
+struct SpmmMap
+{
+    ichol::solver::ComputePrecision io_prec;
+    ichol::solver::ComputePrecision acc_prec;
+    cudaDataType_t data_type;
+    cudaDataType_t compute_type;
+    size_t el_size;
+};
+
+static ichol::solver::ComputePrecision normalize_precision(ichol::solver::ComputePrecision prec)
+{
+    using Prec = ichol::solver::ComputePrecision;
+    switch (prec)
+    {
+    case Prec::FP64:
+    case Prec::FP32:
+    case Prec::FP16:
+    case Prec::BF16:
+        return prec;
+    case Prec::TF32:
+        // TF32 uses fp32 storage with tensor-core execution.
+        return Prec::FP32;
+    default:
+        throw std::runtime_error("mpcg: unsupported precision mode for CUDA mixed-precision path");
+    }
+}
+
+static cudaDataType_t get_cuda_data_type(ichol::solver::ComputePrecision prec)
+{
+    using Prec = ichol::solver::ComputePrecision;
+    switch (normalize_precision(prec))
+    {
+    case Prec::FP64:
+        return CUDA_R_64F;
+    case Prec::FP32:
+        return CUDA_R_32F;
+    case Prec::FP16:
+        return CUDA_R_16F;
+    case Prec::BF16:
+        return CUDA_R_16BF;
+    default:
+        throw std::runtime_error("mpcg: unsupported CUDA data type");
+    }
+}
+
+static size_t get_precision_el_size(ichol::solver::ComputePrecision prec)
+{
+    using Prec = ichol::solver::ComputePrecision;
+    switch (normalize_precision(prec))
+    {
+    case Prec::FP64:
+        return sizeof(double);
+    case Prec::FP32:
+        return sizeof(float);
+    case Prec::FP16:
+        return sizeof(__half);
+    case Prec::BF16:
+        return sizeof(__nv_bfloat16);
+    default:
+        throw std::runtime_error("mpcg: unsupported CUDA element size");
+    }
+}
+
+static ichol::solver::ComputePrecision resolve_accum_precision(
+    ichol::solver::ComputePrecision input_prec,
+    ichol::solver::ComputePrecision requested_acc)
+{
+    using Prec = ichol::solver::ComputePrecision;
+    const Prec io_prec = normalize_precision(input_prec);
+    const Prec acc_prec = normalize_precision(requested_acc);
+
+    if (io_prec == Prec::FP64)
+        return Prec::FP64;
+
+    if (io_prec == Prec::FP32)
+    {
+        // fp32/tf32 inputs stay on fp32 accumulation. prec_acc is interpreted
+        // as a request and normalized to the supported mixed-precision policy.
+        (void)acc_prec;
+        return Prec::FP32;
+    }
+
+    // fp16/bf16 inputs accumulate in fp32.
+    return Prec::FP32;
+}
+
 /**
  * Map user precision choice to CUDA data type and cuBLAS compute type.
  */
-static PrecisionMap get_precision_map(ichol::solver::ComputePrecision prec, ichol::solver::ComputePrecision /*acc*/)
+static PrecisionMap get_precision_map(ichol::solver::ComputePrecision prec, ichol::solver::ComputePrecision acc)
 {
+    using Prec = ichol::solver::ComputePrecision;
     PrecisionMap m{};
-    if (prec == ichol::solver::ComputePrecision::FP64)
+    m.io_prec = normalize_precision(prec);
+    m.acc_prec = resolve_accum_precision(prec, acc);
+    m.data_type = get_cuda_data_type(prec);
+    m.el_size = get_precision_el_size(prec);
+    m.output_type = (m.acc_prec == Prec::FP64) ? CUDA_R_64F : CUDA_R_32F;
+
+    if (m.acc_prec == Prec::FP64)
     {
-        m.data_type = CUDA_R_64F;
         m.compute_type = CUBLAS_COMPUTE_64F;
-        m.el_size = 8;
     }
     else
     {
-        if (prec == ichol::solver::ComputePrecision::FP16)
-            m.data_type = CUDA_R_16F;
-        else if (prec == ichol::solver::ComputePrecision::BF16)
-            m.data_type = CUDA_R_16BF;
-        else
-            m.data_type = CUDA_R_32F;
-
         if (prec == ichol::solver::ComputePrecision::TF32)
             m.compute_type = CUBLAS_COMPUTE_32F_FAST_TF32;
         else
             m.compute_type = CUBLAS_COMPUTE_32F;
-
-        m.el_size = (prec == ichol::solver::ComputePrecision::FP16 ||
-                     prec == ichol::solver::ComputePrecision::BF16)
-                        ? 2
-                        : 4;
     }
     return m;
 }
 
 struct StorageMap
 {
+    ichol::solver::ComputePrecision storage_prec;
     cudaDataType_t data_type;
     size_t el_size;
 };
+
+static SpmmMap get_spmm_map(ichol::solver::ComputePrecision prec, ichol::solver::ComputePrecision acc)
+{
+    SpmmMap m{};
+    m.io_prec = normalize_precision(prec);
+    m.acc_prec = resolve_accum_precision(prec, acc);
+    m.data_type = get_cuda_data_type(prec);
+    m.compute_type = (m.acc_prec == ichol::solver::ComputePrecision::FP64) ? CUDA_R_64F : CUDA_R_32F;
+    m.el_size = get_precision_el_size(prec);
+    return m;
+}
 
 /**
  * Map user precision choice to CUDA data type for history storage buffers.
@@ -120,26 +232,9 @@ struct StorageMap
 static StorageMap get_storage_map(ichol::solver::ComputePrecision prec)
 {
     StorageMap m{};
-    if (prec == ichol::solver::ComputePrecision::FP64)
-    {
-        m.data_type = CUDA_R_64F;
-        m.el_size = 8;
-    }
-    else if (prec == ichol::solver::ComputePrecision::FP16)
-    {
-        m.data_type = CUDA_R_16F;
-        m.el_size = 2;
-    }
-    else if (prec == ichol::solver::ComputePrecision::BF16)
-    {
-        m.data_type = CUDA_R_16BF;
-        m.el_size = 2;
-    }
-    else
-    {
-        m.data_type = CUDA_R_32F;
-        m.el_size = 4;
-    }
+    m.storage_prec = normalize_precision(prec);
+    m.data_type = get_cuda_data_type(prec);
+    m.el_size = get_precision_el_size(prec);
     return m;
 }
 
@@ -200,6 +295,85 @@ __global__ void k_cast_f2d_mat(const float *src, double *dst, int N)
     dst[i] = (double)src[i];
 }
 
+static void sync_block_to_storage(
+    const double *src,
+    void *dst,
+    const StorageMap &storage_map,
+    int count,
+    int threads,
+    cudaStream_t stream)
+{
+    if (storage_map.storage_prec == ichol::solver::ComputePrecision::FP64 || !dst)
+        return;
+
+    const int blocks = (count + threads - 1) / threads;
+    // Large live blocks can stay compressed in memory, but sensitive kernels
+    // still consume fp64 workspaces explicitly loaded at the next boundary.
+    k_cast_d2any<<<blocks, threads, 0, stream>>>(src, dst, count, storage_map.storage_prec);
+}
+
+static void sync_block_from_storage(
+    const void *src,
+    double *dst,
+    const StorageMap &storage_map,
+    int count,
+    int threads,
+    cudaStream_t stream)
+{
+    if (storage_map.storage_prec == ichol::solver::ComputePrecision::FP64 || !src)
+        return;
+
+    const int blocks = (count + threads - 1) / threads;
+    k_cast_any2d_vec<<<blocks, threads, 0, stream>>>(src, dst, count, storage_map.storage_prec);
+}
+
+static void *prepare_spmm_input(
+    const double *src_fp64,
+    void *storage_ptr,
+    const StorageMap &storage_map,
+    const SpmmMap &spmm_map,
+    void *tmp_ptr,
+    int count,
+    int threads,
+    cudaStream_t stream)
+{
+    if (spmm_map.io_prec == ichol::solver::ComputePrecision::FP64)
+        return (void *)src_fp64;
+
+    if (storage_ptr && storage_map.storage_prec == spmm_map.io_prec)
+    {
+        sync_block_to_storage(src_fp64, storage_ptr, storage_map, count, threads, stream);
+        return storage_ptr;
+    }
+
+    if (!tmp_ptr)
+        throw std::runtime_error("mpcg: missing temporary SpMM input buffer");
+
+    const StorageMap tmp_map = get_storage_map(spmm_map.io_prec);
+    sync_block_to_storage(src_fp64, tmp_ptr, tmp_map, count, threads, stream);
+    return tmp_ptr;
+}
+
+static void finalize_spmm_output(
+    const void *spmm_out,
+    const SpmmMap &spmm_map,
+    void *storage_ptr,
+    const StorageMap &storage_map,
+    double *dst_fp64,
+    int count,
+    int threads,
+    cudaStream_t stream)
+{
+    if (spmm_map.io_prec == ichol::solver::ComputePrecision::FP64)
+        return;
+
+    const StorageMap spmm_storage = get_storage_map(spmm_map.io_prec);
+    sync_block_from_storage(spmm_out, dst_fp64, spmm_storage, count, threads, stream);
+
+    if (storage_ptr && storage_ptr != spmm_out)
+        sync_block_to_storage(dst_fp64, storage_ptr, storage_map, count, threads, stream);
+}
+
 __global__ void k_build_col_scale_from_gdiag(const double *G, double *col_scale, int k, double diag_floor)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -238,6 +412,100 @@ __global__ void k_congruence_scale_gram(double *G, const double *col_scale, int 
     const int i = idx % k;
     const int j = idx / k;
     G[idx] *= col_scale[i] * col_scale[j];
+}
+
+__global__ void column_norms_kernel(const double *X, int ld, int n, int k, double *out)
+{
+    const int col = blockIdx.x;
+    if (col >= k)
+        return;
+
+    extern __shared__ double shared[];
+    double sum = 0.0;
+    for (int row = threadIdx.x; row < n; row += blockDim.x)
+    {
+        const double v = X[row + (size_t)col * (size_t)ld];
+        sum += v * v;
+    }
+    shared[threadIdx.x] = sum;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1)
+    {
+        if (threadIdx.x < stride)
+            shared[threadIdx.x] += shared[threadIdx.x + stride];
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0)
+        out[col] = sqrt(shared[0]);
+}
+
+__global__ void column_dots_kernel(const double *X, const double *Y, int ldX, int ldY, int n, int k, double *out)
+{
+    const int col = blockIdx.x;
+    if (col >= k)
+        return;
+
+    extern __shared__ double shared[];
+    double sum = 0.0;
+    for (int row = threadIdx.x; row < n; row += blockDim.x)
+        sum += X[row + (size_t)col * (size_t)ldX] * Y[row + (size_t)col * (size_t)ldY];
+
+    shared[threadIdx.x] = sum;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1)
+    {
+        if (threadIdx.x < stride)
+            shared[threadIdx.x] += shared[threadIdx.x + stride];
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0)
+        out[col] = shared[0];
+}
+
+__global__ void k_scale_columns_from_norms(double *X, int n, int k, const double *norms, double floor)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int nk = n * k;
+    if (idx >= nk)
+        return;
+
+    const int col = idx / n;
+    const double norm = norms[col];
+    if (norm > floor)
+        X[idx] /= norm;
+    else
+        X[idx] = 0.0;
+}
+
+__global__ void k_set_identity(double *A, int k)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int kk = k * k;
+    if (idx >= kk)
+        return;
+
+    const int row = idx % k;
+    const int col = idx / k;
+    A[idx] = (row == col) ? 1.0 : 0.0;
+}
+
+__global__ void k_should_reproject(const double *z_dots, const double *p_dots, int k, double ratio_sq, int *flag)
+{
+    if (threadIdx.x != 0 || blockIdx.x != 0)
+        return;
+
+    double z_sum = 0.0;
+    double p_sum = 0.0;
+    for (int i = 0; i < k; ++i)
+    {
+        z_sum += fmax(0.0, z_dots[i]);
+        p_sum += fmax(0.0, p_dots[i]);
+    }
+    *flag = (z_sum > 0.0 && p_sum < ratio_sq * z_sum) ? 1 : 0;
 }
 
 __global__ void k_row_scaling(double *T, const double *S_inv, int k, int nrhs)
@@ -517,7 +785,8 @@ static void pinv_svd_cuda(
     double *d_X,
     cudaStream_t stream,
     double rcond,
-    PinvSVDWorkspace &ws)
+    PinvSVDWorkspace &ws,
+    const DeviceCublasScalars &dev_scalars)
 {
     // Solve X = pinv(G) * B using SVD on GPU.
     //
@@ -561,13 +830,12 @@ static void pinv_svd_cuda(
     const int blocks = (k + threads - 1) / threads;
     k_build_s_inv_from_s<<<blocks, threads, 0, stream>>>(ws.d_S, ws.d_S_inv, k, rcond);
 
-    double one = 1.0, zero = 0.0;
     // d_T1 = U^T * B
-    CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N, k, nrhs, k, &one, ws.d_U, k, d_B, k, &zero, ws.d_T1, k));
+    CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N, k, nrhs, k, dev_scalars.one64(), ws.d_U, k, d_B, k, dev_scalars.zero64(), ws.d_T1, k));
     // d_T1 = diag(S_inv) * d_T1
     k_row_scaling<<<1, k, 0, stream>>>(ws.d_T1, ws.d_S_inv, k, nrhs);
     // d_X = V * d_T1  (note: cuSOLVER gives V^T, so V is VT^T)
-    CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N, k, nrhs, k, &one, ws.d_VT, k, ws.d_T1, k, &zero, d_X, k));
+    CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N, k, nrhs, k, dev_scalars.one64(), ws.d_VT, k, ws.d_T1, k, dev_scalars.zero64(), d_X, k));
 }
 
 namespace ichol::solver
@@ -615,20 +883,25 @@ namespace ichol::solver
         }
 
         CublasScalars scalars;
+        DeviceCublasScalars dev_scalars;
         PinvSVDWorkspace pinv_ws{};
 
         // Precision controls:
         PrecisionMap g_map = get_precision_map(params.prec_gemm, params.prec_acc);
+        SpmmMap spmm_map = get_spmm_map(params.prec_spmm, params.prec_acc);
+        StorageMap Znew_store_map = get_storage_map(params.store_Znew);
+        StorageMap Pnew_store_map = get_storage_map(params.store_Pnew);
+        StorageMap Wnew_store_map = get_storage_map(params.store_Wnew);
 
         StorageMap P_hist_map = get_storage_map(params.store_P_hist);
         StorageMap W_hist_map = get_storage_map(params.store_W_hist);
         const bool use_lowp_history =
-            (params.store_P_hist != ComputePrecision::FP64) ||
-            (params.store_W_hist != ComputePrecision::FP64);
+            (P_hist_map.storage_prec != ComputePrecision::FP64) ||
+            (W_hist_map.storage_prec != ComputePrecision::FP64);
         const bool enable_anorm_reprojection =
             use_lowp_history && params.projection_anorm_drop_tol > 0.0;
+        const bool use_mixed_spmm = (spmm_map.io_prec != ComputePrecision::FP64);
 
-        printf("enable_anorm_reprojection is %d\n", enable_anorm_reprojection);
         const double anorm_drop_tol_sq =
             params.projection_anorm_drop_tol * params.projection_anorm_drop_tol;
 
@@ -643,6 +916,14 @@ namespace ichol::solver
         CUDA_CHECK(cudaMalloc(&d_r, (size_t)n * sizeof(double)));
         CUDA_CHECK(cudaMalloc(&d_tmp, (size_t)n * sizeof(double)));
 
+        const float h_s32[] = {1.0f, 0.0f, -1.0f};
+        const double h_s64[] = {1.0, 0.0, -1.0};
+        CUDA_CHECK(cudaMalloc(&dev_scalars.d_s32, 3 * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&dev_scalars.d_s64, 3 * sizeof(double)));
+        CUDA_CHECK(cudaMemcpyAsync(dev_scalars.d_s32, h_s32, 3 * sizeof(float), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev_scalars.d_s64, h_s64, 3 * sizeof(double), cudaMemcpyHostToDevice, stream));
+        CUBLAS_CHECK(cublasSetPointerMode(cublas, CUBLAS_POINTER_MODE_DEVICE));
+
         // Upload host problem data to GPU.
         CUDA_CHECK(cudaMemcpyAsync(d_rowPtrA, h_csrRowPtrA.data(), (size_t)(n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream));
         CUDA_CHECK(cudaMemcpyAsync(d_colIndA, h_csrColIndA.data(), (size_t)nnzA * sizeof(int), cudaMemcpyHostToDevice, stream));
@@ -653,8 +934,8 @@ namespace ichol::solver
         void *d_Pnew_low = nullptr, *d_Wnew_low = nullptr, *d_Wj_low = nullptr;
         float *d_C_gemm = nullptr;
 
-        // Extra low-precision buffers only needed when GEMM is not fp64.
-        if (params.prec_gemm != ComputePrecision::FP64)
+        // Extra low-precision buffers only needed when GEMM accumulates in fp32.
+        if (g_map.output_type != CUDA_R_64F)
         {
             CUDA_CHECK(cudaMalloc(&d_Pnew_low, (size_t)n * k * g_map.el_size));
             CUDA_CHECK(cudaMalloc(&d_Wnew_low, (size_t)n * k * g_map.el_size));
@@ -669,7 +950,12 @@ namespace ichol::solver
         // Pnew: orthogonalized search directions
         // Wnew: A * Pnew
         double *d_Znew = nullptr, *d_Pnew = nullptr, *d_Wnew = nullptr, *d_Wz = nullptr;
-        double *d_G_hist = nullptr, *d_C = nullptr, *d_Gnew = nullptr, *d_rhs = nullptr, *d_Y = nullptr, *d_alpha = nullptr, *d_col_scale = nullptr;
+        void *d_Znew_store = nullptr, *d_Pnew_store = nullptr, *d_Wnew_store = nullptr;
+        void *d_spmm_in_tmp = nullptr, *d_spmm_out_tmp = nullptr;
+        double *d_G_hist = nullptr, *d_Ginv_hist = nullptr, *d_hist_C = nullptr, *d_hist_Y = nullptr;
+        double *d_Gnew = nullptr, *d_rhs = nullptr, *d_alpha = nullptr, *d_col_scale = nullptr;
+        double *d_scalar_tmp = nullptr, *d_col_norms = nullptr, *d_z_anorm_cols = nullptr, *d_p_anorm_cols = nullptr, *d_eye = nullptr;
+        int *d_reproject_flag = nullptr;
 
         CUDA_CHECK(cudaMalloc(&d_Znew, nk * sizeof(double)));
         CUDA_CHECK(cudaMalloc(&d_Pnew, nk * sizeof(double)));
@@ -677,13 +963,41 @@ namespace ichol::solver
         if (enable_anorm_reprojection)
             CUDA_CHECK(cudaMalloc(&d_Wz, nk * sizeof(double)));
 
+        if (Znew_store_map.storage_prec != ComputePrecision::FP64)
+            CUDA_CHECK(cudaMalloc(&d_Znew_store, nk * Znew_store_map.el_size));
+        if (Pnew_store_map.storage_prec != ComputePrecision::FP64)
+            CUDA_CHECK(cudaMalloc(&d_Pnew_store, nk * Pnew_store_map.el_size));
+        if (Wnew_store_map.storage_prec != ComputePrecision::FP64)
+            CUDA_CHECK(cudaMalloc(&d_Wnew_store, nk * Wnew_store_map.el_size));
+
+        const bool need_spmm_input_tmp =
+            use_mixed_spmm &&
+            ((Znew_store_map.storage_prec != spmm_map.io_prec) ||
+             (Pnew_store_map.storage_prec != spmm_map.io_prec));
+        const bool need_spmm_output_tmp =
+            use_mixed_spmm &&
+            ((Wnew_store_map.storage_prec != spmm_map.io_prec) ||
+             enable_anorm_reprojection);
+        if (need_spmm_input_tmp)
+            CUDA_CHECK(cudaMalloc(&d_spmm_in_tmp, nk * spmm_map.el_size));
+        if (need_spmm_output_tmp)
+            CUDA_CHECK(cudaMalloc(&d_spmm_out_tmp, nk * spmm_map.el_size));
+
         CUDA_CHECK(cudaMalloc(&d_G_hist, (size_t)m * (size_t)k * (size_t)k * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_C, (size_t)k * (size_t)k * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_Ginv_hist, (size_t)m * (size_t)k * (size_t)k * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_hist_C, (size_t)m * (size_t)k * (size_t)k * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_hist_Y, (size_t)m * (size_t)k * (size_t)k * sizeof(double)));
         CUDA_CHECK(cudaMalloc(&d_Gnew, (size_t)k * (size_t)k * sizeof(double)));
         CUDA_CHECK(cudaMalloc(&d_rhs, (size_t)k * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_Y, (size_t)k * (size_t)k * sizeof(double)));
         CUDA_CHECK(cudaMalloc(&d_alpha, (size_t)k * sizeof(double)));
         CUDA_CHECK(cudaMalloc(&d_col_scale, (size_t)k * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_scalar_tmp, 2 * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_col_norms, (size_t)k * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_z_anorm_cols, (size_t)k * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_p_anorm_cols, (size_t)k * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_reproject_flag, sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&d_eye, (size_t)k * (size_t)k * sizeof(double)));
+        k_set_identity<<<((k * k) + 255) / 256, 256, 0, stream>>>(d_eye, k);
 
         // Workspace for repeated pseudo-inverse solves on larger systems.
         // For k <= 32 we use the tiny LU kernel path and skip this allocation.
@@ -707,12 +1021,12 @@ namespace ichol::solver
 
         // Circular history buffers (size m) store previous P/W/G blocks.
         // Can be fp64 or compressed precision depending on params.
-        if (params.store_P_hist == ComputePrecision::FP64)
+        if (P_hist_map.storage_prec == ComputePrecision::FP64)
             CUDA_CHECK(cudaMalloc(&d_P_hist64, (size_t)m * nk * sizeof(double)));
         else
             CUDA_CHECK(cudaMalloc(&d_P_histLP, (size_t)m * nk * P_hist_map.el_size));
 
-        if (params.store_W_hist == ComputePrecision::FP64)
+        if (W_hist_map.storage_prec == ComputePrecision::FP64)
             CUDA_CHECK(cudaMalloc(&d_W_hist64, (size_t)m * nk * sizeof(double)));
         else
             CUDA_CHECK(cudaMalloc(&d_W_histLP, (size_t)m * nk * W_hist_map.el_size));
@@ -736,8 +1050,14 @@ namespace ichol::solver
             CUDA_R_64F));
 
         cusparseDnMatDescr_t dnB, dnC;
-        CUSPARSE_CHECK(cusparseCreateDnMat(&dnB, n, k, n, d_Pnew, CUDA_R_64F, CUSPARSE_ORDER_COL));
-        CUSPARSE_CHECK(cusparseCreateDnMat(&dnC, n, k, n, d_Wnew, CUDA_R_64F, CUSPARSE_ORDER_COL));
+        void *spmm_B_ptr = use_mixed_spmm
+                               ? (d_spmm_in_tmp ? d_spmm_in_tmp : d_Pnew_store)
+                               : (void *)d_Pnew;
+        void *spmm_C_ptr = use_mixed_spmm
+                               ? (d_spmm_out_tmp ? d_spmm_out_tmp : d_Wnew_store)
+                               : (void *)d_Wnew;
+        CUSPARSE_CHECK(cusparseCreateDnMat(&dnB, n, k, n, spmm_B_ptr, use_mixed_spmm ? spmm_map.data_type : CUDA_R_64F, CUSPARSE_ORDER_COL));
+        CUSPARSE_CHECK(cusparseCreateDnMat(&dnC, n, k, n, spmm_C_ptr, use_mixed_spmm ? spmm_map.data_type : CUDA_R_64F, CUSPARSE_ORDER_COL));
 
         cusparseDnVecDescr_t vecX, vecTmp;
         CUSPARSE_CHECK(cusparseCreateDnVec(&vecX, n, d_x, CUDA_R_64F));
@@ -762,13 +1082,20 @@ namespace ichol::solver
 
         // Initial residual r = b - A*x
         CUDA_CHECK(cudaMemcpyAsync(d_r, d_b, (size_t)n * sizeof(double), cudaMemcpyDeviceToDevice, stream));
-        CUBLAS_CHECK(cublasDaxpy(cublas, n, &scalars.s64_m_one, d_tmp, 1, d_r, 1));
+        CUBLAS_CHECK(cublasDaxpy(cublas, n, dev_scalars.m_one64(), d_tmp, 1, d_r, 1));
 
         // Use ||b|| as denominator for relative residual stopping criterion.
         double bnorm = 0.0;
-        CUBLAS_CHECK(cublasDnrm2(cublas, n, d_b, 1, &bnorm));
+        CUBLAS_CHECK(cublasDnrm2(cublas, n, d_b, 1, d_scalar_tmp + 0));
+        CUDA_CHECK(cudaMemcpyAsync(&bnorm, d_scalar_tmp + 0, sizeof(double), cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
         if (bnorm == 0.0)
             bnorm = 1.0;
+
+        double current_res_norm = 0.0;
+        CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, d_scalar_tmp + 1));
+        CUDA_CHECK(cudaMemcpyAsync(&current_res_norm, d_scalar_tmp + 1, sizeof(double), cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
 
         size_t spmm_bufSize = 0;
         void *d_spmmBuf = nullptr;
@@ -776,9 +1103,9 @@ namespace ichol::solver
         CUSPARSE_CHECK(cusparseSpMM_bufferSize(
             cusparse,
             CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &scalars.s64_one, matA, dnB,
-            &scalars.s64_zero, dnC,
-            CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &spmm_bufSize));
+            scalars.one(use_mixed_spmm ? spmm_map.compute_type : CUDA_R_64F), matA, dnB,
+            scalars.zero(use_mixed_spmm ? spmm_map.compute_type : CUDA_R_64F), dnC,
+            use_mixed_spmm ? spmm_map.compute_type : CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &spmm_bufSize));
         CUDA_CHECK(cudaMalloc(&d_spmmBuf, spmm_bufSize));
 
         PCGResult result{};
@@ -786,32 +1113,75 @@ namespace ichol::solver
         const int threads = 256;
         const int blocks_nk = (int)((nk + (size_t)threads - 1) / (size_t)threads);
         const int blocks_kk = (int)(((size_t)k * (size_t)k + (size_t)threads - 1) / (size_t)threads);
-        double hist_rcond = get_safe_rcond(params.store_P_hist, params.rcond_base);
+        double hist_rcond = get_safe_rcond(P_hist_map.storage_prec, params.rcond_base);
         hist_rcond = std::max(hist_rcond, 1e-15);
+        std::vector<int> hist_slots;
+        hist_slots.reserve((size_t)m);
 
         int reset_iter = 50;
-        if (params.store_P_hist != ComputePrecision::FP64)
+        if (P_hist_map.storage_prec != ComputePrecision::FP64)
         {
             reset_iter = 10;
         }
 
+        const StorageMap fp64_storage = get_storage_map(ComputePrecision::FP64);
+        auto run_spmm = [&](const double *src_fp64,
+                            void *src_store,
+                            const StorageMap &src_store_map,
+                            double *dst_fp64,
+                            void *dst_store,
+                            const StorageMap &dst_store_map)
+        {
+            if (!use_mixed_spmm)
+            {
+                CUSPARSE_CHECK(cusparseDnMatSetValues(dnB, (void *)src_fp64));
+                CUSPARSE_CHECK(cusparseDnMatSetValues(dnC, dst_fp64));
+                CUSPARSE_CHECK(cusparseSpMM(
+                    cusparse,
+                    CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                    &scalars.s64_one, matA, dnB,
+                    &scalars.s64_zero, dnC,
+                    CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_spmmBuf));
+                sync_block_to_storage(dst_fp64, dst_store, dst_store_map, (int)nk, threads, stream);
+                return;
+            }
+
+            void *b_ptr = prepare_spmm_input(
+                src_fp64, src_store, src_store_map, spmm_map,
+                d_spmm_in_tmp, (int)nk, threads, stream);
+            void *c_ptr = nullptr;
+            if (dst_store && dst_store_map.storage_prec == spmm_map.io_prec)
+                c_ptr = dst_store;
+            else
+                c_ptr = d_spmm_out_tmp;
+
+            if (!c_ptr)
+                throw std::runtime_error("mpcg: missing temporary SpMM output buffer");
+
+            CUSPARSE_CHECK(cusparseDnMatSetValues(dnB, b_ptr));
+            CUSPARSE_CHECK(cusparseDnMatSetValues(dnC, c_ptr));
+            CUSPARSE_CHECK(cusparseSpMM(
+                cusparse,
+                CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                scalars.one(spmm_map.compute_type), matA, dnB,
+                scalars.zero(spmm_map.compute_type), dnC,
+                spmm_map.compute_type, CUSPARSE_SPMM_ALG_DEFAULT, d_spmmBuf));
+
+            finalize_spmm_output(
+                c_ptr, spmm_map, dst_store, dst_store_map,
+                dst_fp64, (int)nk, threads, stream);
+        };
+
         // Main MPCG iteration.
         for (int iter = 0; iter < params.maxits; ++iter)
         {
-            // Check convergence: ||r|| <= tol * ||b||
-            double res_norm = 0.0;
-            CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, &res_norm));
-            if (res_norm <= params.tol * bnorm)
+            if (current_res_norm <= params.tol * bnorm)
             {
                 result.iterations = iter;
-                result.finalRes = res_norm;
+                result.finalRes = current_res_norm;
                 converged = true;
                 break;
             }
-
-            // Keep descriptor pointers in sync with current data buffers.
-            CUSPARSE_CHECK(cusparseDnMatSetValues(dnB, d_Pnew));
-            CUSPARSE_CHECK(cusparseDnMatSetValues(dnC, d_Wnew));
 
             // Apply each preconditioner to the same residual r.
             // Output columns form Znew(:, t).
@@ -829,32 +1199,39 @@ namespace ichol::solver
                 CUDA_CHECK(cudaStreamWaitEvent(stream, precond_events[t], 0));
             }
 
+            // Znew can be stored in lower precision for the optional SpMM path,
+            // but projection always starts from the fp64 copy used by the
+            // preconditioner outputs.
+            sync_block_to_storage(d_Znew, d_Znew_store, Znew_store_map, (int)nk, threads, stream);
+
             // Start from Znew, then orthogonalize against history below.
             CUDA_CHECK(cudaMemcpyAsync(d_Pnew, d_Znew, nk * sizeof(double), cudaMemcpyDeviceToDevice, stream));
 
-            // Number of previous iterations currently available (capped by m).
             const int hist_count = std::min(iter, m);
+            hist_slots.clear();
+            for (int jj = iter - hist_count; jj < iter; ++jj)
+                hist_slots.push_back(jj % m);
+
             auto project_against_history = [&]()
             {
-                for (int jj = iter - hist_count; jj < iter; ++jj)
+                for (int hist_idx = 0; hist_idx < hist_count; ++hist_idx)
                 {
-                    // Ring-buffer slot for historical block jj.
-                    const int slot = jj % m;
-
+                    const int slot = hist_slots[(size_t)hist_idx];
                     double *d_Pj = nullptr;
                     double *d_Wj = nullptr;
+                    double *d_Cj = d_hist_C + (size_t)hist_idx * (size_t)k * (size_t)k;
+                    double *d_Yj = d_hist_Y + (size_t)hist_idx * (size_t)k * (size_t)k;
+                    double *d_Ginvj = d_Ginv_hist + (size_t)slot * (size_t)k * (size_t)k;
 
                     if (d_P_hist64)
                     {
-                        // Fast path: history already in fp64.
                         d_Pj = d_P_hist64 + (size_t)slot * nk;
                     }
                     else
                     {
-                        // Compressed path: cast slot -> temporary fp64 workspace.
                         const size_t offB = (size_t)slot * nk * P_hist_map.el_size;
                         const void *src = (const void *)((const char *)d_P_histLP + offB);
-                        k_cast_any2d_vec<<<blocks_nk, threads, 0, stream>>>(src, d_Pj_tmp, (int)nk, params.store_P_hist);
+                        k_cast_any2d_vec<<<blocks_nk, threads, 0, stream>>>(src, d_Pj_tmp, (int)nk, P_hist_map.storage_prec);
                         d_Pj = d_Pj_tmp;
                     }
 
@@ -866,55 +1243,56 @@ namespace ichol::solver
                     {
                         const size_t offB = (size_t)slot * nk * W_hist_map.el_size;
                         const void *src = (const void *)((const char *)d_W_histLP + offB);
-                        k_cast_any2d_vec<<<blocks_nk, threads, 0, stream>>>(src, d_Wj_tmp, (int)nk, params.store_W_hist);
+                        k_cast_any2d_vec<<<blocks_nk, threads, 0, stream>>>(src, d_Wj_tmp, (int)nk, W_hist_map.storage_prec);
                         d_Wj = d_Wj_tmp;
                     }
 
-                    double *d_Gj = d_G_hist + (size_t)slot * (size_t)k * (size_t)k;
-
-                    if (params.prec_gemm == ComputePrecision::FP64)
+                    if (g_map.output_type == CUDA_R_64F)
                     {
-                        // C = Wj^T * Pnew (k x k), computed directly in fp64.
                         CUBLAS_CHECK(cublasGemmEx(
                             cublas, CUBLAS_OP_T, CUBLAS_OP_N,
                             k, k, n,
-                            scalars.one(g_map.compute_type),
+                            dev_scalars.one(g_map.compute_type),
                             d_Wj, CUDA_R_64F, n,
                             d_Pnew, CUDA_R_64F, n,
-                            scalars.zero(g_map.compute_type),
-                            d_C, CUDA_R_64F, k,
+                            dev_scalars.zero(g_map.compute_type),
+                            d_Cj, CUDA_R_64F, k,
                             g_map.compute_type, CUBLAS_GEMM_DEFAULT));
                     }
                     else
                     {
-                        // Cast inputs to selected low precision, run GEMM, cast result back.
-                        k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Wj, d_Wj_low, (int)nk, params.prec_gemm);
-                        k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Pnew, d_Pnew_low, (int)nk, params.prec_gemm);
+                        k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Wj, d_Wj_low, (int)nk, g_map.io_prec);
+                        k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Pnew, d_Pnew_low, (int)nk, g_map.io_prec);
 
                         CUBLAS_CHECK(cublasGemmEx(
                             cublas, CUBLAS_OP_T, CUBLAS_OP_N,
                             k, k, n,
-                            scalars.one(g_map.compute_type),
+                            dev_scalars.one(g_map.compute_type),
                             d_Wj_low, g_map.data_type, n,
                             d_Pnew_low, g_map.data_type, n,
-                            scalars.zero(g_map.compute_type),
+                            dev_scalars.zero(g_map.compute_type),
                             d_C_gemm, CUDA_R_32F, k,
                             g_map.compute_type, CUBLAS_GEMM_DEFAULT));
 
-                        k_cast_f2d_mat<<<blocks_kk, threads, 0, stream>>>(d_C_gemm, d_C, k * k);
+                        k_cast_f2d_mat<<<blocks_kk, threads, 0, stream>>>(d_C_gemm, d_Cj, k * k);
                     }
 
-                    // Solve Y = pinv(Gj) * C.
-                    // Y are projection coefficients that remove old-direction components.
-                    pinv_svd_cuda(cusolver, cublas, d_Gj, k, d_C, k, d_Y, stream, hist_rcond, pinv_ws);
+                    CUBLAS_CHECK(cublasDgemm(
+                        cublas, CUBLAS_OP_N, CUBLAS_OP_N,
+                        k, k, k,
+                        dev_scalars.one64(),
+                        d_Ginvj, k,
+                        d_Cj, k,
+                        dev_scalars.zero64(),
+                        d_Yj, k));
 
                     CUBLAS_CHECK(cublasDgemm(
                         cublas, CUBLAS_OP_N, CUBLAS_OP_N,
                         n, k, k,
-                        &scalars.s64_m_one,
+                        dev_scalars.m_one64(),
                         d_Pj, n,
-                        d_Y, k,
-                        &scalars.s64_one,
+                        d_Yj, k,
+                        dev_scalars.one64(),
                         d_Pnew, n));
                 }
             };
@@ -923,95 +1301,55 @@ namespace ichol::solver
             if (enable_anorm_reprojection && hist_count > 0)
             {
                 // Check if projection removed too much A-norm and do one extra pass if needed.
-                CUSPARSE_CHECK(cusparseDnMatSetValues(dnB, d_Znew));
-                CUSPARSE_CHECK(cusparseDnMatSetValues(dnC, d_Wz));
-                CUSPARSE_CHECK(cusparseSpMM(
-                    cusparse,
-                    CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                    &scalars.s64_one, matA, dnB,
-                    &scalars.s64_zero, dnC,
-                    CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_spmmBuf));
+                run_spmm(d_Znew, d_Znew_store, Znew_store_map, d_Wz, nullptr, fp64_storage);
+                run_spmm(d_Pnew, d_Pnew_store, Pnew_store_map, d_Wnew, d_Wnew_store, Wnew_store_map);
 
-                CUSPARSE_CHECK(cusparseDnMatSetValues(dnB, d_Pnew));
-                CUSPARSE_CHECK(cusparseDnMatSetValues(dnC, d_Wnew));
-                CUSPARSE_CHECK(cusparseSpMM(
-                    cusparse,
-                    CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                    &scalars.s64_one, matA, dnB,
-                    &scalars.s64_zero, dnC,
-                    CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_spmmBuf));
+                column_dots_kernel<<<k, threads, threads * sizeof(double), stream>>>(d_Znew, d_Wz, n, n, n, k, d_z_anorm_cols);
+                column_dots_kernel<<<k, threads, threads * sizeof(double), stream>>>(d_Pnew, d_Wnew, n, n, n, k, d_p_anorm_cols);
+                k_should_reproject<<<1, 1, 0, stream>>>(d_z_anorm_cols, d_p_anorm_cols, k, anorm_drop_tol_sq, d_reproject_flag);
 
-                double z_anorm_sq = 0.0;
-                double p_anorm_sq = 0.0;
-                for (int t = 0; t < k; ++t)
-                {
-                    double z_col_sq = 0.0;
-                    double p_col_sq = 0.0;
-                    const size_t off = (size_t)t * (size_t)n;
-                    CUBLAS_CHECK(cublasDdot(cublas, n, d_Znew + off, 1, d_Wz + off, 1, &z_col_sq));
-                    CUBLAS_CHECK(cublasDdot(cublas, n, d_Pnew + off, 1, d_Wnew + off, 1, &p_col_sq));
-                    z_anorm_sq += std::max(0.0, z_col_sq);
-                    p_anorm_sq += std::max(0.0, p_col_sq);
-                }
-
-                if (z_anorm_sq > 0.0 && p_anorm_sq < anorm_drop_tol_sq * z_anorm_sq)
+                int reproject_flag = 0;
+                CUDA_CHECK(cudaMemcpyAsync(&reproject_flag, d_reproject_flag, sizeof(int), cudaMemcpyDeviceToHost, stream));
+                CUDA_CHECK(cudaStreamSynchronize(stream));
+                if (reproject_flag != 0)
                     project_against_history();
             }
 
             // Normalize each search-direction column to keep Gram diagonals well-scaled.
             // Here we enforce ||p_t||_2 = 1.
-            for (int t = 0; t < k; ++t)
-            {
-                double *d_pt = d_Pnew + (size_t)t * (size_t)n;
-                double pnorm = 0.0;
-                CUBLAS_CHECK(cublasDnrm2(cublas, n, d_pt, 1, &pnorm));
-                if (pnorm > 1e-30)
-                {
-                    const double inv_pnorm = 1.0 / pnorm;
-                    CUBLAS_CHECK(cublasDscal(cublas, n, &inv_pnorm, d_pt, 1));
-                }
-                else
-                {
-                    CUDA_CHECK(cudaMemsetAsync(d_pt, 0, (size_t)n * sizeof(double), stream));
-                }
-            }
+            column_norms_kernel<<<k, threads, threads * sizeof(double), stream>>>(d_Pnew, n, n, k, d_col_norms);
+            k_scale_columns_from_norms<<<blocks_nk, threads, 0, stream>>>(d_Pnew, n, k, d_col_norms, 1e-30);
+            sync_block_to_storage(d_Pnew, d_Pnew_store, Pnew_store_map, (int)nk, threads, stream);
 
             // Wnew = A * Pnew (sparse-dense matrix multiply).
-            CUSPARSE_CHECK(cusparseDnMatSetValues(dnB, d_Pnew));
-            CUSPARSE_CHECK(cusparseDnMatSetValues(dnC, d_Wnew));
-            CUSPARSE_CHECK(cusparseSpMM(
-                cusparse,
-                CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                &scalars.s64_one, matA, dnB,
-                &scalars.s64_zero, dnC,
-                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_spmmBuf));
+            run_spmm(d_Pnew, d_Pnew_store, Pnew_store_map, d_Wnew, d_Wnew_store, Wnew_store_map);
 
-            if (params.prec_gemm == ComputePrecision::FP64)
+            if (g_map.output_type == CUDA_R_64F)
             {
                 // Gnew = Pnew^T * Wnew (k x k Gram-like matrix).
                 CUBLAS_CHECK(cublasGemmEx(
                     cublas, CUBLAS_OP_T, CUBLAS_OP_N,
                     k, k, n,
-                    scalars.one(g_map.compute_type),
+                    dev_scalars.one(g_map.compute_type),
                     d_Pnew, CUDA_R_64F, n,
                     d_Wnew, CUDA_R_64F, n,
-                    scalars.zero(g_map.compute_type),
+                    dev_scalars.zero(g_map.compute_type),
                     d_Gnew, CUDA_R_64F, k,
                     g_map.compute_type, CUBLAS_GEMM_DEFAULT));
             }
             else
             {
                 // Low-precision GEMM path for Gnew.
-                k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Pnew, d_Pnew_low, (int)nk, params.prec_gemm);
-                k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Wnew, d_Wnew_low, (int)nk, params.prec_gemm);
+                k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Pnew, d_Pnew_low, (int)nk, g_map.io_prec);
+                k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Wnew, d_Wnew_low, (int)nk, g_map.io_prec);
 
                 CUBLAS_CHECK(cublasGemmEx(
                     cublas, CUBLAS_OP_T, CUBLAS_OP_N,
                     k, k, n,
-                    scalars.one(g_map.compute_type),
+                    dev_scalars.one(g_map.compute_type),
                     d_Pnew_low, g_map.data_type, n,
                     d_Wnew_low, g_map.data_type, n,
-                    scalars.zero(g_map.compute_type),
+                    dev_scalars.zero(g_map.compute_type),
                     d_C_gemm, CUDA_R_32F, k,
                     g_map.compute_type, CUBLAS_GEMM_DEFAULT));
 
@@ -1024,38 +1362,42 @@ namespace ichol::solver
             k_build_col_scale_from_gdiag<<<blocks_k, threads, 0, stream>>>(d_Gnew, d_col_scale, k, 1e-30);
             k_fuse_scale_P_W<<<blocks_nk, threads, 0, stream>>>(d_Pnew, d_Wnew, d_col_scale, n, k);
             k_congruence_scale_gram<<<blocks_kk, threads, 0, stream>>>(d_Gnew, d_col_scale, k);
+            // Pnew/Wnew stay stored in low precision when requested, then are
+            // re-expanded to fp64 only for G, rhs, alpha, x, and r updates.
+            sync_block_to_storage(d_Pnew, d_Pnew_store, Pnew_store_map, (int)nk, threads, stream);
+            sync_block_to_storage(d_Wnew, d_Wnew_store, Wnew_store_map, (int)nk, threads, stream);
 
             // rhs = Pnew^T * r (size k)
             CUBLAS_CHECK(cublasDgemv(
                 cublas, CUBLAS_OP_T,
                 n, k,
-                &scalars.s64_one,
+                dev_scalars.one64(),
                 d_Pnew, n,
                 d_r, 1,
-                &scalars.s64_zero,
+                dev_scalars.zero64(),
                 d_rhs, 1));
 
             // alpha = pinv(Gnew) * rhs (block step coefficients).
-            pinv_svd_cuda(cusolver, cublas, d_Gnew, k, d_rhs, 1, d_alpha, stream, hist_rcond, pinv_ws);
+            pinv_svd_cuda(cusolver, cublas, d_Gnew, k, d_rhs, 1, d_alpha, stream, hist_rcond, pinv_ws, dev_scalars);
 
             // x = x + Pnew * alpha
             CUBLAS_CHECK(cublasDgemv(
                 cublas, CUBLAS_OP_N,
                 n, k,
-                &scalars.s64_one,
+                dev_scalars.one64(),
                 d_Pnew, n,
                 d_alpha, 1,
-                &scalars.s64_one,
+                dev_scalars.one64(),
                 d_x, 1));
 
             // r = r - Wnew * alpha
             CUBLAS_CHECK(cublasDgemv(
                 cublas, CUBLAS_OP_N,
                 n, k,
-                &scalars.s64_m_one,
+                dev_scalars.m_one64(),
                 d_Wnew, n,
                 d_alpha, 1,
-                &scalars.s64_one,
+                dev_scalars.one64(),
                 d_r, 1));
 
             // Periodically reset recursive residual drift: r = b - A*x.
@@ -1067,7 +1409,7 @@ namespace ichol::solver
                     &scalars.s64_zero, vecTmp,
                     CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, d_spmvBuf));
                 CUDA_CHECK(cudaMemcpyAsync(d_r, d_b, (size_t)n * sizeof(double), cudaMemcpyDeviceToDevice, stream));
-                CUBLAS_CHECK(cublasDaxpy(cublas, n, &scalars.s64_m_one, d_tmp, 1, d_r, 1));
+                CUBLAS_CHECK(cublasDaxpy(cublas, n, dev_scalars.m_one64(), d_tmp, 1, d_r, 1));
             }
 
             // Save current blocks/matrix in ring-buffer slot for future orthogonalization.
@@ -1082,7 +1424,7 @@ namespace ichol::solver
             {
                 const size_t offB = (size_t)slot * nk * P_hist_map.el_size;
                 void *dstP = (void *)((char *)d_P_histLP + offB);
-                k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Pnew, dstP, (int)nk, params.store_P_hist);
+                k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Pnew, dstP, (int)nk, P_hist_map.storage_prec);
             }
 
             if (d_W_hist64)
@@ -1094,22 +1436,28 @@ namespace ichol::solver
             {
                 const size_t offB = (size_t)slot * nk * W_hist_map.el_size;
                 void *dstW = (void *)((char *)d_W_histLP + offB);
-                k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Wnew, dstW, (int)nk, params.store_W_hist);
+                k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Wnew, dstW, (int)nk, W_hist_map.storage_prec);
             }
 
             double *Gdst = d_G_hist + (size_t)slot * (size_t)k * (size_t)k;
             CUDA_CHECK(cudaMemcpyAsync(Gdst, d_Gnew, k * k * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+            pinv_svd_cuda(
+                cusolver, cublas,
+                d_Gnew, k,
+                d_eye, k,
+                d_Ginv_hist + (size_t)slot * (size_t)k * (size_t)k,
+                stream, hist_rcond, pinv_ws, dev_scalars);
+
+            CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, d_scalar_tmp + 1));
+            CUDA_CHECK(cudaMemcpyAsync(&current_res_norm, d_scalar_tmp + 1, sizeof(double), cudaMemcpyDeviceToHost, stream));
+            CUDA_CHECK(cudaStreamSynchronize(stream));
 
             result.iterations = iter + 1;
         }
 
         // If we stopped due to max iterations (or maxits==0), return the latest residual.
         if (!converged)
-        {
-            double res_norm = 0.0;
-            CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, &res_norm));
-            result.finalRes = res_norm;
-        }
+            result.finalRes = current_res_norm;
 
         // Copy final solution back to host and wait for all queued GPU work.
         CUDA_CHECK(cudaMemcpyAsync(h_x.data(), d_x, (size_t)n * sizeof(double), cudaMemcpyDeviceToHost, stream));
@@ -1138,6 +1486,16 @@ namespace ichol::solver
         CUDA_CHECK(cudaFree(d_Wnew));
         if (d_Wz)
             CUDA_CHECK(cudaFree(d_Wz));
+        if (d_Znew_store)
+            CUDA_CHECK(cudaFree(d_Znew_store));
+        if (d_Pnew_store)
+            CUDA_CHECK(cudaFree(d_Pnew_store));
+        if (d_Wnew_store)
+            CUDA_CHECK(cudaFree(d_Wnew_store));
+        if (d_spmm_in_tmp)
+            CUDA_CHECK(cudaFree(d_spmm_in_tmp));
+        if (d_spmm_out_tmp)
+            CUDA_CHECK(cudaFree(d_spmm_out_tmp));
 
         if (d_P_hist64)
             CUDA_CHECK(cudaFree(d_P_hist64));
@@ -1154,12 +1512,21 @@ namespace ichol::solver
             CUDA_CHECK(cudaFree(d_Wj_tmp));
 
         CUDA_CHECK(cudaFree(d_G_hist));
-        CUDA_CHECK(cudaFree(d_C));
+        CUDA_CHECK(cudaFree(d_Ginv_hist));
+        CUDA_CHECK(cudaFree(d_hist_C));
+        CUDA_CHECK(cudaFree(d_hist_Y));
         CUDA_CHECK(cudaFree(d_Gnew));
         CUDA_CHECK(cudaFree(d_rhs));
-        CUDA_CHECK(cudaFree(d_Y));
         CUDA_CHECK(cudaFree(d_alpha));
         CUDA_CHECK(cudaFree(d_col_scale));
+        CUDA_CHECK(cudaFree(d_scalar_tmp));
+        CUDA_CHECK(cudaFree(d_col_norms));
+        CUDA_CHECK(cudaFree(d_z_anorm_cols));
+        CUDA_CHECK(cudaFree(d_p_anorm_cols));
+        CUDA_CHECK(cudaFree(d_reproject_flag));
+        CUDA_CHECK(cudaFree(d_eye));
+        CUDA_CHECK(cudaFree(dev_scalars.d_s32));
+        CUDA_CHECK(cudaFree(dev_scalars.d_s64));
         CUDA_CHECK(cudaFree(pinv_ws.d_G_copy));
         CUDA_CHECK(cudaFree(pinv_ws.d_S));
         CUDA_CHECK(cudaFree(pinv_ws.d_U));

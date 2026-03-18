@@ -261,7 +261,7 @@ TEST_F(MPCGTest, 3D_Poisson)
 
 TEST(MPCG, 2D_Poisson_Asymmetric)
 {
-    const int n = 64;
+    const int n = 512;
     const double epsilon = 0.5;
     auto A = ichol::io::gen_2dpoi<double>(n, epsilon);
     auto b = ichol::io::rhs_2d_poisson_manufactured(A, n);
@@ -427,7 +427,7 @@ TEST(MPCG, 2D_Poisson_DomainDecomposition)
 
 TEST(MPCG, 3D_Poisson_DD)
 {
-    const int n = 24;
+    const int n = 40;
     auto A = ichol::io::gen_3dpoi<double>(n);
 
     std::vector<double> b(A.num_rows);

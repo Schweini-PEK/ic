@@ -318,6 +318,22 @@ static ichol::symbolic::LevelSets build_level_sets_csr_diag_last(
     return out;
 }
 
+static bool csr_has_upper_triangle_entries(
+    int n,
+    const std::vector<int> &row_ptr,
+    const std::vector<int> &col_ind)
+{
+    for (int i = 0; i < n; ++i)
+    {
+        for (int p = row_ptr[i]; p < row_ptr[i + 1]; ++p)
+        {
+            if (col_ind[p] > i)
+                return true;
+        }
+    }
+    return false;
+}
+
 namespace ichol::solver
 {
     template <typename T_L>
@@ -340,9 +356,8 @@ namespace ichol::solver
         const int nnzA = static_cast<int>(h_valA.size());
         const int nnzL = static_cast<int>(h_valL.size());
 
-        // Determine A format. If params doesn't specify, assume Full if nnz is high.
-        // For 2D Poisson (5pt), full has ~5n. L+D has ~3n.
-        const bool A_is_full = (nnzA > 3 * n);
+        // Full matrices contain explicit upper-triangular entries; symmetric lower storage does not.
+        const bool A_is_full = csr_has_upper_triangle_entries(n, h_csrRowPtrA, h_csrColIndA);
 
         constexpr bool L_is_fp64 = std::is_same<T_L, double>::value;
         constexpr bool L_is_fp32 = std::is_same<T_L, float>::value;
@@ -491,6 +506,8 @@ namespace ichol::solver
         double sptrsv_total_ms = 0.0;
         int sptrsv_timed_iters = 0;
         CudaEvent sptrsv_start, sptrsv_stop;
+        double last_res_norm = bnorm;
+        int last_completed_iter = 0;
 
         // --- Main Loop ---
         for (int k = 1; k <= params.maxits; k++)
@@ -549,6 +566,12 @@ namespace ichol::solver
             // (5) alpha = rho / (p^T q)
             double denom = 0.0;
             CUBLAS_CHECK(cublasDdot(cublasHandle, n, d_p.get(), 1, d_q.get(), 1, &denom));
+            if (!std::isfinite(rho) || !std::isfinite(denom) || denom == 0.0)
+            {
+                result.iterations = last_completed_iter;
+                result.finalRes = std::numeric_limits<double>::infinity();
+                break;
+            }
             double alpha = rho / denom;
 
             // (6) x = x + alpha p; (7) r = r - alpha q
@@ -559,12 +582,20 @@ namespace ichol::solver
             // (8) Convergence
             double res_norm = 0.0;
             CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_r.get(), 1, &res_norm));
+            last_res_norm = res_norm;
+            last_completed_iter = k;
             if (res_norm <= params.tol * bnorm)
             {
                 result.iterations = k;
                 result.finalRes = res_norm;
                 break;
             }
+        }
+
+        if (result.iterations == 0 && !std::isinf(result.finalRes))
+        {
+            result.iterations = last_completed_iter;
+            result.finalRes = last_res_norm;
         }
 
         CUDA_CHECK(cudaStreamSynchronize(stream));

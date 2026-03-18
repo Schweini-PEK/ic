@@ -16,14 +16,14 @@
 
 TEST(IC_Factorize, ProducesUsablePreconditionerOnMTX)
 {
-    std::string path = "test/data/europe_osm.mtx";
-    // ichol::matrix::CsrMatrix<double> A = ichol::io::mtx_to_csr<double>(path, false, 1.0);
-    ichol::matrix::CsrMatrix<double> A = ichol::io::gen_3dlap_csr<double>(300);
+    std::string path = "test/data/apache1.mtx";
+    ichol::matrix::CsrMatrix<double> A = ichol::io::mtx_to_csr<double>(path, false, 1.0);
+    // ichol::matrix::CsrMatrix<double> A = ichol::io::gen_3dlap_csr<double>(300);
 
     const int n = A.num_rows;
 
     ichol::SymbolicOptions sym_options;
-    sym_options.ordering = ichol::Ordering::RCM;
+    sym_options.ordering = ichol::Ordering::AMD;
     sym_options.level_k = 4; // IC(4)
 
     ichol::IncompleteCholeskyOptions ic_options;
