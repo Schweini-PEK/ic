@@ -23,6 +23,21 @@ namespace
         cuda_check(cudaGetLastError());
     }
 
+    inline ichol::solver::ComputePrecision normalize_psai_precision(ichol::solver::ComputePrecision prec)
+    {
+        using Prec = ichol::solver::ComputePrecision;
+        switch (prec)
+        {
+        case Prec::FP64:
+            return Prec::FP64;
+        case Prec::FP32:
+        case Prec::TF32:
+            return Prec::FP32;
+        default:
+            throw std::runtime_error("PSAI preconditioner supports FP64 and FP32 only");
+        }
+    }
+
     __host__ __device__ __forceinline__ int flatten_local_3d(int x, int y, int z, int w, int h)
     {
         return x + y * w + z * (w * h);
@@ -94,6 +109,13 @@ namespace
     };
 
     static DeviceCsrCache gA;
+
+    __global__ void k_cast_d2f(int n, const double *src, float *dst)
+    {
+        const int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if (i < n)
+            dst[i] = static_cast<float>(src[i]);
+    }
 
     __global__ void k_build_psai(
         const int *row_ptr, const int *col_ind, const double *val,
@@ -285,9 +307,10 @@ namespace
         }
     }
 
+    template <typename T>
     __global__ void k_apply_psai(
-        const double *d_r, double *d_z,
-        const int *Mcol, const double *Mval,
+        const T *d_r, T *d_z,
+        const int *Mcol, const T *Mval,
         int lw, int lh, int ld, int nsub,
         int gw, int gh,
         int x0, int y0, int z0,
@@ -308,7 +331,7 @@ namespace
 
         const int gi = (x0 + lx) + (y0 + ly) * gw + (z0 + lz) * (gw * gh);
 
-        double sum = 0.0;
+        T sum = static_cast<T>(0);
         const int base = li * pmax;
 #pragma unroll
         for (int k = 0; k < 125; ++k)
@@ -336,7 +359,8 @@ namespace ichol::precond::detail
         int pmax;
 
         int *d_Mcol = nullptr;
-        double *d_Mval = nullptr;
+        double *d_Mval64 = nullptr;
+        float *d_Mval32 = nullptr;
         int *d_status = nullptr;
     };
 
@@ -372,7 +396,8 @@ namespace ichol::precond::detail
         ctx->pmax = ctx->pmax * ctx->pmax * ctx->pmax;
 
         cuda_check(cudaMalloc(&ctx->d_Mcol, (size_t)ctx->nsub * (size_t)ctx->pmax * sizeof(int)));
-        cuda_check(cudaMalloc(&ctx->d_Mval, (size_t)ctx->nsub * (size_t)ctx->pmax * sizeof(double)));
+        cuda_check(cudaMalloc(&ctx->d_Mval64, (size_t)ctx->nsub * (size_t)ctx->pmax * sizeof(double)));
+        cuda_check(cudaMalloc(&ctx->d_Mval32, (size_t)ctx->nsub * (size_t)ctx->pmax * sizeof(float)));
         cuda_check(cudaMalloc(&ctx->d_status, sizeof(int)));
         cuda_check(cudaMemset(ctx->d_status, 0, sizeof(int)));
 
@@ -386,31 +411,56 @@ namespace ichol::precond::detail
 
         k_build_psai<<<ctx->nsub, 1, shmem>>>(
             gA.d_row, gA.d_col, gA.d_val,
-            ctx->d_Mcol, ctx->d_Mval, ctx->d_status,
+            ctx->d_Mcol, ctx->d_Mval64, ctx->d_status,
             ctx->lw, ctx->lh, ctx->ld, ctx->nsub,
             global.w, global.h,
             reg.x0, reg.x1, reg.y0, reg.y1, reg.z0, reg.z1,
             ctx->r);
         cuda_check_last_kernel();
+        {
+            const int nvals = ctx->nsub * ctx->pmax;
+            const int threads = 256;
+            const int blocks = (nvals + threads - 1) / threads;
+            k_cast_d2f<<<blocks, threads>>>(nvals, ctx->d_Mval64, ctx->d_Mval32);
+            cuda_check_last_kernel();
+        }
 
         cuda_check(cudaDeviceSynchronize());
         return ctx;
     }
 
-    void apply_subdomain_psai(void *vctx, const double *d_r, double *d_z, int /*N*/, cudaStream_t stream)
+    void apply_subdomain_psai(void *vctx, const void *d_r, void *d_z, int /*N*/,
+                              ichol::solver::ComputePrecision prec, cudaStream_t stream)
     {
         auto *ctx = reinterpret_cast<SubdomainPsaiContext *>(vctx);
 
         const int tpb = 256;
         const int bpg = (ctx->nsub + tpb - 1) / tpb;
-
-        k_apply_psai<<<bpg, tpb, 0, stream>>>(
-            d_r, d_z,
-            ctx->d_Mcol, ctx->d_Mval,
-            ctx->lw, ctx->lh, ctx->ld, ctx->nsub,
-            ctx->gw, ctx->gh,
-            ctx->x0, ctx->y0, ctx->z0,
-            ctx->r);
+        switch (normalize_psai_precision(prec))
+        {
+        case ichol::solver::ComputePrecision::FP64:
+            k_apply_psai<<<bpg, tpb, 0, stream>>>(
+                static_cast<const double *>(d_r),
+                static_cast<double *>(d_z),
+                ctx->d_Mcol, ctx->d_Mval64,
+                ctx->lw, ctx->lh, ctx->ld, ctx->nsub,
+                ctx->gw, ctx->gh,
+                ctx->x0, ctx->y0, ctx->z0,
+                ctx->r);
+            break;
+        case ichol::solver::ComputePrecision::FP32:
+            k_apply_psai<<<bpg, tpb, 0, stream>>>(
+                static_cast<const float *>(d_r),
+                static_cast<float *>(d_z),
+                ctx->d_Mcol, ctx->d_Mval32,
+                ctx->lw, ctx->lh, ctx->ld, ctx->nsub,
+                ctx->gw, ctx->gh,
+                ctx->x0, ctx->y0, ctx->z0,
+                ctx->r);
+            break;
+        default:
+            break;
+        }
         cuda_check_last_kernel();
     }
 
@@ -420,7 +470,8 @@ namespace ichol::precond::detail
         if (!ctx)
             return;
         cudaFree(ctx->d_Mcol);
-        cudaFree(ctx->d_Mval);
+        cudaFree(ctx->d_Mval64);
+        cudaFree(ctx->d_Mval32);
         cudaFree(ctx->d_status);
         delete ctx;
     }

@@ -90,3 +90,9 @@ add_executable(ict_pcg
 )
 
 target_link_libraries(ict_pcg PRIVATE ichol)
+
+add_executable(mpcg_pcg_compare
+    apps/mpcg_pcg_compare_main.cpp
+)
+
+target_link_libraries(mpcg_pcg_compare PRIVATE ichol)

@@ -8,6 +8,7 @@
 
 #include "ichol/matrix_formats.hpp"
 #include "ichol/options.hpp"
+#include "ichol/precision.hpp"
 
 namespace ichol::precond
 {
@@ -65,9 +66,10 @@ namespace ichol::precond
 
     void apply_subdomain_exact_spsv(
         void *ctx,
-        const double *d_r,
-        double *d_z,
+        const void *d_r,
+        void *d_z,
         int N,
+        ichol::solver::ComputePrecision prec,
         cudaStream_t stream);
 } // namespace ichol::precond
 

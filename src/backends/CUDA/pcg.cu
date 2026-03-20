@@ -38,6 +38,21 @@ __global__ void cast_vec(int n, const From *__restrict__ in, To *__restrict__ ou
     }
 }
 
+static ichol::solver::ComputePrecision normalize_custom_precond_precision(ichol::solver::ComputePrecision prec)
+{
+    using Prec = ichol::solver::ComputePrecision;
+    switch (prec)
+    {
+    case Prec::FP64:
+        return Prec::FP64;
+    case Prec::FP32:
+    case Prec::TF32:
+        return Prec::FP32;
+    default:
+        throw std::runtime_error("custom preconditioner apply path supports FP64 and FP32 only");
+    }
+}
+
 /**
  * Element-Wise product
  */
@@ -97,6 +112,22 @@ __global__ void diag_sub_from_diag(int n,
         }                                                               \
     } while (0)
 
+template <typename>
+inline constexpr bool always_false_v = false;
+
+template <typename T>
+constexpr cudaDataType cuda_data_type()
+{
+    if constexpr (std::is_same_v<T, double>)
+        return CUDA_R_64F;
+    else if constexpr (std::is_same_v<T, float>)
+        return CUDA_R_32F;
+    else if constexpr (std::is_same_v<T, __half>)
+        return CUDA_R_16F;
+    else
+        static_assert(always_false_v<T>, "Unsupported CUDA value type");
+}
+
 struct CusparseHandle
 {
     cusparseHandle_t handle = nullptr;
@@ -131,12 +162,13 @@ struct CusparseSpMat
         if (mat)
             CUSPARSE_CHECK(cusparseDestroySpMat(mat));
     }
-    void create(int rows, int cols, int nnz, int *row_ptr, int *col_ind, double *values)
+    template <typename ValueT>
+    void create(int rows, int cols, int nnz, int *row_ptr, int *col_ind, ValueT *values)
     {
         CUSPARSE_CHECK(cusparseCreateCsr(&mat, rows, cols, nnz,
                                          row_ptr, col_ind, values,
                                          CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
-                                         CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F));
+                                         CUSPARSE_INDEX_BASE_ZERO, cuda_data_type<ValueT>()));
     }
     cusparseSpMatDescr_t get() const { return mat; }
     operator cusparseSpMatDescr_t() const { return mat; }
@@ -150,12 +182,26 @@ struct CusparseDnVec
         if (vec)
             CUSPARSE_CHECK(cusparseDestroyDnVec(vec));
     }
-    void create(int n, double *data)
+    template <typename ValueT>
+    void create(int n, ValueT *data)
     {
-        CUSPARSE_CHECK(cusparseCreateDnVec(&vec, n, data, CUDA_R_64F));
+        CUSPARSE_CHECK(cusparseCreateDnVec(&vec, n, data, cuda_data_type<ValueT>()));
     }
     cusparseDnVecDescr_t get() const { return vec; }
     operator cusparseDnVecDescr_t() const { return vec; }
+};
+
+struct CusparseSpSVDescr
+{
+    cusparseSpSVDescr_t desc = nullptr;
+    CusparseSpSVDescr() { CUSPARSE_CHECK(cusparseSpSV_createDescr(&desc)); }
+    ~CusparseSpSVDescr()
+    {
+        if (desc)
+            CUSPARSE_CHECK(cusparseSpSV_destroyDescr(desc));
+    }
+    cusparseSpSVDescr_t get() const { return desc; }
+    operator cusparseSpSVDescr_t() const { return desc; }
 };
 
 struct CudaEvent
@@ -334,10 +380,16 @@ static bool csr_has_upper_triangle_entries(
     return false;
 }
 
+enum class FactorizedPrecondBackend
+{
+    CustomLevelsets,
+    CuSparseSpSV
+};
+
 namespace ichol::solver
 {
     template <typename T_L>
-    PCGResult pcg(
+    static PCGResult pcg_impl(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
         const std::vector<double> &h_valA,
@@ -347,7 +399,8 @@ namespace ichol::solver
         const std::vector<double> &h_b,
         std::vector<double> &h_x,
         const std::vector<double> &h_D,
-        const PCGParams &params)
+        const PCGParams &params,
+        FactorizedPrecondBackend factorized_backend)
     {
         CusparseHandle cusparseHandle;
         CublasHandle cublasHandle;
@@ -366,6 +419,9 @@ namespace ichol::solver
         cudaStream_t stream = 0;
         PCGResult result{};
         const bool use_custom_precond = (params.custom_precond != nullptr && params.custom_precond->apply != nullptr);
+        const auto custom_precond_prec = use_custom_precond
+                                             ? normalize_custom_precond_precision(params.prec_precond)
+                                             : ichol::solver::ComputePrecision::FP64;
 
         // --- A Matrix Buffers ---
         DeviceBuffer<int> d_csrRowPtrA(n + 1);
@@ -407,6 +463,9 @@ namespace ichol::solver
         DeviceBuffer<int> d_csrRowPtrL, d_csrColIndL, d_csrRowPtrLt, d_csrColIndLt;
         DeviceBuffer<SolveT> d_valL, d_valLt;
         CusparseSpMat spMatM; // Used if precond_full = true
+        CusparseSpMat spMatL, spMatLt;
+        CusparseSpSVDescr spsv_descr_L, spsv_descr_Lt;
+        DeviceBuffer<char> d_spsv_buf_L, d_spsv_buf_Lt;
 
         if (!use_custom_precond)
         {
@@ -437,12 +496,6 @@ namespace ichol::solver
                 std::vector<SolveT> h_valLt_solve;
                 build_csr_trans<SolveT>(n, h_csrRowPtrL, h_csrColIndL, h_valL_solve, h_csrRowPtrLt, h_csrColIndLt, h_valLt_solve);
 
-                const auto levelsets_L = build_level_sets_csr_diag_last(n, h_csrRowPtrL, h_csrColIndL, false);
-                const auto levelsets_Lt = build_level_sets_csr_diag_last(n, h_csrRowPtrLt, h_csrColIndLt, true);
-
-                sptrsv_plan_L.init(levelsets_L, stream);
-                sptrsv_plan_Lt.init(levelsets_Lt, stream);
-
                 d_csrRowPtrL.alloc(n + 1);
                 d_csrColIndL.alloc(nnzL);
                 d_valL.alloc(nnzL);
@@ -456,6 +509,27 @@ namespace ichol::solver
                 CUDA_CHECK(cudaMemcpy(d_csrRowPtrLt.get(), h_csrRowPtrLt.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
                 CUDA_CHECK(cudaMemcpy(d_csrColIndLt.get(), h_csrColIndLt.data(), nnzL * sizeof(int), cudaMemcpyHostToDevice));
                 CUDA_CHECK(cudaMemcpy(d_valLt.get(), h_valLt_solve.data(), nnzL * sizeof(SolveT), cudaMemcpyHostToDevice));
+
+                if (factorized_backend == FactorizedPrecondBackend::CustomLevelsets)
+                {
+                    const auto levelsets_L = build_level_sets_csr_diag_last(n, h_csrRowPtrL, h_csrColIndL, false);
+                    const auto levelsets_Lt = build_level_sets_csr_diag_last(n, h_csrRowPtrLt, h_csrColIndLt, true);
+                    sptrsv_plan_L.init(levelsets_L, stream);
+                    sptrsv_plan_Lt.init(levelsets_Lt, stream);
+                }
+                else
+                {
+                    spMatL.create(n, n, nnzL, d_csrRowPtrL.get(), d_csrColIndL.get(), d_valL.get());
+                    spMatLt.create(n, n, nnzL, d_csrRowPtrLt.get(), d_csrColIndLt.get(), d_valLt.get());
+
+                    cusparseFillMode_t lower = CUSPARSE_FILL_MODE_LOWER;
+                    cusparseFillMode_t upper = CUSPARSE_FILL_MODE_UPPER;
+                    cusparseDiagType_t non_unit = CUSPARSE_DIAG_TYPE_NON_UNIT;
+                    CUSPARSE_CHECK(cusparseSpMatSetAttribute(spMatL.get(), CUSPARSE_SPMAT_FILL_MODE, &lower, sizeof(lower)));
+                    CUSPARSE_CHECK(cusparseSpMatSetAttribute(spMatL.get(), CUSPARSE_SPMAT_DIAG_TYPE, &non_unit, sizeof(non_unit)));
+                    CUSPARSE_CHECK(cusparseSpMatSetAttribute(spMatLt.get(), CUSPARSE_SPMAT_FILL_MODE, &upper, sizeof(upper)));
+                    CUSPARSE_CHECK(cusparseSpMatSetAttribute(spMatLt.get(), CUSPARSE_SPMAT_DIAG_TYPE, &non_unit, sizeof(non_unit)));
+                }
             }
         }
 
@@ -487,6 +561,8 @@ namespace ichol::solver
 
         SolveT *d_r_work = nullptr, *d_w_work = nullptr, *d_z_work = nullptr;
         DeviceBuffer<SolveT> d_r_work_buf, d_w_work_buf, d_z_work_buf;
+        DeviceBuffer<float> d_r_custom32_buf, d_z_custom32_buf;
+        CusparseDnVec vecR_factor, vecW_factor, vecZ_factor;
         if (!use_custom_precond && !params.precond_full)
         {
             d_r_work_buf.alloc(n);
@@ -495,6 +571,43 @@ namespace ichol::solver
             d_r_work = d_r_work_buf.get();
             d_w_work = d_w_work_buf.get();
             d_z_work = d_z_work_buf.get();
+
+            if (factorized_backend == FactorizedPrecondBackend::CuSparseSpSV)
+            {
+                vecR_factor.create(n, d_r_work);
+                vecW_factor.create(n, d_w_work);
+                vecZ_factor.create(n, d_z_work);
+
+                const SolveT alpha = static_cast<SolveT>(1);
+                size_t spsv_buf_size_L = 0;
+                size_t spsv_buf_size_Lt = 0;
+                CUSPARSE_CHECK(cusparseSpSV_bufferSize(
+                    cusparseHandle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                    &alpha, spMatL, vecR_factor, vecW_factor, cuda_data_type<SolveT>(),
+                    CUSPARSE_SPSV_ALG_DEFAULT, spsv_descr_L, &spsv_buf_size_L));
+                if (spsv_buf_size_L > 0)
+                    d_spsv_buf_L.alloc(spsv_buf_size_L);
+                CUSPARSE_CHECK(cusparseSpSV_analysis(
+                    cusparseHandle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                    &alpha, spMatL, vecR_factor, vecW_factor, cuda_data_type<SolveT>(),
+                    CUSPARSE_SPSV_ALG_DEFAULT, spsv_descr_L, d_spsv_buf_L.get()));
+
+                CUSPARSE_CHECK(cusparseSpSV_bufferSize(
+                    cusparseHandle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                    &alpha, spMatLt, vecW_factor, vecZ_factor, cuda_data_type<SolveT>(),
+                    CUSPARSE_SPSV_ALG_DEFAULT, spsv_descr_Lt, &spsv_buf_size_Lt));
+                if (spsv_buf_size_Lt > 0)
+                    d_spsv_buf_Lt.alloc(spsv_buf_size_Lt);
+                CUSPARSE_CHECK(cusparseSpSV_analysis(
+                    cusparseHandle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                    &alpha, spMatLt, vecW_factor, vecZ_factor, cuda_data_type<SolveT>(),
+                    CUSPARSE_SPSV_ALG_DEFAULT, spsv_descr_Lt, d_spsv_buf_Lt.get()));
+            }
+        }
+        else if (use_custom_precond && custom_precond_prec == ichol::solver::ComputePrecision::FP32)
+        {
+            d_r_custom32_buf.alloc(n);
+            d_z_custom32_buf.alloc(n);
         }
 
         CUDA_CHECK(cudaMemcpy(d_r.get(), d_b.get(), n * sizeof(double), cudaMemcpyDeviceToDevice));
@@ -515,7 +628,23 @@ namespace ichol::solver
             // (1) z = M^-1 r
             if (use_custom_precond)
             {
-                params.custom_precond->apply(params.custom_precond->ctx, d_r.get(), d_z.get(), n, stream);
+                if (custom_precond_prec == ichol::solver::ComputePrecision::FP64)
+                {
+                    params.custom_precond->apply(
+                        params.custom_precond->ctx, d_r.get(), d_z.get(), n, custom_precond_prec, stream);
+                }
+                else
+                {
+                    cast_vec<float, double><<<(n + 255) / 256, 256, 0, stream>>>(n, d_r.get(), d_r_custom32_buf.get());
+                    params.custom_precond->apply(
+                        params.custom_precond->ctx,
+                        d_r_custom32_buf.get(),
+                        d_z_custom32_buf.get(),
+                        n,
+                        custom_precond_prec,
+                        stream);
+                    cast_vec<double, float><<<(n + 255) / 256, 256, 0, stream>>>(n, d_z_custom32_buf.get(), d_z.get());
+                }
             }
             else if (params.precond_full)
             {
@@ -526,8 +655,24 @@ namespace ichol::solver
             {
                 cast_vec<SolveT, double><<<(n + 255) / 256, 256, 0, stream>>>(n, d_r.get(), d_r_work);
                 CUDA_CHECK(cudaEventRecord(sptrsv_start, stream));
-                sptrsv_plan_L.solve<int, SolveT>(n, d_csrRowPtrL.get(), d_csrColIndL.get(), d_valL.get(), d_r_work, d_w_work, false, stream);
-                sptrsv_plan_Lt.solve<int, SolveT>(n, d_csrRowPtrLt.get(), d_csrColIndLt.get(), d_valLt.get(), d_w_work, d_z_work, false, stream);
+                if (factorized_backend == FactorizedPrecondBackend::CustomLevelsets)
+                {
+                    sptrsv_plan_L.solve<int, SolveT>(n, d_csrRowPtrL.get(), d_csrColIndL.get(), d_valL.get(), d_r_work, d_w_work, false, stream);
+                    sptrsv_plan_Lt.solve<int, SolveT>(n, d_csrRowPtrLt.get(), d_csrColIndLt.get(), d_valLt.get(), d_w_work, d_z_work, false, stream);
+                }
+                else
+                {
+                    CUSPARSE_CHECK(cusparseSetStream(cusparseHandle, stream));
+                    const SolveT alpha = static_cast<SolveT>(1);
+                    CUSPARSE_CHECK(cusparseSpSV_solve(
+                        cusparseHandle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                        &alpha, spMatL, vecR_factor, vecW_factor, cuda_data_type<SolveT>(),
+                        CUSPARSE_SPSV_ALG_DEFAULT, spsv_descr_L));
+                    CUSPARSE_CHECK(cusparseSpSV_solve(
+                        cusparseHandle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                        &alpha, spMatLt, vecW_factor, vecZ_factor, cuda_data_type<SolveT>(),
+                        CUSPARSE_SPSV_ALG_DEFAULT, spsv_descr_Lt));
+                }
                 CUDA_CHECK(cudaEventRecord(sptrsv_stop, stream));
                 cast_vec<double, SolveT><<<(n + 255) / 256, 256, 0, stream>>>(n, d_z_work, d_z.get());
 
@@ -604,7 +749,59 @@ namespace ichol::solver
         return result;
     }
     
+    template <typename T_L>
+    PCGResult pcg(
+        const std::vector<int> &h_csrRowPtrA,
+        const std::vector<int> &h_csrColIndA,
+        const std::vector<double> &h_valA,
+        const std::vector<int> &h_csrRowPtrL,
+        const std::vector<int> &h_csrColIndL,
+        const std::vector<T_L> &h_valL,
+        const std::vector<double> &h_b,
+        std::vector<double> &h_x,
+        const std::vector<double> &h_D,
+        const PCGParams &params)
+    {
+        return pcg_impl(
+            h_csrRowPtrA, h_csrColIndA, h_valA,
+            h_csrRowPtrL, h_csrColIndL, h_valL,
+            h_b, h_x, h_D, params,
+            FactorizedPrecondBackend::CuSparseSpSV);
+    }
+
+    template <typename T_L>
+    PCGResult pcg_cusparse_spsv(
+        const std::vector<int> &h_csrRowPtrA,
+        const std::vector<int> &h_csrColIndA,
+        const std::vector<double> &h_valA,
+        const std::vector<int> &h_csrRowPtrL,
+        const std::vector<int> &h_csrColIndL,
+        const std::vector<T_L> &h_valL,
+        const std::vector<double> &h_b,
+        std::vector<double> &h_x,
+        const std::vector<double> &h_D,
+        const PCGParams &params)
+    {
+        return pcg_impl(
+            h_csrRowPtrA, h_csrColIndA, h_valA,
+            h_csrRowPtrL, h_csrColIndL, h_valL,
+            h_b, h_x, h_D, params,
+            FactorizedPrecondBackend::CuSparseSpSV);
+    }
+
     template PCGResult pcg<double>(
+        const std::vector<int> &h_csrRowPtrA,
+        const std::vector<int> &h_csrColIndA,
+        const std::vector<double> &h_valA,
+        const std::vector<int> &h_csrRowPtrL,
+        const std::vector<int> &h_csrColIndL,
+        const std::vector<double> &h_valL,
+        const std::vector<double> &h_b,
+        std::vector<double> &h_x,
+        const std::vector<double> &h_D,
+        const PCGParams &params);
+
+    template PCGResult pcg_cusparse_spsv<double>(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
         const std::vector<double> &h_valA,
@@ -628,7 +825,31 @@ namespace ichol::solver
         const std::vector<double> &h_D,
         const PCGParams &params);
 
+    template PCGResult pcg_cusparse_spsv<float>(
+        const std::vector<int> &h_csrRowPtrA,
+        const std::vector<int> &h_csrColIndA,
+        const std::vector<double> &h_valA,
+        const std::vector<int> &h_csrRowPtrL,
+        const std::vector<int> &h_csrColIndL,
+        const std::vector<float> &h_valL,
+        const std::vector<double> &h_b,
+        std::vector<double> &h_x,
+        const std::vector<double> &h_D,
+        const PCGParams &params);
+
     template PCGResult pcg<half_float::half>(
+        const std::vector<int> &h_csrRowPtrA,
+        const std::vector<int> &h_csrColIndA,
+        const std::vector<double> &h_valA,
+        const std::vector<int> &h_csrRowPtrL,
+        const std::vector<int> &h_csrColIndL,
+        const std::vector<half_float::half> &h_valL,
+        const std::vector<double> &h_b,
+        std::vector<double> &h_x,
+        const std::vector<double> &h_D,
+        const PCGParams &params);
+
+    template PCGResult pcg_cusparse_spsv<half_float::half>(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
         const std::vector<double> &h_valA,

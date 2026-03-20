@@ -15,9 +15,10 @@ namespace ichol::precond::detail
 
     void apply_subdomain_psai(
         void *ctx,
-        const double *d_r,
-        double *d_z,
+        const void *d_r,
+        void *d_z,
         int N,
+        ichol::solver::ComputePrecision prec,
         cudaStream_t stream);
 
     void destroy_subdomain_psai_context(void *ctx);
@@ -30,9 +31,10 @@ namespace ichol::precond::detail
 
     void apply_subdomain_ic(
         void *ctx,
-        const double *d_r,
-        double *d_z,
+        const void *d_r,
+        void *d_z,
         int N,
+        ichol::solver::ComputePrecision prec,
         cudaStream_t stream);
 
     void destroy_subdomain_ic_context(void *ctx);

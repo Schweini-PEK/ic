@@ -11,14 +11,30 @@ namespace ichol::precond
 
     static constexpr int ADI_MAX_N = 2048;
 
+    static ichol::solver::ComputePrecision normalize_precond_precision(ichol::solver::ComputePrecision prec)
+    {
+        using Prec = ichol::solver::ComputePrecision;
+        switch (prec)
+        {
+        case Prec::FP64:
+            return Prec::FP64;
+        case Prec::FP32:
+        case Prec::TF32:
+            return Prec::FP32;
+        default:
+            throw std::runtime_error("ADI preconditioner supports FP64 and FP32 only");
+        }
+    }
+
     // Solve n-length tridiagonal system with constant coefficients:
     //   a = -1 (subdiag), b = 2 (diag), c = -1 (superdiag)
     // for many independent lines of the 3D grid, using Thomas algorithm per line.
     //
     // This kernel realizes: z = M_dir^{-1} r
     // by solving n^2 independent 1D Poisson systems along the chosen direction.
-    __global__ void k_adi_tridiag_solve_lines(const double *__restrict__ r,
-                                              double *__restrict__ z,
+    template <typename T>
+    __global__ void k_adi_tridiag_solve_lines(const T *__restrict__ r,
+                                              T *__restrict__ z,
                                               int grid_n,
                                               int dir_int)
     {
@@ -62,8 +78,8 @@ namespace ichol::precond
         // Thomas algorithm (forward sweep + back substitution).
         // Coefficients: a=-1, b=2, c=-1.
         // We store c' and d' in local arrays of fixed maximum size.
-        double cprime[ADI_MAX_N];
-        double dprime[ADI_MAX_N];
+        T cprime[ADI_MAX_N];
+        T dprime[ADI_MAX_N];
 
         // Forward sweep:
         //   c'[0] = c/b
@@ -72,19 +88,19 @@ namespace ichol::precond
         //   c'[i] = c/denom_i
         //   d'[i] = (r_i - a*d'[i-1]) / denom_i = (r_i + d'[i-1]) / denom_i
         {
-            const double b0 = 2.0;
-            const double c0 = -1.0;
+            const T b0 = static_cast<T>(2.0);
+            const T c0 = static_cast<T>(-1.0);
 
-            const double r0 = r[start];
-            double denom = b0;
+            const T r0 = r[start];
+            T denom = b0;
             cprime[0] = c0 / denom; // = -0.5
             dprime[0] = r0 / denom;
 
             for (int i = 1; i < n; ++i)
             {
-                const double ri = r[start + i * stride];
-                denom = 2.0 + cprime[i - 1];                    // since a = -1
-                cprime[i] = (i < n - 1) ? (-1.0 / denom) : 0.0; // last c' not used in back-sub
+                const T ri = r[start + i * stride];
+                denom = static_cast<T>(2.0) + cprime[i - 1]; // since a = -1
+                cprime[i] = (i < n - 1) ? (static_cast<T>(-1.0) / denom) : static_cast<T>(0.0);
                 dprime[i] = (ri + dprime[i - 1]) / denom;
             }
         }
@@ -93,12 +109,12 @@ namespace ichol::precond
         //   x[n-1] = d'[n-1]
         //   x[i] = d'[i] - c'[i] * x[i+1]
         {
-            double x_next = dprime[n - 1];
+            T x_next = dprime[n - 1];
             z[start + (n - 1) * stride] = x_next;
 
             for (int i = n - 2; i >= 0; --i)
             {
-                const double xi = dprime[i] - cprime[i] * x_next;
+                const T xi = dprime[i] - cprime[i] * x_next;
                 z[start + i * stride] = xi;
                 x_next = xi;
             }
@@ -106,9 +122,10 @@ namespace ichol::precond
     }
 
     void apply_adi3d_dir(void *vctx,
-                         const double *d_r,
-                         double *d_z,
+                         const void *d_r,
+                         void *d_z,
                          int N,
+                         ichol::solver::ComputePrecision prec,
                          cudaStream_t stream)
     {
         if (!vctx)
@@ -131,11 +148,28 @@ namespace ichol::precond
         const int grid = (lines + block - 1) / block;
 
         // This launch realizes: z = M_dir^{-1} r (batched 1D Poisson line-solves).
-        k_adi_tridiag_solve_lines<<<grid, block, 0, stream>>>(d_r, d_z, n, (int)ctx->dir);
+        switch (normalize_precond_precision(prec))
+        {
+        case ichol::solver::ComputePrecision::FP64:
+            k_adi_tridiag_solve_lines<<<grid, block, 0, stream>>>(
+                static_cast<const double *>(d_r),
+                static_cast<double *>(d_z),
+                n, (int)ctx->dir);
+            break;
+        case ichol::solver::ComputePrecision::FP32:
+            k_adi_tridiag_solve_lines<<<grid, block, 0, stream>>>(
+                static_cast<const float *>(d_r),
+                static_cast<float *>(d_z),
+                n, (int)ctx->dir);
+            break;
+        default:
+            break;
+        }
     }
 
-    __global__ void k_adi2d_tridiag_solve(const double *r, double *z, int n,
-                                          int dir_int, double epsilon)
+    template <typename T>
+    __global__ void k_adi2d_tridiag_solve(const T *r, T *z, int n,
+                                          int dir_int, T epsilon)
     {
         const int line = blockIdx.x * blockDim.x + threadIdx.x;
         if (line >= n)
@@ -146,15 +180,15 @@ namespace ichol::precond
 
         // Coefficients: a = -val, b = 2*val, c = -val
         // For X: val = 1.0. For Y: val = epsilon.
-        const double val = (dir_int == (int)ADIDirection2D::X) ? 1.0 : epsilon;
-        const double b_coeff = 2.0 * val;
-        const double ac_coeff = -1.0 * val;
+        const T val = (dir_int == (int)ADIDirection2D::X) ? static_cast<T>(1.0) : epsilon;
+        const T b_coeff = static_cast<T>(2.0) * val;
+        const T ac_coeff = static_cast<T>(-1.0) * val;
 
-        double cprime[ADI_MAX_N]; // Shared or local memory
-        double dprime[ADI_MAX_N];
+        T cprime[ADI_MAX_N];
+        T dprime[ADI_MAX_N];
 
         // Forward sweep
-        double denom = b_coeff;
+        T denom = b_coeff;
         cprime[0] = ac_coeff / denom;
         dprime[0] = r[start] / denom;
 
@@ -166,7 +200,7 @@ namespace ichol::precond
         }
 
         // Back substitution
-        double x_curr = dprime[n - 1];
+        T x_curr = dprime[n - 1];
         z[start + (n - 1) * stride] = x_curr;
         for (int i = n - 2; i >= 0; --i)
         {
@@ -175,12 +209,30 @@ namespace ichol::precond
         }
     }
 
-    void apply_adi2d_dir(void *vctx, const double *d_r, double *d_z, int N, cudaStream_t stream)
+    void apply_adi2d_dir(void *vctx, const void *d_r, void *d_z, int N,
+                         ichol::solver::ComputePrecision prec, cudaStream_t stream)
     {
+        (void)N;
         auto ctx = reinterpret_cast<ADI2DContext *>(vctx);
         int threads = 128;
         int blocks = (ctx->n + threads - 1) / threads;
-        k_adi2d_tridiag_solve<<<blocks, threads, 0, stream>>>(d_r, d_z, ctx->n, (int)ctx->dir, ctx->epsilon);
+        switch (normalize_precond_precision(prec))
+        {
+        case ichol::solver::ComputePrecision::FP64:
+            k_adi2d_tridiag_solve<<<blocks, threads, 0, stream>>>(
+                static_cast<const double *>(d_r),
+                static_cast<double *>(d_z),
+                ctx->n, (int)ctx->dir, ctx->epsilon);
+            break;
+        case ichol::solver::ComputePrecision::FP32:
+            k_adi2d_tridiag_solve<<<blocks, threads, 0, stream>>>(
+                static_cast<const float *>(d_r),
+                static_cast<float *>(d_z),
+                ctx->n, (int)ctx->dir, static_cast<float>(ctx->epsilon));
+            break;
+        default:
+            break;
+        }
     }
 
 } // namespace ichol::precond

@@ -3,21 +3,11 @@
 
 #include <vector>
 
+#include "ichol/precision.hpp"
 #include "ichol/preconditioner.hpp"
 
 namespace ichol::solver
 {
-    enum class ComputePrecision
-    {
-        FP64,     // Standard Double
-        FP32,     // Standard Float
-        TF32,     // Tensor Float 32 (Internal to H100)
-        FP16,     // Half Precision
-        BF16,     // Brain Float 16
-        FP8_E4M3, // Hopper FP8 (Max precision)
-        FP8_E5M2  // Hopper FP8 (Max dynamic range)
-    };
-
     struct PCGParams
     {
         int maxits = 500;
@@ -75,6 +65,19 @@ namespace ichol::solver
      */
     template <typename T_L>
     PCGResult pcg(
+        const std::vector<int> &h_csrRowPtrA,
+        const std::vector<int> &h_csrColIndA,
+        const std::vector<double> &h_valA,
+        const std::vector<int> &h_csrRowPtrL,
+        const std::vector<int> &h_csrColIndL,
+        const std::vector<T_L> &h_valL,
+        const std::vector<double> &h_b,
+        std::vector<double> &h_x,
+        const std::vector<double> &h_D,
+        const PCGParams &params = PCGParams{});
+
+    template <typename T_L>
+    PCGResult pcg_cusparse_spsv(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
         const std::vector<double> &h_valA,

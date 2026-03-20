@@ -6,6 +6,7 @@
 #include "factor/numerical/detail/numeric_plan.hpp"
 
 #include <algorithm>
+#include <future>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -112,6 +113,231 @@ namespace ichol::precond
             sub.nnz = (int)sub.values.size();
             return sub;
         }
+
+        struct BlockFactorRows
+        {
+            std::vector<int> global_rows;
+            std::vector<std::vector<std::pair<int, double>>> rows;
+        };
+
+        static BlockFactorRows compute_block_factor_rows_3d(
+            const ichol::matrix::CsrMatrix<double> &A,
+            int n,
+            int x0,
+            int x1,
+            int y0,
+            int y1,
+            int z0,
+            int z1)
+        {
+            const int lw = x1 - x0;
+            const int lh = y1 - y0;
+            const int ld = z1 - z0;
+            const int nsub = lw * lh * ld;
+            const int plane = lw * lh;
+
+            auto A_sub = extract_lower_subdomain_csr(A, n, x0, x1, y0, y1, z0, z1);
+
+            ichol::SymbolicOptions sym_opts;
+            sym_opts.ordering = ichol::Ordering::Identity;
+            sym_opts.level_k = -1;
+            auto sym_plan = ichol::symbolic::ic_analyze(A_sub, sym_opts);
+
+            ichol::IncompleteCholeskyOptions ic_opts;
+            ic_opts.scaling = ichol::Scaling::None;
+            ic_opts.pivot_shift_strategy = ichol::PivotShiftStrategy::None;
+            ic_opts.algorithm = ichol::FactorizationAlgorithm::ICKDT;
+            ic_opts.max_restarts = 1;
+            ic_opts.verbose = false;
+            ic_opts.lfil = A_sub.num_rows;
+            ic_opts.drop_tol = 0.0;
+
+            ichol::numeric::NumericPlan num_plan;
+            auto L_sub = ichol::numeric::incomplete_cholesky_preconditioner<double>(A_sub, sym_plan, num_plan, ic_opts);
+
+            BlockFactorRows out;
+            out.global_rows.resize((size_t)nsub);
+            out.rows.resize((size_t)nsub);
+
+            for (int li = 0; li < nsub; ++li)
+            {
+                const int lz = li / plane;
+                const int rem = li - lz * plane;
+                const int ly = rem / lw;
+                const int lx = rem - ly * lw;
+                const int gi = (x0 + lx) + (y0 + ly) * n + (z0 + lz) * (n * n);
+
+                out.global_rows[(size_t)li] = gi;
+                auto &row = out.rows[(size_t)li];
+                row.reserve((size_t)(L_sub.row_ptr[li + 1] - L_sub.row_ptr[li]));
+
+                for (int p = L_sub.row_ptr[li]; p < L_sub.row_ptr[li + 1]; ++p)
+                {
+                    const int lj = L_sub.col_ind[p];
+                    const int llz = lj / plane;
+                    const int lrem = lj - llz * plane;
+                    const int lly = lrem / lw;
+                    const int llx = lrem - lly * lw;
+                    const int gj = (x0 + llx) + (y0 + lly) * n + (z0 + llz) * (n * n);
+                    row.push_back({gj, L_sub.values[p]});
+                }
+
+                std::sort(row.begin(), row.end(), [](const auto &a, const auto &b)
+                          { return a.first < b.first; });
+
+                int diag_pos = -1;
+                for (int t = 0; t < (int)row.size(); ++t)
+                {
+                    if (row[(size_t)t].first == gi)
+                    {
+                        diag_pos = t;
+                        break;
+                    }
+                }
+                if (diag_pos < 0)
+                    throw std::runtime_error("build_block_diagonal_exact_preconditioner_3d: missing diagonal in block factor");
+                if (diag_pos != (int)row.size() - 1)
+                {
+                    const auto diag = row[(size_t)diag_pos];
+                    row.erase(row.begin() + diag_pos);
+                    row.push_back(diag);
+                }
+            }
+
+            return out;
+        }
+
+        static BlockFactorRows compute_block_factor_rows_2d(
+            const ichol::matrix::CsrMatrix<double> &A,
+            int n,
+            int x0,
+            int x1,
+            int y0,
+            int y1)
+        {
+            const int lw = x1 - x0;
+            const int lh = y1 - y0;
+            const int nsub = lw * lh;
+
+            ichol::matrix::CsrMatrix<double> A_sub;
+            A_sub.num_rows = nsub;
+            A_sub.num_cols = nsub;
+            A_sub.row_ptr.resize((size_t)nsub + 1, 0);
+
+            std::vector<int> cols;
+            std::vector<double> vals;
+            for (int li = 0; li < nsub; ++li)
+            {
+                const int ly = li / lw;
+                const int lx = li - ly * lw;
+                const int gi = (x0 + lx) + (y0 + ly) * n;
+
+                std::vector<std::pair<int, double>> row_entries;
+                row_entries.reserve((size_t)(A.row_ptr[gi + 1] - A.row_ptr[gi]));
+                for (int kk = A.row_ptr[gi]; kk < A.row_ptr[gi + 1]; ++kk)
+                {
+                    const int gj = A.col_ind[kk];
+                    const int gx = gj % n;
+                    const int gy = gj / n;
+                    if (gx < x0 || gx >= x1 || gy < y0 || gy >= y1)
+                        continue;
+                    const int lj = (gx - x0) + (gy - y0) * lw;
+                    if (lj > li)
+                        continue;
+                    row_entries.push_back({lj, A.values[kk]});
+                }
+
+                std::sort(row_entries.begin(), row_entries.end(), [](const auto &u, const auto &v)
+                          { return u.first < v.first; });
+                int diag_pos = -1;
+                for (int t = 0; t < (int)row_entries.size(); ++t)
+                {
+                    if (row_entries[(size_t)t].first == li)
+                    {
+                        diag_pos = t;
+                        break;
+                    }
+                }
+                if (diag_pos < 0)
+                    throw std::runtime_error("build_block_diagonal_exact_preconditioner_2d: missing diagonal");
+
+                for (int t = 0; t < (int)row_entries.size(); ++t)
+                {
+                    if (t == diag_pos)
+                        continue;
+                    cols.push_back(row_entries[(size_t)t].first);
+                    vals.push_back(row_entries[(size_t)t].second);
+                }
+                cols.push_back(li);
+                vals.push_back(row_entries[(size_t)diag_pos].second);
+                A_sub.row_ptr[(size_t)li + 1] = (int)cols.size();
+            }
+            A_sub.col_ind = std::move(cols);
+            A_sub.values = std::move(vals);
+            A_sub.nnz = (int)A_sub.values.size();
+
+            ichol::SymbolicOptions sym_opts;
+            sym_opts.ordering = ichol::Ordering::Identity;
+            sym_opts.level_k = -1;
+            auto sym_plan = ichol::symbolic::ic_analyze(A_sub, sym_opts);
+
+            ichol::IncompleteCholeskyOptions ic_opts;
+            ic_opts.scaling = ichol::Scaling::None;
+            ic_opts.pivot_shift_strategy = ichol::PivotShiftStrategy::None;
+            ic_opts.algorithm = ichol::FactorizationAlgorithm::ICKDT;
+            ic_opts.max_restarts = 1;
+            ic_opts.verbose = false;
+            ic_opts.lfil = A_sub.num_rows;
+            ic_opts.drop_tol = 0.0;
+
+            ichol::numeric::NumericPlan num_plan;
+            auto L_sub = ichol::numeric::incomplete_cholesky_preconditioner<double>(A_sub, sym_plan, num_plan, ic_opts);
+
+            BlockFactorRows out;
+            out.global_rows.resize((size_t)nsub);
+            out.rows.resize((size_t)nsub);
+
+            for (int li = 0; li < nsub; ++li)
+            {
+                const int ly = li / lw;
+                const int lx = li - ly * lw;
+                const int gi = (x0 + lx) + (y0 + ly) * n;
+
+                out.global_rows[(size_t)li] = gi;
+                auto &row = out.rows[(size_t)li];
+                row.reserve((size_t)(L_sub.row_ptr[li + 1] - L_sub.row_ptr[li]));
+                for (int p = L_sub.row_ptr[li]; p < L_sub.row_ptr[li + 1]; ++p)
+                {
+                    const int lj = L_sub.col_ind[p];
+                    const int lly = lj / lw;
+                    const int llx = lj - lly * lw;
+                    const int gj = (x0 + llx) + (y0 + lly) * n;
+                    row.push_back({gj, L_sub.values[p]});
+                }
+
+                std::sort(row.begin(), row.end(), [](const auto &a, const auto &b)
+                          { return a.first < b.first; });
+                int diag_pos = -1;
+                for (int t = 0; t < (int)row.size(); ++t)
+                {
+                    if (row[(size_t)t].first == gi)
+                    {
+                        diag_pos = t;
+                        break;
+                    }
+                }
+                if (diag_pos < 0)
+                    throw std::runtime_error("build_block_diagonal_exact_preconditioner_2d: missing factor diagonal");
+                if (diag_pos != (int)row.size() - 1)
+                {
+                    const auto diag = row[(size_t)diag_pos];
+                    row.erase(row.begin() + diag_pos);
+                    row.push_back(diag);
+                }
+            }
+
+            return out;
+        }
     } // namespace
 
     /**
@@ -193,6 +419,7 @@ namespace ichol::precond
 
         const int N = A.num_rows;
         std::vector<std::vector<std::pair<int, double>>> rows((size_t)N);
+        std::vector<std::future<BlockFactorRows>> futures;
 
         for (int z0 = 0; z0 < n; z0 += sub_d)
         {
@@ -203,76 +430,21 @@ namespace ichol::precond
                 for (int x0 = 0; x0 < n; x0 += sub_w)
                 {
                     const int x1 = std::min(x0 + sub_w, n);
-                    const int lw = x1 - x0;
-                    const int lh = y1 - y0;
-                    const int ld = z1 - z0;
-                    const int nsub = lw * lh * ld;
-
-                    auto A_sub = extract_lower_subdomain_csr(A, n, x0, x1, y0, y1, z0, z1);
-
-                    ichol::SymbolicOptions sym_opts;
-                    sym_opts.ordering = ichol::Ordering::Identity;
-                    sym_opts.level_k = -1;
-                    auto sym_plan = ichol::symbolic::ic_analyze(A_sub, sym_opts);
-
-                    ichol::IncompleteCholeskyOptions ic_opts;
-                    ic_opts.scaling = ichol::Scaling::None;
-                    ic_opts.pivot_shift_strategy = ichol::PivotShiftStrategy::None;
-                    ic_opts.algorithm = ichol::FactorizationAlgorithm::ICKDT;
-                    ic_opts.max_restarts = 1;
-                    ic_opts.verbose = false;
-                    ic_opts.lfil = A_sub.num_rows;
-                    ic_opts.drop_tol = 0.0;
-
-                    ichol::numeric::NumericPlan num_plan;
-                    auto L_sub = ichol::numeric::incomplete_cholesky_preconditioner<double>(A_sub, sym_plan, num_plan, ic_opts);
-
-                    for (int li = 0; li < nsub; ++li)
-                    {
-                        const int plane = lw * lh;
-                        const int lz = li / plane;
-                        const int rem = li - lz * plane;
-                        const int ly = rem / lw;
-                        const int lx = rem - ly * lw;
-                        const int gi = (x0 + lx) + (y0 + ly) * n + (z0 + lz) * (n * n);
-
-                        rows[(size_t)gi].clear();
-                        rows[(size_t)gi].reserve((size_t)(L_sub.row_ptr[li + 1] - L_sub.row_ptr[li]));
-
-                        for (int p = L_sub.row_ptr[li]; p < L_sub.row_ptr[li + 1]; ++p)
+                    futures.emplace_back(std::async(
+                        std::launch::async,
+                        [&A, n, x0, x1, y0, y1, z0, z1]()
                         {
-                            const int lj = L_sub.col_ind[p];
-                            const int llz = lj / plane;
-                            const int lrem = lj - llz * plane;
-                            const int lly = lrem / lw;
-                            const int llx = lrem - lly * lw;
-                            const int gj = (x0 + llx) + (y0 + lly) * n + (z0 + llz) * (n * n);
-                            rows[(size_t)gi].push_back({gj, L_sub.values[p]});
-                        }
-
-                        std::sort(rows[(size_t)gi].begin(), rows[(size_t)gi].end(), [](const auto &a, const auto &b)
-                                  { return a.first < b.first; });
-
-                        int diag_pos = -1;
-                        for (int t = 0; t < (int)rows[(size_t)gi].size(); ++t)
-                        {
-                            if (rows[(size_t)gi][(size_t)t].first == gi)
-                            {
-                                diag_pos = t;
-                                break;
-                            }
-                        }
-                        if (diag_pos < 0)
-                            throw std::runtime_error("build_block_diagonal_exact_preconditioner_3d: missing diagonal in block factor");
-                        if (diag_pos != (int)rows[(size_t)gi].size() - 1)
-                        {
-                            const auto diag = rows[(size_t)gi][(size_t)diag_pos];
-                            rows[(size_t)gi].erase(rows[(size_t)gi].begin() + diag_pos);
-                            rows[(size_t)gi].push_back(diag);
-                        }
-                    }
+                            return compute_block_factor_rows_3d(A, n, x0, x1, y0, y1, z0, z1);
+                        }));
                 }
             }
+        }
+
+        for (auto &f : futures)
+        {
+            auto block = f.get();
+            for (size_t i = 0; i < block.global_rows.size(); ++i)
+                rows[(size_t)block.global_rows[i]] = std::move(block.rows[i]);
         }
 
         ichol::matrix::CsrMatrix<double> L;
@@ -312,6 +484,7 @@ namespace ichol::precond
 
         const int N = A.num_rows;
         std::vector<std::vector<std::pair<int, double>>> rows((size_t)N);
+        std::vector<std::future<BlockFactorRows>> futures;
 
         for (int y0 = 0; y0 < n; y0 += sub_h)
         {
@@ -319,122 +492,20 @@ namespace ichol::precond
             for (int x0 = 0; x0 < n; x0 += sub_w)
             {
                 const int x1 = std::min(x0 + sub_w, n);
-                const int lw = x1 - x0;
-                const int lh = y1 - y0;
-                const int nsub = lw * lh;
-
-                ichol::matrix::CsrMatrix<double> A_sub;
-                A_sub.num_rows = nsub;
-                A_sub.num_cols = nsub;
-                A_sub.row_ptr.resize((size_t)nsub + 1, 0);
-
-                std::vector<int> cols;
-                std::vector<double> vals;
-                for (int li = 0; li < nsub; ++li)
-                {
-                    const int ly = li / lw;
-                    const int lx = li - ly * lw;
-                    const int gi = (x0 + lx) + (y0 + ly) * n;
-
-                    std::vector<std::pair<int, double>> row_entries;
-                    row_entries.reserve((size_t)(A.row_ptr[gi + 1] - A.row_ptr[gi]));
-                    for (int kk = A.row_ptr[gi]; kk < A.row_ptr[gi + 1]; ++kk)
+                futures.emplace_back(std::async(
+                    std::launch::async,
+                    [&A, n, x0, x1, y0, y1]()
                     {
-                        const int gj = A.col_ind[kk];
-                        const int gx = gj % n;
-                        const int gy = gj / n;
-                        if (gx < x0 || gx >= x1 || gy < y0 || gy >= y1)
-                            continue;
-                        const int lj = (gx - x0) + (gy - y0) * lw;
-                        if (lj > li)
-                            continue;
-                        row_entries.push_back({lj, A.values[kk]});
-                    }
-
-                    std::sort(row_entries.begin(), row_entries.end(), [](const auto &u, const auto &v)
-                              { return u.first < v.first; });
-                    int diag_pos = -1;
-                    for (int t = 0; t < (int)row_entries.size(); ++t)
-                    {
-                        if (row_entries[(size_t)t].first == li)
-                        {
-                            diag_pos = t;
-                            break;
-                        }
-                    }
-                    if (diag_pos < 0)
-                        throw std::runtime_error("build_block_diagonal_exact_preconditioner_2d: missing diagonal");
-
-                    for (int t = 0; t < (int)row_entries.size(); ++t)
-                    {
-                        if (t == diag_pos)
-                            continue;
-                        cols.push_back(row_entries[(size_t)t].first);
-                        vals.push_back(row_entries[(size_t)t].second);
-                    }
-                    cols.push_back(li);
-                    vals.push_back(row_entries[(size_t)diag_pos].second);
-                    A_sub.row_ptr[(size_t)li + 1] = (int)cols.size();
-                }
-                A_sub.col_ind = std::move(cols);
-                A_sub.values = std::move(vals);
-                A_sub.nnz = (int)A_sub.values.size();
-
-                ichol::SymbolicOptions sym_opts;
-                sym_opts.ordering = ichol::Ordering::Identity;
-                sym_opts.level_k = -1;
-                auto sym_plan = ichol::symbolic::ic_analyze(A_sub, sym_opts);
-
-                ichol::IncompleteCholeskyOptions ic_opts;
-                ic_opts.scaling = ichol::Scaling::None;
-                ic_opts.pivot_shift_strategy = ichol::PivotShiftStrategy::None;
-                ic_opts.algorithm = ichol::FactorizationAlgorithm::ICKDT;
-                ic_opts.max_restarts = 1;
-                ic_opts.verbose = false;
-                ic_opts.lfil = A_sub.num_rows;
-                ic_opts.drop_tol = 0.0;
-
-                ichol::numeric::NumericPlan num_plan;
-                auto L_sub = ichol::numeric::incomplete_cholesky_preconditioner<double>(A_sub, sym_plan, num_plan, ic_opts);
-
-                for (int li = 0; li < nsub; ++li)
-                {
-                    const int ly = li / lw;
-                    const int lx = li - ly * lw;
-                    const int gi = (x0 + lx) + (y0 + ly) * n;
-
-                    rows[(size_t)gi].clear();
-                    rows[(size_t)gi].reserve((size_t)(L_sub.row_ptr[li + 1] - L_sub.row_ptr[li]));
-                    for (int p = L_sub.row_ptr[li]; p < L_sub.row_ptr[li + 1]; ++p)
-                    {
-                        const int lj = L_sub.col_ind[p];
-                        const int lly = lj / lw;
-                        const int llx = lj - lly * lw;
-                        const int gj = (x0 + llx) + (y0 + lly) * n;
-                        rows[(size_t)gi].push_back({gj, L_sub.values[p]});
-                    }
-
-                    std::sort(rows[(size_t)gi].begin(), rows[(size_t)gi].end(), [](const auto &a, const auto &b)
-                              { return a.first < b.first; });
-                    int diag_pos = -1;
-                    for (int t = 0; t < (int)rows[(size_t)gi].size(); ++t)
-                    {
-                        if (rows[(size_t)gi][(size_t)t].first == gi)
-                        {
-                            diag_pos = t;
-                            break;
-                        }
-                    }
-                    if (diag_pos < 0)
-                        throw std::runtime_error("build_block_diagonal_exact_preconditioner_2d: missing factor diagonal");
-                    if (diag_pos != (int)rows[(size_t)gi].size() - 1)
-                    {
-                        const auto diag = rows[(size_t)gi][(size_t)diag_pos];
-                        rows[(size_t)gi].erase(rows[(size_t)gi].begin() + diag_pos);
-                        rows[(size_t)gi].push_back(diag);
-                    }
-                }
+                        return compute_block_factor_rows_2d(A, n, x0, x1, y0, y1);
+                    }));
             }
+        }
+
+        for (auto &f : futures)
+        {
+            auto block = f.get();
+            for (size_t i = 0; i < block.global_rows.size(); ++i)
+                rows[(size_t)block.global_rows[i]] = std::move(block.rows[i]);
         }
 
         ichol::matrix::CsrMatrix<double> L;

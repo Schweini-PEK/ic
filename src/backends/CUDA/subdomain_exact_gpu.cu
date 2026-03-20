@@ -69,20 +69,21 @@ namespace ichol::precond
 
     void apply_subdomain_exact_spsv(
         void *vctx,
-        const double *d_r,
-        double *d_z,
+        const void *d_r,
+        void *d_z,
         int N,
+        ichol::solver::ComputePrecision prec,
         cudaStream_t stream)
     {
         auto *ctx = reinterpret_cast<SubdomainSpSVContext *>(vctx);
         switch (ctx->kind)
         {
         case SubdomainPreconditionerKind::PSAI:
-            detail::apply_subdomain_psai(ctx->impl, d_r, d_z, N, stream);
+            detail::apply_subdomain_psai(ctx->impl, d_r, d_z, N, prec, stream);
             break;
         case SubdomainPreconditionerKind::ExactCholesky:
         case SubdomainPreconditionerKind::IncompleteCholesky:
-            detail::apply_subdomain_ic(ctx->impl, d_r, d_z, N, stream);
+            detail::apply_subdomain_ic(ctx->impl, d_r, d_z, N, prec, stream);
             break;
         default:
             throw std::runtime_error("apply_subdomain_exact_spsv: unsupported preconditioner kind");

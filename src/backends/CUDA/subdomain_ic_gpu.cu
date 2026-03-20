@@ -163,14 +163,46 @@ namespace
         }
     }
 
-    __global__ void k_gather_subvec(const double *src, const int *gidx, double *dst, int nsub)
+    inline ichol::solver::ComputePrecision normalize_subdomain_precond_precision(ichol::solver::ComputePrecision prec)
+    {
+        using Prec = ichol::solver::ComputePrecision;
+        switch (prec)
+        {
+        case Prec::FP64:
+            return Prec::FP64;
+        case Prec::FP32:
+        case Prec::TF32:
+            return Prec::FP32;
+        default:
+            throw std::runtime_error("subdomain SpSV preconditioners support FP64 and FP32 only");
+        }
+    }
+
+    template <typename T>
+    constexpr cudaDataType_t cuda_data_type();
+
+    template <>
+    constexpr cudaDataType_t cuda_data_type<double>()
+    {
+        return CUDA_R_64F;
+    }
+
+    template <>
+    constexpr cudaDataType_t cuda_data_type<float>()
+    {
+        return CUDA_R_32F;
+    }
+
+    template <typename T>
+    __global__ void k_gather_subvec(const T *src, const int *gidx, T *dst, int nsub)
     {
         const int i = blockIdx.x * blockDim.x + threadIdx.x;
         if (i < nsub)
             dst[i] = src[gidx[i]];
     }
 
-    __global__ void k_scatter_subvec(const double *src, const int *gidx, double *dst, int nsub)
+    template <typename T>
+    __global__ void k_scatter_subvec(const T *src, const int *gidx, T *dst, int nsub)
     {
         const int i = blockIdx.x * blockDim.x + threadIdx.x;
         if (i < nsub)
@@ -209,23 +241,15 @@ namespace
 
 namespace ichol::precond::detail
 {
-    struct SubdomainIcContext
+    template <typename T>
+    struct SubdomainSpSVVariant
     {
-        int nsub = 0;
-        int *d_gidx = nullptr;
-        double *d_rhs = nullptr;
-        double *d_y = nullptr;
-        double *d_x = nullptr;
+        T *d_rhs = nullptr;
+        T *d_y = nullptr;
+        T *d_x = nullptr;
+        T *d_val_l = nullptr;
+        T *d_val_lt = nullptr;
 
-        int *d_row_ptr_l = nullptr;
-        int *d_col_ind_l = nullptr;
-        double *d_val_l = nullptr;
-
-        int *d_row_ptr_lt = nullptr;
-        int *d_col_ind_lt = nullptr;
-        double *d_val_lt = nullptr;
-
-        cusparseHandle_t cusparse = nullptr;
         cusparseSpMatDescr_t mat_l = nullptr;
         cusparseSpMatDescr_t mat_lt = nullptr;
         cusparseDnVecDescr_t vec_rhs = nullptr;
@@ -237,40 +261,143 @@ namespace ichol::precond::detail
         void *buf_lt = nullptr;
     };
 
+    struct SubdomainIcContext
+    {
+        int nsub = 0;
+        int *d_gidx = nullptr;
+
+        int *d_row_ptr_l = nullptr;
+        int *d_col_ind_l = nullptr;
+        int *d_row_ptr_lt = nullptr;
+        int *d_col_ind_lt = nullptr;
+
+        cusparseHandle_t cusparse = nullptr;
+        SubdomainSpSVVariant<double> fp64;
+        SubdomainSpSVVariant<float> fp32;
+    };
+
+    template <typename T>
+    static void destroy_variant(SubdomainSpSVVariant<T> &v)
+    {
+        if (v.spsv_l)
+            cusparseSpSV_destroyDescr(v.spsv_l);
+        if (v.spsv_lt)
+            cusparseSpSV_destroyDescr(v.spsv_lt);
+        if (v.vec_rhs)
+            cusparseDestroyDnVec(v.vec_rhs);
+        if (v.vec_y)
+            cusparseDestroyDnVec(v.vec_y);
+        if (v.vec_x)
+            cusparseDestroyDnVec(v.vec_x);
+        if (v.mat_l)
+            cusparseDestroySpMat(v.mat_l);
+        if (v.mat_lt)
+            cusparseDestroySpMat(v.mat_lt);
+
+        cudaFree(v.buf_l);
+        cudaFree(v.buf_lt);
+        cudaFree(v.d_rhs);
+        cudaFree(v.d_y);
+        cudaFree(v.d_x);
+        cudaFree(v.d_val_l);
+        cudaFree(v.d_val_lt);
+    }
+
+    template <typename T>
+    static void upload_values(std::vector<T> &dst, const std::vector<double> &src)
+    {
+        dst.resize(src.size());
+        for (size_t i = 0; i < src.size(); ++i)
+            dst[i] = static_cast<T>(src[i]);
+    }
+
+    template <typename T>
+    static void init_variant(
+        SubdomainIcContext *ctx,
+        SubdomainSpSVVariant<T> &variant,
+        const std::vector<double> &l_val,
+        const std::vector<double> &lt_val)
+    {
+        std::vector<T> l_val_t;
+        std::vector<T> lt_val_t;
+        upload_values(l_val_t, l_val);
+        upload_values(lt_val_t, lt_val);
+
+        const int nnz_l = static_cast<int>(l_val.size());
+        const int nnz_lt = static_cast<int>(lt_val.size());
+
+        cuda_check(cudaMalloc(&variant.d_rhs, (size_t)ctx->nsub * sizeof(T)));
+        cuda_check(cudaMalloc(&variant.d_y, (size_t)ctx->nsub * sizeof(T)));
+        cuda_check(cudaMalloc(&variant.d_x, (size_t)ctx->nsub * sizeof(T)));
+        cuda_check(cudaMalloc(&variant.d_val_l, (size_t)nnz_l * sizeof(T)));
+        cuda_check(cudaMalloc(&variant.d_val_lt, (size_t)nnz_lt * sizeof(T)));
+        cuda_check(cudaMemcpy(variant.d_val_l, l_val_t.data(), (size_t)nnz_l * sizeof(T), cudaMemcpyHostToDevice));
+        cuda_check(cudaMemcpy(variant.d_val_lt, lt_val_t.data(), (size_t)nnz_lt * sizeof(T), cudaMemcpyHostToDevice));
+
+        cusparse_check(cusparseCreateCsr(
+            &variant.mat_l, ctx->nsub, ctx->nsub, nnz_l,
+            ctx->d_row_ptr_l, ctx->d_col_ind_l, variant.d_val_l,
+            CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, cuda_data_type<T>()));
+        cusparse_check(cusparseCreateCsr(
+            &variant.mat_lt, ctx->nsub, ctx->nsub, nnz_lt,
+            ctx->d_row_ptr_lt, ctx->d_col_ind_lt, variant.d_val_lt,
+            CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, cuda_data_type<T>()));
+
+        cusparseFillMode_t lower = CUSPARSE_FILL_MODE_LOWER;
+        cusparseFillMode_t upper = CUSPARSE_FILL_MODE_UPPER;
+        cusparseDiagType_t non_unit = CUSPARSE_DIAG_TYPE_NON_UNIT;
+        cusparse_check(cusparseSpMatSetAttribute(variant.mat_l, CUSPARSE_SPMAT_FILL_MODE, &lower, sizeof(lower)));
+        cusparse_check(cusparseSpMatSetAttribute(variant.mat_l, CUSPARSE_SPMAT_DIAG_TYPE, &non_unit, sizeof(non_unit)));
+        cusparse_check(cusparseSpMatSetAttribute(variant.mat_lt, CUSPARSE_SPMAT_FILL_MODE, &upper, sizeof(upper)));
+        cusparse_check(cusparseSpMatSetAttribute(variant.mat_lt, CUSPARSE_SPMAT_DIAG_TYPE, &non_unit, sizeof(non_unit)));
+
+        cusparse_check(cusparseCreateDnVec(&variant.vec_rhs, ctx->nsub, variant.d_rhs, cuda_data_type<T>()));
+        cusparse_check(cusparseCreateDnVec(&variant.vec_y, ctx->nsub, variant.d_y, cuda_data_type<T>()));
+        cusparse_check(cusparseCreateDnVec(&variant.vec_x, ctx->nsub, variant.d_x, cuda_data_type<T>()));
+
+        cusparse_check(cusparseSpSV_createDescr(&variant.spsv_l));
+        cusparse_check(cusparseSpSV_createDescr(&variant.spsv_lt));
+
+        const T alpha = static_cast<T>(1);
+        size_t buf_size_l = 0;
+        size_t buf_size_lt = 0;
+
+        cusparse_check(cusparseSpSV_bufferSize(
+            ctx->cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
+            &alpha, variant.mat_l, variant.vec_rhs, variant.vec_y, cuda_data_type<T>(),
+            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_l, &buf_size_l));
+        cuda_check(cudaMalloc(&variant.buf_l, buf_size_l));
+        cusparse_check(cusparseSpSV_analysis(
+            ctx->cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
+            &alpha, variant.mat_l, variant.vec_rhs, variant.vec_y, cuda_data_type<T>(),
+            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_l, variant.buf_l));
+
+        cusparse_check(cusparseSpSV_bufferSize(
+            ctx->cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
+            &alpha, variant.mat_lt, variant.vec_y, variant.vec_x, cuda_data_type<T>(),
+            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_lt, &buf_size_lt));
+        cuda_check(cudaMalloc(&variant.buf_lt, buf_size_lt));
+        cusparse_check(cusparseSpSV_analysis(
+            ctx->cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
+            &alpha, variant.mat_lt, variant.vec_y, variant.vec_x, cuda_data_type<T>(),
+            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_lt, variant.buf_lt));
+    }
+
     static void destroy_ctx_impl(SubdomainIcContext *ctx)
     {
         if (!ctx)
             return;
 
-        if (ctx->spsv_l)
-            cusparseSpSV_destroyDescr(ctx->spsv_l);
-        if (ctx->spsv_lt)
-            cusparseSpSV_destroyDescr(ctx->spsv_lt);
-        if (ctx->vec_rhs)
-            cusparseDestroyDnVec(ctx->vec_rhs);
-        if (ctx->vec_y)
-            cusparseDestroyDnVec(ctx->vec_y);
-        if (ctx->vec_x)
-            cusparseDestroyDnVec(ctx->vec_x);
-        if (ctx->mat_l)
-            cusparseDestroySpMat(ctx->mat_l);
-        if (ctx->mat_lt)
-            cusparseDestroySpMat(ctx->mat_lt);
+        destroy_variant(ctx->fp64);
+        destroy_variant(ctx->fp32);
         if (ctx->cusparse)
             cusparseDestroy(ctx->cusparse);
 
-        cudaFree(ctx->buf_l);
-        cudaFree(ctx->buf_lt);
         cudaFree(ctx->d_gidx);
-        cudaFree(ctx->d_rhs);
-        cudaFree(ctx->d_y);
-        cudaFree(ctx->d_x);
         cudaFree(ctx->d_row_ptr_l);
         cudaFree(ctx->d_col_ind_l);
-        cudaFree(ctx->d_val_l);
         cudaFree(ctx->d_row_ptr_lt);
         cudaFree(ctx->d_col_ind_lt);
-        cudaFree(ctx->d_val_lt);
         delete ctx;
     }
 
@@ -318,10 +445,6 @@ namespace ichol::precond::detail
             build_csr_transpose(L.num_rows, L.row_ptr, L.col_ind, L.values, lt_row_ptr, lt_col_ind, lt_val);
 
             cuda_check(cudaMalloc(&ctx->d_gidx, (size_t)ctx->nsub * sizeof(int)));
-            cuda_check(cudaMalloc(&ctx->d_rhs, (size_t)ctx->nsub * sizeof(double)));
-            cuda_check(cudaMalloc(&ctx->d_y, (size_t)ctx->nsub * sizeof(double)));
-            cuda_check(cudaMalloc(&ctx->d_x, (size_t)ctx->nsub * sizeof(double)));
-
             const int threads = 256;
             const int blocks = (ctx->nsub + threads - 1) / threads;
             k_build_gidx<<<blocks, threads>>>(ctx->d_gidx, lw, lh, ld, global.w, global.h, reg.x0, reg.y0, reg.z0);
@@ -332,67 +455,17 @@ namespace ichol::precond::detail
 
             cuda_check(cudaMalloc(&ctx->d_row_ptr_l, ((size_t)ctx->nsub + 1) * sizeof(int)));
             cuda_check(cudaMalloc(&ctx->d_col_ind_l, (size_t)nnz_l * sizeof(int)));
-            cuda_check(cudaMalloc(&ctx->d_val_l, (size_t)nnz_l * sizeof(double)));
             cuda_check(cudaMemcpy(ctx->d_row_ptr_l, L.row_ptr.data(), ((size_t)ctx->nsub + 1) * sizeof(int), cudaMemcpyHostToDevice));
             cuda_check(cudaMemcpy(ctx->d_col_ind_l, L.col_ind.data(), (size_t)nnz_l * sizeof(int), cudaMemcpyHostToDevice));
-            cuda_check(cudaMemcpy(ctx->d_val_l, L.values.data(), (size_t)nnz_l * sizeof(double), cudaMemcpyHostToDevice));
 
             cuda_check(cudaMalloc(&ctx->d_row_ptr_lt, ((size_t)ctx->nsub + 1) * sizeof(int)));
             cuda_check(cudaMalloc(&ctx->d_col_ind_lt, (size_t)nnz_lt * sizeof(int)));
-            cuda_check(cudaMalloc(&ctx->d_val_lt, (size_t)nnz_lt * sizeof(double)));
             cuda_check(cudaMemcpy(ctx->d_row_ptr_lt, lt_row_ptr.data(), ((size_t)ctx->nsub + 1) * sizeof(int), cudaMemcpyHostToDevice));
             cuda_check(cudaMemcpy(ctx->d_col_ind_lt, lt_col_ind.data(), (size_t)nnz_lt * sizeof(int), cudaMemcpyHostToDevice));
-            cuda_check(cudaMemcpy(ctx->d_val_lt, lt_val.data(), (size_t)nnz_lt * sizeof(double), cudaMemcpyHostToDevice));
 
             cusparse_check(cusparseCreate(&ctx->cusparse));
-
-            cusparse_check(cusparseCreateCsr(
-                &ctx->mat_l, ctx->nsub, ctx->nsub, nnz_l,
-                ctx->d_row_ptr_l, ctx->d_col_ind_l, ctx->d_val_l,
-                CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F));
-            cusparse_check(cusparseCreateCsr(
-                &ctx->mat_lt, ctx->nsub, ctx->nsub, nnz_lt,
-                ctx->d_row_ptr_lt, ctx->d_col_ind_lt, ctx->d_val_lt,
-                CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F));
-
-            cusparseFillMode_t lower = CUSPARSE_FILL_MODE_LOWER;
-            cusparseFillMode_t upper = CUSPARSE_FILL_MODE_UPPER;
-            cusparseDiagType_t non_unit = CUSPARSE_DIAG_TYPE_NON_UNIT;
-            cusparse_check(cusparseSpMatSetAttribute(ctx->mat_l, CUSPARSE_SPMAT_FILL_MODE, &lower, sizeof(lower)));
-            cusparse_check(cusparseSpMatSetAttribute(ctx->mat_l, CUSPARSE_SPMAT_DIAG_TYPE, &non_unit, sizeof(non_unit)));
-            cusparse_check(cusparseSpMatSetAttribute(ctx->mat_lt, CUSPARSE_SPMAT_FILL_MODE, &upper, sizeof(upper)));
-            cusparse_check(cusparseSpMatSetAttribute(ctx->mat_lt, CUSPARSE_SPMAT_DIAG_TYPE, &non_unit, sizeof(non_unit)));
-
-            cusparse_check(cusparseCreateDnVec(&ctx->vec_rhs, ctx->nsub, ctx->d_rhs, CUDA_R_64F));
-            cusparse_check(cusparseCreateDnVec(&ctx->vec_y, ctx->nsub, ctx->d_y, CUDA_R_64F));
-            cusparse_check(cusparseCreateDnVec(&ctx->vec_x, ctx->nsub, ctx->d_x, CUDA_R_64F));
-
-            cusparse_check(cusparseSpSV_createDescr(&ctx->spsv_l));
-            cusparse_check(cusparseSpSV_createDescr(&ctx->spsv_lt));
-
-            const double alpha = 1.0;
-            size_t buf_size_l = 0;
-            size_t buf_size_lt = 0;
-
-            cusparse_check(cusparseSpSV_bufferSize(
-                ctx->cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                &alpha, ctx->mat_l, ctx->vec_rhs, ctx->vec_y, CUDA_R_64F,
-                CUSPARSE_SPSV_ALG_DEFAULT, ctx->spsv_l, &buf_size_l));
-            cuda_check(cudaMalloc(&ctx->buf_l, buf_size_l));
-            cusparse_check(cusparseSpSV_analysis(
-                ctx->cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                &alpha, ctx->mat_l, ctx->vec_rhs, ctx->vec_y, CUDA_R_64F,
-                CUSPARSE_SPSV_ALG_DEFAULT, ctx->spsv_l, ctx->buf_l));
-
-            cusparse_check(cusparseSpSV_bufferSize(
-                ctx->cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                &alpha, ctx->mat_lt, ctx->vec_y, ctx->vec_x, CUDA_R_64F,
-                CUSPARSE_SPSV_ALG_DEFAULT, ctx->spsv_lt, &buf_size_lt));
-            cuda_check(cudaMalloc(&ctx->buf_lt, buf_size_lt));
-            cusparse_check(cusparseSpSV_analysis(
-                ctx->cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                &alpha, ctx->mat_lt, ctx->vec_y, ctx->vec_x, CUDA_R_64F,
-                CUSPARSE_SPSV_ALG_DEFAULT, ctx->spsv_lt, ctx->buf_lt));
+            init_variant(ctx, ctx->fp64, L.values, lt_val);
+            init_variant(ctx, ctx->fp32, L.values, lt_val);
 
             return ctx;
         }
@@ -403,25 +476,53 @@ namespace ichol::precond::detail
         }
     }
 
-    void apply_subdomain_ic(void *vctx, const double *d_r, double *d_z, int /*N*/, cudaStream_t stream)
+    template <typename T>
+    static void apply_subdomain_ic_impl(
+        SubdomainIcContext *ctx,
+        SubdomainSpSVVariant<T> &variant,
+        const T *d_r,
+        T *d_z,
+        cudaStream_t stream)
     {
-        auto *ctx = reinterpret_cast<SubdomainIcContext *>(vctx);
         const int nsub = ctx->nsub;
         const int threads = 256;
         const int blocks = (nsub + threads - 1) / threads;
-        const double alpha = 1.0;
+        const T alpha = static_cast<T>(1);
 
-        k_gather_subvec<<<blocks, threads, 0, stream>>>(d_r, ctx->d_gidx, ctx->d_rhs, nsub);
+        k_gather_subvec<<<blocks, threads, 0, stream>>>(d_r, ctx->d_gidx, variant.d_rhs, nsub);
         cusparse_check(cusparseSetStream(ctx->cusparse, stream));
         cusparse_check(cusparseSpSV_solve(
             ctx->cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &alpha, ctx->mat_l, ctx->vec_rhs, ctx->vec_y, CUDA_R_64F,
-            CUSPARSE_SPSV_ALG_DEFAULT, ctx->spsv_l));
+            &alpha, variant.mat_l, variant.vec_rhs, variant.vec_y, cuda_data_type<T>(),
+            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_l));
         cusparse_check(cusparseSpSV_solve(
             ctx->cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &alpha, ctx->mat_lt, ctx->vec_y, ctx->vec_x, CUDA_R_64F,
-            CUSPARSE_SPSV_ALG_DEFAULT, ctx->spsv_lt));
-        k_scatter_subvec<<<blocks, threads, 0, stream>>>(ctx->d_x, ctx->d_gidx, d_z, nsub);
+            &alpha, variant.mat_lt, variant.vec_y, variant.vec_x, cuda_data_type<T>(),
+            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_lt));
+        k_scatter_subvec<<<blocks, threads, 0, stream>>>(variant.d_x, ctx->d_gidx, d_z, nsub);
+    }
+
+    void apply_subdomain_ic(void *vctx, const void *d_r, void *d_z, int /*N*/,
+                            ichol::solver::ComputePrecision prec, cudaStream_t stream)
+    {
+        auto *ctx = reinterpret_cast<SubdomainIcContext *>(vctx);
+        switch (normalize_subdomain_precond_precision(prec))
+        {
+        case ichol::solver::ComputePrecision::FP64:
+            apply_subdomain_ic_impl(ctx, ctx->fp64,
+                                    static_cast<const double *>(d_r),
+                                    static_cast<double *>(d_z),
+                                    stream);
+            break;
+        case ichol::solver::ComputePrecision::FP32:
+            apply_subdomain_ic_impl(ctx, ctx->fp32,
+                                    static_cast<const float *>(d_r),
+                                    static_cast<float *>(d_z),
+                                    stream);
+            break;
+        default:
+            break;
+        }
     }
 
     void destroy_subdomain_ic_context(void *vctx)

@@ -30,7 +30,8 @@
     {                                                 \
         cublasStatus_t _s = (call);                   \
         if (_s != CUBLAS_STATUS_SUCCESS)              \
-            throw std::runtime_error("cuBLAS Error"); \
+            throw std::runtime_error(std::string("cuBLAS Error at line ") + std::to_string(__LINE__) + \
+                                     " status=" + std::to_string(static_cast<int>(_s))); \
     } while (0)
 
 #define CUSPARSE_CHECK(call)                            \
@@ -236,6 +237,21 @@ static StorageMap get_storage_map(ichol::solver::ComputePrecision prec)
     m.data_type = get_cuda_data_type(prec);
     m.el_size = get_precision_el_size(prec);
     return m;
+}
+
+static StorageMap get_precond_map(ichol::solver::ComputePrecision prec)
+{
+    using Prec = ichol::solver::ComputePrecision;
+    switch (prec)
+    {
+    case Prec::FP64:
+        return get_storage_map(Prec::FP64);
+    case Prec::FP32:
+    case Prec::TF32:
+        return get_storage_map(Prec::FP32);
+    default:
+        throw std::runtime_error("mpcg: preconditioner apply path supports FP64 and FP32 only");
+    }
 }
 
 static double get_safe_rcond(ichol::solver::ComputePrecision prec, double base_rcond)
@@ -889,6 +905,7 @@ namespace ichol::solver
         // Precision controls:
         PrecisionMap g_map = get_precision_map(params.prec_gemm, params.prec_acc);
         SpmmMap spmm_map = get_spmm_map(params.prec_spmm, params.prec_acc);
+        StorageMap precond_map = get_precond_map(params.prec_precond);
         StorageMap Znew_store_map = get_storage_map(params.store_Znew);
         StorageMap Pnew_store_map = get_storage_map(params.store_Pnew);
         StorageMap Wnew_store_map = get_storage_map(params.store_Wnew);
@@ -907,6 +924,7 @@ namespace ichol::solver
 
         int *d_rowPtrA = nullptr, *d_colIndA = nullptr;
         double *d_valA = nullptr, *d_b = nullptr, *d_x = nullptr, *d_r = nullptr, *d_tmp = nullptr;
+        void *d_valA_spmm = nullptr;
 
         CUDA_CHECK(cudaMalloc(&d_rowPtrA, (size_t)(n + 1) * sizeof(int)));
         CUDA_CHECK(cudaMalloc(&d_colIndA, (size_t)nnzA * sizeof(int)));
@@ -931,6 +949,15 @@ namespace ichol::solver
         CUDA_CHECK(cudaMemcpyAsync(d_b, h_b.data(), (size_t)n * sizeof(double), cudaMemcpyHostToDevice, stream));
         CUDA_CHECK(cudaMemcpyAsync(d_x, h_x.data(), (size_t)n * sizeof(double), cudaMemcpyHostToDevice, stream));
 
+        if (use_mixed_spmm)
+        {
+            CUDA_CHECK(cudaMalloc(&d_valA_spmm, (size_t)nnzA * spmm_map.el_size));
+            const int spmm_cast_threads = 256;
+            const int spmm_cast_blocks = (int)((nnzA + spmm_cast_threads - 1) / spmm_cast_threads);
+            k_cast_d2any<<<spmm_cast_blocks, spmm_cast_threads, 0, stream>>>(
+                d_valA, d_valA_spmm, (int)nnzA, spmm_map.io_prec);
+        }
+
         void *d_Pnew_low = nullptr, *d_Wnew_low = nullptr, *d_Wj_low = nullptr;
         float *d_C_gemm = nullptr;
 
@@ -950,6 +977,7 @@ namespace ichol::solver
         // Pnew: orthogonalized search directions
         // Wnew: A * Pnew
         double *d_Znew = nullptr, *d_Pnew = nullptr, *d_Wnew = nullptr, *d_Wz = nullptr;
+        void *d_r_precond = nullptr, *d_Znew_precond = nullptr;
         void *d_Znew_store = nullptr, *d_Pnew_store = nullptr, *d_Wnew_store = nullptr;
         void *d_spmm_in_tmp = nullptr, *d_spmm_out_tmp = nullptr;
         double *d_G_hist = nullptr, *d_Ginv_hist = nullptr, *d_hist_C = nullptr, *d_hist_Y = nullptr;
@@ -962,6 +990,11 @@ namespace ichol::solver
         CUDA_CHECK(cudaMalloc(&d_Wnew, nk * sizeof(double)));
         if (enable_anorm_reprojection)
             CUDA_CHECK(cudaMalloc(&d_Wz, nk * sizeof(double)));
+        if (precond_map.storage_prec != ComputePrecision::FP64)
+        {
+            CUDA_CHECK(cudaMalloc(&d_r_precond, (size_t)n * precond_map.el_size));
+            CUDA_CHECK(cudaMalloc(&d_Znew_precond, nk * precond_map.el_size));
+        }
 
         if (Znew_store_map.storage_prec != ComputePrecision::FP64)
             CUDA_CHECK(cudaMalloc(&d_Znew_store, nk * Znew_store_map.el_size));
@@ -1048,6 +1081,16 @@ namespace ichol::solver
             CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
             CUSPARSE_INDEX_BASE_ZERO,
             CUDA_R_64F));
+        cusparseSpMatDescr_t matA_spmm = nullptr;
+        if (use_mixed_spmm)
+        {
+            CUSPARSE_CHECK(cusparseCreateCsr(
+                &matA_spmm, n, n, nnzA,
+                d_rowPtrA, d_colIndA, d_valA_spmm,
+                CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
+                CUSPARSE_INDEX_BASE_ZERO,
+                spmm_map.data_type));
+        }
 
         cusparseDnMatDescr_t dnB, dnC;
         void *spmm_B_ptr = use_mixed_spmm
@@ -1103,7 +1146,7 @@ namespace ichol::solver
         CUSPARSE_CHECK(cusparseSpMM_bufferSize(
             cusparse,
             CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-            scalars.one(use_mixed_spmm ? spmm_map.compute_type : CUDA_R_64F), matA, dnB,
+            scalars.one(use_mixed_spmm ? spmm_map.compute_type : CUDA_R_64F), use_mixed_spmm ? matA_spmm : matA, dnB,
             scalars.zero(use_mixed_spmm ? spmm_map.compute_type : CUDA_R_64F), dnC,
             use_mixed_spmm ? spmm_map.compute_type : CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &spmm_bufSize));
         CUDA_CHECK(cudaMalloc(&d_spmmBuf, spmm_bufSize));
@@ -1163,7 +1206,7 @@ namespace ichol::solver
             CUSPARSE_CHECK(cusparseSpMM(
                 cusparse,
                 CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                scalars.one(spmm_map.compute_type), matA, dnB,
+                scalars.one(spmm_map.compute_type), matA_spmm, dnB,
                 scalars.zero(spmm_map.compute_type), dnC,
                 spmm_map.compute_type, CUSPARSE_SPMM_ALG_DEFAULT, d_spmmBuf));
 
@@ -1185,19 +1228,30 @@ namespace ichol::solver
 
             // Apply each preconditioner to the same residual r.
             // Output columns form Znew(:, t).
+            sync_block_to_storage(d_r, d_r_precond, precond_map, n, threads, stream);
             CUDA_CHECK(cudaEventRecord(main_stream_ready, stream));
             for (int t = 0; t < k; ++t)
             {
                 CUDA_CHECK(cudaStreamWaitEvent(precond_streams[t], main_stream_ready, 0));
                 const size_t offset = (size_t)t * (size_t)n;
-                CUDA_CHECK(cudaMemsetAsync(d_Znew + offset, 0, (size_t)n * sizeof(double), precond_streams[t]));
-                preconds[t].apply(preconds[t].ctx, d_r, d_Znew + offset, n, precond_streams[t]);
+                if (precond_map.storage_prec == ComputePrecision::FP64)
+                {
+                    CUDA_CHECK(cudaMemsetAsync(d_Znew + offset, 0, (size_t)n * sizeof(double), precond_streams[t]));
+                    preconds[t].apply(preconds[t].ctx, d_r, d_Znew + offset, n, precond_map.storage_prec, precond_streams[t]);
+                }
+                else
+                {
+                    void *d_Zlow = (void *)((char *)d_Znew_precond + offset * precond_map.el_size);
+                    CUDA_CHECK(cudaMemsetAsync(d_Zlow, 0, (size_t)n * precond_map.el_size, precond_streams[t]));
+                    preconds[t].apply(preconds[t].ctx, d_r_precond, d_Zlow, n, precond_map.storage_prec, precond_streams[t]);
+                }
                 CUDA_CHECK(cudaEventRecord(precond_events[t], precond_streams[t]));
             }
             for (int t = 0; t < k; ++t)
             {
                 CUDA_CHECK(cudaStreamWaitEvent(stream, precond_events[t], 0));
             }
+            sync_block_from_storage(d_Znew_precond, d_Znew, precond_map, (int)nk, threads, stream);
 
             // Znew can be stored in lower precision for the optional SpMM path,
             // but projection always starts from the fp64 copy used by the
@@ -1468,6 +1522,8 @@ namespace ichol::solver
         CUSPARSE_CHECK(cusparseDestroyDnMat(dnC));
         CUSPARSE_CHECK(cusparseDestroyDnVec(vecX));
         CUSPARSE_CHECK(cusparseDestroyDnVec(vecTmp));
+        if (matA_spmm)
+            CUSPARSE_CHECK(cusparseDestroySpMat(matA_spmm));
         CUSPARSE_CHECK(cusparseDestroySpMat(matA));
 
         CUDA_CHECK(cudaFree(d_spmvBuf));
@@ -1476,6 +1532,8 @@ namespace ichol::solver
         CUDA_CHECK(cudaFree(d_rowPtrA));
         CUDA_CHECK(cudaFree(d_colIndA));
         CUDA_CHECK(cudaFree(d_valA));
+        if (d_valA_spmm)
+            CUDA_CHECK(cudaFree(d_valA_spmm));
         CUDA_CHECK(cudaFree(d_b));
         CUDA_CHECK(cudaFree(d_x));
         CUDA_CHECK(cudaFree(d_r));
@@ -1484,6 +1542,10 @@ namespace ichol::solver
         CUDA_CHECK(cudaFree(d_Znew));
         CUDA_CHECK(cudaFree(d_Pnew));
         CUDA_CHECK(cudaFree(d_Wnew));
+        if (d_r_precond)
+            CUDA_CHECK(cudaFree(d_r_precond));
+        if (d_Znew_precond)
+            CUDA_CHECK(cudaFree(d_Znew_precond));
         if (d_Wz)
             CUDA_CHECK(cudaFree(d_Wz));
         if (d_Znew_store)
