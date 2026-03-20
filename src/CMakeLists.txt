@@ -96,3 +96,13 @@ add_executable(mpcg_pcg_compare
 )
 
 target_link_libraries(mpcg_pcg_compare PRIVATE ichol)
+
+find_path(CUDSS_INCLUDE_DIR cudss.h
+    HINTS "$ENV{EBROOTCUDSS}/include" "$ENV{CUDA_HOME}/include" "$ENV{EBROOTCUDA}/include"
+    REQUIRED)
+find_library(CUDSS_LIB NAMES cudss
+    HINTS "$ENV{EBROOTCUDSS}/lib64" "$ENV{EBROOTCUDSS}/lib" "$ENV{CUDA_HOME}/lib64" "$ENV{CUDA_HOME}/lib" "$ENV{EBROOTCUDA}/lib64" "$ENV{EBROOTCUDA}/lib"
+    REQUIRED)
+
+target_include_directories(ichol PRIVATE ${CUDSS_INCLUDE_DIR})
+target_link_libraries(ichol PUBLIC ${CUDSS_LIB})

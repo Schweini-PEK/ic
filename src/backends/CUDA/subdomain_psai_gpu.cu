@@ -364,50 +364,22 @@ namespace ichol::precond::detail
         int *d_status = nullptr;
     };
 
-    void *create_subdomain_psai_context(
+    static void generate_subdomain_psai_stub(
+        SubdomainPsaiContext *ctx,
         const ichol::matrix::CsrMatrix<double> &A,
         const GridShape &global,
-        const SubdomainRegion &reg,
-        const SubdomainPreconditionerOptions &options)
+        const SubdomainRegion &reg)
     {
         gA.ensure(A);
-
-        auto *ctx = new SubdomainPsaiContext();
-        ctx->lw = reg.x1 - reg.x0;
-        ctx->lh = reg.y1 - reg.y0;
-        ctx->ld = reg.z1 - reg.z0;
-        ctx->nsub = ctx->lw * ctx->lh * ctx->ld;
-
-        ctx->gw = global.w;
-        ctx->gh = global.h;
-
-        ctx->x0 = reg.x0;
-        ctx->x1 = reg.x1;
-        ctx->y0 = reg.y0;
-        ctx->y1 = reg.y1;
-        ctx->z0 = reg.z0;
-        ctx->z1 = reg.z1;
-
-        ctx->r = options.psai_radius;
-        if (ctx->r < 0)
-            throw std::runtime_error("create_subdomain_psai_context: psai_radius must be non-negative");
-
-        ctx->pmax = (2 * ctx->r + 1);
-        ctx->pmax = ctx->pmax * ctx->pmax * ctx->pmax;
-
-        cuda_check(cudaMalloc(&ctx->d_Mcol, (size_t)ctx->nsub * (size_t)ctx->pmax * sizeof(int)));
-        cuda_check(cudaMalloc(&ctx->d_Mval64, (size_t)ctx->nsub * (size_t)ctx->pmax * sizeof(double)));
-        cuda_check(cudaMalloc(&ctx->d_Mval32, (size_t)ctx->nsub * (size_t)ctx->pmax * sizeof(float)));
-        cuda_check(cudaMalloc(&ctx->d_status, sizeof(int)));
         cuda_check(cudaMemset(ctx->d_status, 0, sizeof(int)));
 
         const int pmax = ctx->pmax;
         const size_t shmem =
-            (size_t)pmax * sizeof(int) +
-            (size_t)pmax * sizeof(int) +
-            (size_t)pmax * (size_t)pmax * sizeof(double) +
-            (size_t)pmax * sizeof(double) +
-            (size_t)pmax * sizeof(double);
+            static_cast<size_t>(pmax) * sizeof(int) +
+            static_cast<size_t>(pmax) * sizeof(int) +
+            static_cast<size_t>(pmax) * static_cast<size_t>(pmax) * sizeof(double) +
+            static_cast<size_t>(pmax) * sizeof(double) +
+            static_cast<size_t>(pmax) * sizeof(double);
 
         k_build_psai<<<ctx->nsub, 1, shmem>>>(
             gA.d_row, gA.d_col, gA.d_val,
@@ -417,16 +389,59 @@ namespace ichol::precond::detail
             reg.x0, reg.x1, reg.y0, reg.y1, reg.z0, reg.z1,
             ctx->r);
         cuda_check_last_kernel();
-        {
-            const int nvals = ctx->nsub * ctx->pmax;
-            const int threads = 256;
-            const int blocks = (nvals + threads - 1) / threads;
-            k_cast_d2f<<<blocks, threads>>>(nvals, ctx->d_Mval64, ctx->d_Mval32);
-            cuda_check_last_kernel();
-        }
 
+        const int nvals = ctx->nsub * ctx->pmax;
+        const int threads = 256;
+        const int blocks = (nvals + threads - 1) / threads;
+        k_cast_d2f<<<blocks, threads>>>(nvals, ctx->d_Mval64, ctx->d_Mval32);
+        cuda_check_last_kernel();
         cuda_check(cudaDeviceSynchronize());
-        return ctx;
+    }
+
+    void *create_subdomain_psai_context(
+        const ichol::matrix::CsrMatrix<double> &A,
+        const GridShape &global,
+        const SubdomainRegion &reg,
+        const SubdomainPreconditionerOptions &options)
+    {
+        auto *ctx = new SubdomainPsaiContext();
+        try
+        {
+            ctx->lw = reg.x1 - reg.x0;
+            ctx->lh = reg.y1 - reg.y0;
+            ctx->ld = reg.z1 - reg.z0;
+            ctx->nsub = ctx->lw * ctx->lh * ctx->ld;
+
+            ctx->gw = global.w;
+            ctx->gh = global.h;
+
+            ctx->x0 = reg.x0;
+            ctx->x1 = reg.x1;
+            ctx->y0 = reg.y0;
+            ctx->y1 = reg.y1;
+            ctx->z0 = reg.z0;
+            ctx->z1 = reg.z1;
+
+            ctx->r = options.psai_radius;
+            if (ctx->r < 0)
+                throw std::runtime_error("create_subdomain_psai_context: psai_radius must be non-negative");
+
+            ctx->pmax = (2 * ctx->r + 1);
+            ctx->pmax = ctx->pmax * ctx->pmax * ctx->pmax;
+
+            cuda_check(cudaMalloc(&ctx->d_Mcol, static_cast<size_t>(ctx->nsub) * static_cast<size_t>(ctx->pmax) * sizeof(int)));
+            cuda_check(cudaMalloc(&ctx->d_Mval64, static_cast<size_t>(ctx->nsub) * static_cast<size_t>(ctx->pmax) * sizeof(double)));
+            cuda_check(cudaMalloc(&ctx->d_Mval32, static_cast<size_t>(ctx->nsub) * static_cast<size_t>(ctx->pmax) * sizeof(float)));
+            cuda_check(cudaMalloc(&ctx->d_status, sizeof(int)));
+
+            generate_subdomain_psai_stub(ctx, A, global, reg);
+            return ctx;
+        }
+        catch (...)
+        {
+            destroy_subdomain_psai_context(ctx);
+            throw;
+        }
     }
 
     void apply_subdomain_psai(void *vctx, const void *d_r, void *d_z, int /*N*/,

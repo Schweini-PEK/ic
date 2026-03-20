@@ -387,6 +387,7 @@ TEST(MPCG, 2D_Poisson_DomainDecomposition)
 
     ichol::precond::SubdomainPreconditionerOptions options;
     options.kind = ichol::precond::SubdomainPreconditionerKind::ExactCholesky;
+    options.precision = ichol::solver::ComputePrecision::FP64;
 
     std::unique_ptr<ichol::precond::SubdomainSpSVContext, decltype(ctx_deleter)> ctx1(
         ichol::precond::create_subdomain_spsv_context(A, global_shape, regions[0], options),
@@ -484,6 +485,7 @@ TEST(MPCG, 3D_Poisson_DD)
 
     ichol::precond::SubdomainPreconditionerOptions options;
     options.kind = ichol::precond::SubdomainPreconditionerKind::ExactCholesky;
+    options.precision = ichol::solver::ComputePrecision::FP32;
 
     auto ctx_deleter = [](ichol::precond::SubdomainSpSVContext *p)
     {
@@ -602,6 +604,7 @@ TEST(MPCG, 2D_Poisson_DD)
 
     ichol::precond::SubdomainPreconditionerOptions options;
     options.kind = ichol::precond::SubdomainPreconditionerKind::ExactCholesky;
+    options.precision = ichol::solver::ComputePrecision::FP64;
 
     auto ctx_deleter = [](ichol::precond::SubdomainSpSVContext *p)
     {

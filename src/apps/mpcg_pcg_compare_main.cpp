@@ -23,7 +23,7 @@
 #include "ichol/mtx_read.hpp"
 #include "ichol/pcg.hpp"
 #include "ichol/preconditioner.hpp"
-#include "ichol/subdomain_exact_gpu.hpp"
+#include "ichol/subdomain_preconditioner_gpu.hpp"
 #include "factor/numerical/factorize.hpp"
 
 namespace
@@ -288,7 +288,7 @@ void set_default_params(AppOptions &opts)
     opts.params.restart = 0;
     opts.params.prec_gemm = ichol::solver::ComputePrecision::FP64;
     opts.params.prec_spmm = ichol::solver::ComputePrecision::FP64;
-    opts.params.prec_precond = ichol::solver::ComputePrecision::FP32;
+    opts.params.prec_precond = ichol::solver::ComputePrecision::FP64;
     opts.params.prec_acc = ichol::solver::ComputePrecision::FP64;
     opts.params.store_Znew = ichol::solver::ComputePrecision::FP64;
     opts.params.store_Pnew = ichol::solver::ComputePrecision::FP64;
@@ -573,19 +573,15 @@ SubdomainBundle build_subdomain_bundle(const ichol::matrix::CsrMatrix<double> &A
     precond_opts.kind = opts.precond_kind;
     precond_opts.ic_level_k = opts.ic_level_k;
     precond_opts.psai_radius = opts.psai_radius;
+    precond_opts.precision = opts.params.prec_precond;
 
     auto t0 = std::chrono::high_resolution_clock::now();
-    std::vector<std::future<ichol::precond::SubdomainSpSVContext *>> futures;
-    futures.reserve(bundle.regions.size());
-    for (const auto &reg : bundle.regions)
-    {
-        futures.emplace_back(std::async(std::launch::async, [&A, global_shape, reg, precond_opts]()
-                                        { return ichol::precond::create_subdomain_spsv_context(A, global_shape, reg, precond_opts); }));
-    }
+    auto raw_contexts = ichol::precond::create_subdomain_preconditioner_contexts_parallel(
+        A, global_shape, bundle.regions, precond_opts);
 
-    bundle.contexts.reserve(bundle.regions.size());
-    for (auto &f : futures)
-        bundle.contexts.emplace_back(f.get());
+    bundle.contexts.reserve(raw_contexts.size());
+    for (auto *ctx : raw_contexts)
+        bundle.contexts.emplace_back(ctx);
 
     bundle.preconds.reserve(bundle.contexts.size());
     for (const auto &ctx : bundle.contexts)
