@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <future>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "backends/CUDA/subdomain_preconditioner_backend.hpp"
@@ -11,7 +12,7 @@ namespace ichol::precond
 {
     struct SubdomainPreconditionerContext
     {
-        SubdomainPreconditionerKind kind = SubdomainPreconditionerKind::PSAI;
+        SubdomainPreconditionerKind kind = SubdomainPreconditionerKind::SPAI;
         void *impl = nullptr;
     };
 
@@ -56,8 +57,8 @@ namespace ichol::precond
             case SubdomainPreconditionerKind::IncompleteCholesky:
                 ctx->impl = detail::create_subdomain_incomplete_cholesky_context(A, global_shape, region, options);
                 break;
-            case SubdomainPreconditionerKind::PSAI:
-                ctx->impl = detail::create_subdomain_psai_context(A, global_shape, region, options);
+            case SubdomainPreconditionerKind::SPAI:
+                ctx->impl = detail::create_subdomain_spai_context(A, global_shape, region, options);
                 break;
             default:
                 throw std::runtime_error("create_subdomain_preconditioner_context: unsupported preconditioner kind");
@@ -86,12 +87,32 @@ namespace ichol::precond
         const std::vector<SubdomainRegion> &regions,
         const SubdomainPreconditionerOptions &options)
     {
+        // SPAI contexts are created via the same async path as other preconditioners.
+        // The petsc_mutex inside create_subdomain_spai_context serialises PETSc
+        // calls while GPU operations (upload, cuSPARSE setup) run in parallel.
+        int device = 0;
+        const cudaError_t device_status = cudaGetDevice(&device);
+        if (device_status != cudaSuccess)
+            throw std::runtime_error(std::string("create_subdomain_preconditioner_contexts_parallel: cudaGetDevice failed: ") +
+                                     cudaGetErrorString(device_status));
+
         std::vector<std::future<SubdomainPreconditionerContext *>> futures;
         futures.reserve(regions.size());
-        for (const auto &region : regions)
+        for (std::size_t region_index = 0; region_index < regions.size(); ++region_index)
         {
-            futures.emplace_back(std::async(std::launch::async, [&A, global_shape, region, options]()
-                                            { return create_context_impl(A, global_shape, region, options); }));
+            const auto region = regions[region_index];
+            auto region_options = options;
+            region_options.debug_subdomain_index = static_cast<int>(region_index);
+            futures.emplace_back(std::async(std::launch::async, [&A, global_shape, region, region_options, device]()
+                                            {
+                                                const cudaError_t set_device_status = cudaSetDevice(device);
+                                                if (set_device_status != cudaSuccess)
+                                                {
+                                                    throw std::runtime_error(std::string("create_subdomain_preconditioner_contexts_parallel: cudaSetDevice failed: ") +
+                                                                             cudaGetErrorString(set_device_status));
+                                                }
+                                                return create_context_impl(A, global_shape, region, region_options);
+                                            }));
         }
 
         std::vector<SubdomainPreconditionerContext *> contexts;
@@ -127,8 +148,8 @@ namespace ichol::precond
         case SubdomainPreconditionerKind::IncompleteCholesky:
             detail::apply_subdomain_incomplete_cholesky(ctx->impl, d_r, d_z, N, prec, stream);
             break;
-        case SubdomainPreconditionerKind::PSAI:
-            detail::apply_subdomain_psai(ctx->impl, d_r, d_z, N, prec, stream);
+        case SubdomainPreconditionerKind::SPAI:
+            detail::apply_subdomain_spai(ctx->impl, d_r, d_z, N, prec, stream);
             break;
         default:
             throw std::runtime_error("apply_subdomain_preconditioner: unsupported preconditioner kind");
@@ -147,8 +168,8 @@ namespace ichol::precond
         case SubdomainPreconditionerKind::IncompleteCholesky:
             detail::destroy_subdomain_incomplete_cholesky_context(ctx->impl);
             break;
-        case SubdomainPreconditionerKind::PSAI:
-            detail::destroy_subdomain_psai_context(ctx->impl);
+        case SubdomainPreconditionerKind::SPAI:
+            detail::destroy_subdomain_spai_context(ctx->impl);
             break;
         default:
             break;

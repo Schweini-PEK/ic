@@ -11,6 +11,12 @@ namespace
 {
     using namespace ichol::precond::detail::subdomain_common;
 
+    void cusparse_check_named(cusparseStatus_t status, const char *what)
+    {
+        if (status != CUSPARSE_STATUS_SUCCESS)
+            throw std::runtime_error(std::string(what) + " failed with cuSPARSE status " + std::to_string(static_cast<int>(status)));
+    }
+
     template <typename T>
     struct SubdomainTriangularSolveVariant
     {
@@ -107,55 +113,55 @@ namespace
         cuda_check(cudaMemcpy(variant.d_val_l, l_val_t.data(), static_cast<std::size_t>(nnz_l) * sizeof(T), cudaMemcpyHostToDevice));
         cuda_check(cudaMemcpy(variant.d_val_lt, lt_val_t.data(), static_cast<std::size_t>(nnz_lt) * sizeof(T), cudaMemcpyHostToDevice));
 
-        cusparse_check(cusparseCreateCsr(
+        cusparse_check_named(cusparseCreateCsr(
             &variant.mat_l, ctx->nsub, ctx->nsub, nnz_l,
             ctx->d_row_ptr_l, ctx->d_col_ind_l, variant.d_val_l,
-            CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, cuda_data_type<T>()));
-        cusparse_check(cusparseCreateCsr(
+            CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, cuda_data_type<T>()), "cusparseCreateCsr(mat_l)");
+        cusparse_check_named(cusparseCreateCsr(
             &variant.mat_lt, ctx->nsub, ctx->nsub, nnz_lt,
             ctx->d_row_ptr_lt, ctx->d_col_ind_lt, variant.d_val_lt,
-            CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, cuda_data_type<T>()));
+            CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, cuda_data_type<T>()), "cusparseCreateCsr(mat_lt)");
 
         cusparseFillMode_t lower = CUSPARSE_FILL_MODE_LOWER;
         cusparseFillMode_t upper = CUSPARSE_FILL_MODE_UPPER;
         cusparseDiagType_t non_unit = CUSPARSE_DIAG_TYPE_NON_UNIT;
-        cusparse_check(cusparseSpMatSetAttribute(variant.mat_l, CUSPARSE_SPMAT_FILL_MODE, &lower, sizeof(lower)));
-        cusparse_check(cusparseSpMatSetAttribute(variant.mat_l, CUSPARSE_SPMAT_DIAG_TYPE, &non_unit, sizeof(non_unit)));
-        cusparse_check(cusparseSpMatSetAttribute(variant.mat_lt, CUSPARSE_SPMAT_FILL_MODE, &upper, sizeof(upper)));
-        cusparse_check(cusparseSpMatSetAttribute(variant.mat_lt, CUSPARSE_SPMAT_DIAG_TYPE, &non_unit, sizeof(non_unit)));
+        cusparse_check_named(cusparseSpMatSetAttribute(variant.mat_l, CUSPARSE_SPMAT_FILL_MODE, &lower, sizeof(lower)), "cusparseSpMatSetAttribute(mat_l fill)");
+        cusparse_check_named(cusparseSpMatSetAttribute(variant.mat_l, CUSPARSE_SPMAT_DIAG_TYPE, &non_unit, sizeof(non_unit)), "cusparseSpMatSetAttribute(mat_l diag)");
+        cusparse_check_named(cusparseSpMatSetAttribute(variant.mat_lt, CUSPARSE_SPMAT_FILL_MODE, &upper, sizeof(upper)), "cusparseSpMatSetAttribute(mat_lt fill)");
+        cusparse_check_named(cusparseSpMatSetAttribute(variant.mat_lt, CUSPARSE_SPMAT_DIAG_TYPE, &non_unit, sizeof(non_unit)), "cusparseSpMatSetAttribute(mat_lt diag)");
 
-        cusparse_check(cusparseCreateDnVec(&variant.vec_rhs, ctx->nsub, variant.d_rhs, cuda_data_type<T>()));
-        cusparse_check(cusparseCreateDnVec(&variant.vec_y, ctx->nsub, variant.d_y, cuda_data_type<T>()));
-        cusparse_check(cusparseCreateDnVec(&variant.vec_x, ctx->nsub, variant.d_x, cuda_data_type<T>()));
+        cusparse_check_named(cusparseCreateDnVec(&variant.vec_rhs, ctx->nsub, variant.d_rhs, cuda_data_type<T>()), "cusparseCreateDnVec(rhs)");
+        cusparse_check_named(cusparseCreateDnVec(&variant.vec_y, ctx->nsub, variant.d_y, cuda_data_type<T>()), "cusparseCreateDnVec(y)");
+        cusparse_check_named(cusparseCreateDnVec(&variant.vec_x, ctx->nsub, variant.d_x, cuda_data_type<T>()), "cusparseCreateDnVec(x)");
 
-        cusparse_check(cusparseSpSV_createDescr(&variant.spsv_l));
-        cusparse_check(cusparseSpSV_createDescr(&variant.spsv_lt));
+        cusparse_check_named(cusparseSpSV_createDescr(&variant.spsv_l), "cusparseSpSV_createDescr(L)");
+        cusparse_check_named(cusparseSpSV_createDescr(&variant.spsv_lt), "cusparseSpSV_createDescr(LT)");
 
         const T alpha = static_cast<T>(1);
         size_t buf_size_l = 0;
         size_t buf_size_lt = 0;
 
-        cusparse_check(cusparseSpSV_bufferSize(
+        cusparse_check_named(cusparseSpSV_bufferSize(
             ctx->cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha, variant.mat_l, variant.vec_rhs, variant.vec_y, cuda_data_type<T>(),
-            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_l, &buf_size_l));
+            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_l, &buf_size_l), "cusparseSpSV_bufferSize(L)");
         if (buf_size_l > 0)
             cuda_check(cudaMalloc(&variant.buf_l, buf_size_l));
-        cusparse_check(cusparseSpSV_analysis(
+        cusparse_check_named(cusparseSpSV_analysis(
             ctx->cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha, variant.mat_l, variant.vec_rhs, variant.vec_y, cuda_data_type<T>(),
-            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_l, variant.buf_l));
+            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_l, variant.buf_l), "cusparseSpSV_analysis(L)");
 
-        cusparse_check(cusparseSpSV_bufferSize(
+        cusparse_check_named(cusparseSpSV_bufferSize(
             ctx->cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha, variant.mat_lt, variant.vec_y, variant.vec_x, cuda_data_type<T>(),
-            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_lt, &buf_size_lt));
+            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_lt, &buf_size_lt), "cusparseSpSV_bufferSize(LT)");
         if (buf_size_lt > 0)
             cuda_check(cudaMalloc(&variant.buf_lt, buf_size_lt));
-        cusparse_check(cusparseSpSV_analysis(
+        cusparse_check_named(cusparseSpSV_analysis(
             ctx->cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha, variant.mat_lt, variant.vec_y, variant.vec_x, cuda_data_type<T>(),
-            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_lt, variant.buf_lt));
+            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_lt, variant.buf_lt), "cusparseSpSV_analysis(LT)");
     }
 
     void destroy_ctx_impl(SubdomainIncompleteCholeskyContext *ctx)
@@ -195,13 +201,13 @@ namespace
         {
             const int n = A_sub.num_rows;
             const int nnz = A_sub.nnz;
-            cusparse_check(cusparseCreate(&handle));
-            cusparse_check(cusparseCreateMatDescr(&descr));
-            cusparseSetMatType(descr, CUSPARSE_MATRIX_TYPE_SYMMETRIC);
+            cusparse_check_named(cusparseCreate(&handle), "cusparseCreate");
+            cusparse_check_named(cusparseCreateMatDescr(&descr), "cusparseCreateMatDescr");
+            cusparseSetMatType(descr, CUSPARSE_MATRIX_TYPE_GENERAL);
             cusparseSetMatFillMode(descr, CUSPARSE_FILL_MODE_LOWER);
             cusparseSetMatDiagType(descr, CUSPARSE_DIAG_TYPE_NON_UNIT);
             cusparseSetMatIndexBase(descr, CUSPARSE_INDEX_BASE_ZERO);
-            cusparse_check(cusparseCreateCsric02Info(&info));
+            cusparse_check_named(cusparseCreateCsric02Info(&info), "cusparseCreateCsric02Info");
 
             cuda_check(cudaMalloc(&d_row_ptr, static_cast<std::size_t>(n + 1) * sizeof(int)));
             cuda_check(cudaMalloc(&d_col_ind, static_cast<std::size_t>(nnz) * sizeof(int)));
@@ -211,24 +217,24 @@ namespace
             cuda_check(cudaMemcpy(d_val, out.val_l.data(), static_cast<std::size_t>(nnz) * sizeof(double), cudaMemcpyHostToDevice));
 
             int buffer_size = 0;
-            cusparse_check(cusparseDcsric02_bufferSize(handle, n, nnz, descr, d_val, d_row_ptr, d_col_ind, info, &buffer_size));
+            cusparse_check_named(cusparseDcsric02_bufferSize(handle, n, nnz, descr, d_val, d_row_ptr, d_col_ind, info, &buffer_size), "cusparseDcsric02_bufferSize");
             if (buffer_size > 0)
                 cuda_check(cudaMalloc(&d_buf, static_cast<std::size_t>(buffer_size)));
 
-            cusparse_check(cusparseDcsric02_analysis(handle, n, nnz, descr, d_val, d_row_ptr, d_col_ind, info,
-                                                     CUSPARSE_SOLVE_POLICY_NO_LEVEL, d_buf));
+            cusparse_check_named(cusparseDcsric02_analysis(handle, n, nnz, descr, d_val, d_row_ptr, d_col_ind, info,
+                                                           CUSPARSE_SOLVE_POLICY_NO_LEVEL, d_buf), "cusparseDcsric02_analysis");
             int pivot = -1;
             const cusparseStatus_t structural_status = cusparseXcsric02_zeroPivot(handle, info, &pivot);
             if (structural_status == CUSPARSE_STATUS_ZERO_PIVOT)
                 throw std::runtime_error("legacy IC(0) analysis found a structural zero pivot at row " + std::to_string(pivot));
-            cusparse_check(structural_status);
+            cusparse_check_named(structural_status, "cusparseXcsric02_zeroPivot(structural)");
 
-            cusparse_check(cusparseDcsric02(handle, n, nnz, descr, d_val, d_row_ptr, d_col_ind, info,
-                                            CUSPARSE_SOLVE_POLICY_NO_LEVEL, d_buf));
+            cusparse_check_named(cusparseDcsric02(handle, n, nnz, descr, d_val, d_row_ptr, d_col_ind, info,
+                                                  CUSPARSE_SOLVE_POLICY_NO_LEVEL, d_buf), "cusparseDcsric02");
             const cusparseStatus_t numeric_status = cusparseXcsric02_zeroPivot(handle, info, &pivot);
             if (numeric_status == CUSPARSE_STATUS_ZERO_PIVOT)
                 throw std::runtime_error("legacy IC(0) factorization found a zero pivot at row " + std::to_string(pivot));
-            cusparse_check(numeric_status);
+            cusparse_check_named(numeric_status, "cusparseXcsric02_zeroPivot(numeric)");
 
             cuda_check(cudaMemcpy(out.val_l.data(), d_val, static_cast<std::size_t>(nnz) * sizeof(double), cudaMemcpyDeviceToHost));
             build_csr_transpose(n, out.row_ptr_l, out.col_ind_l, out.val_l, out.row_ptr_lt, out.col_ind_lt, out.val_lt);
@@ -272,15 +278,15 @@ namespace
         const T alpha = static_cast<T>(1);
 
         k_gather_subvec<<<blocks, threads, 0, stream>>>(d_r, ctx->d_gidx, variant.d_rhs, nsub);
-        cusparse_check(cusparseSetStream(ctx->cusparse, stream));
-        cusparse_check(cusparseSpSV_solve(
+        cusparse_check_named(cusparseSetStream(ctx->cusparse, stream), "cusparseSetStream");
+        cusparse_check_named(cusparseSpSV_solve(
             ctx->cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha, variant.mat_l, variant.vec_rhs, variant.vec_y, cuda_data_type<T>(),
-            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_l));
-        cusparse_check(cusparseSpSV_solve(
+            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_l), "cusparseSpSV_solve(L)");
+        cusparse_check_named(cusparseSpSV_solve(
             ctx->cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha, variant.mat_lt, variant.vec_y, variant.vec_x, cuda_data_type<T>(),
-            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_lt));
+            CUSPARSE_SPSV_ALG_DEFAULT, variant.spsv_lt), "cusparseSpSV_solve(LT)");
         k_scatter_subvec<<<blocks, threads, 0, stream>>>(variant.d_x, ctx->d_gidx, d_z, nsub);
         cuda_check(cudaGetLastError());
     }
@@ -323,7 +329,7 @@ namespace ichol::precond::detail
             cuda_check(cudaMemcpy(ctx->d_row_ptr_lt, factor.row_ptr_lt.data(), static_cast<std::size_t>(ctx->nsub + 1) * sizeof(int), cudaMemcpyHostToDevice));
             cuda_check(cudaMemcpy(ctx->d_col_ind_lt, factor.col_ind_lt.data(), static_cast<std::size_t>(nnz_lt) * sizeof(int), cudaMemcpyHostToDevice));
 
-            cusparse_check(cusparseCreate(&ctx->cusparse));
+            cusparse_check_named(cusparseCreate(&ctx->cusparse), "cusparseCreate(ctx->cusparse)");
             switch (ctx->storage_prec)
             {
             case ichol::solver::ComputePrecision::FP64:

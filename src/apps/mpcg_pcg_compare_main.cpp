@@ -1,6 +1,5 @@
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
-#include <petscsys.h>
 
 #include <algorithm>
 #include <chrono>
@@ -51,7 +50,7 @@ struct AppOptions
     ichol::precond::SubdomainPreconditionerKind precond_kind =
         ichol::precond::SubdomainPreconditionerKind::ExactCholesky;
     int ic_level_k = 0;
-    int psai_radius = 1;
+    int spai_radius = 1;
 
     ichol::solver::PCGParams params;
     int pcg_maxits = 100;
@@ -196,8 +195,8 @@ ichol::precond::SubdomainPreconditionerKind parse_precond_kind(const std::string
         return ichol::precond::SubdomainPreconditionerKind::ExactCholesky;
     if (v == "ic" || v == "ichol" || v == "incompletecholesky")
         return ichol::precond::SubdomainPreconditionerKind::IncompleteCholesky;
-    if (v == "psai")
-        return ichol::precond::SubdomainPreconditionerKind::PSAI;
+    if (v == "spai")
+        return ichol::precond::SubdomainPreconditionerKind::SPAI;
     throw std::runtime_error("Unknown preconditioner kind: " + raw);
 }
 
@@ -209,8 +208,8 @@ std::string precond_kind_to_string(ichol::precond::SubdomainPreconditionerKind k
         return "exact";
     case ichol::precond::SubdomainPreconditionerKind::IncompleteCholesky:
         return "ic";
-    case ichol::precond::SubdomainPreconditionerKind::PSAI:
-        return "psai";
+    case ichol::precond::SubdomainPreconditionerKind::SPAI:
+        return "spai";
     }
     return "unknown";
 }
@@ -303,9 +302,9 @@ void print_usage(const char *argv0)
         << "Usage: " << argv0 << " [options]\n"
         << "  --n INT                       3D Poisson grid size per dimension\n"
         << "  --subdomain WxHxD             subdomain size, e.g. 16x16x16\n"
-        << "  --precond-kind exact|ic|psai  subdomain preconditioner family\n"
+        << "  --precond-kind exact|ic|spai  subdomain preconditioner family\n"
         << "  --ic-level-k INT              level-k for incomplete Cholesky subdomains\n"
-        << "  --psai-radius INT             radius for PSAI subdomains\n"
+        << "  --spai-radius INT             radius hint for SPAI subdomains\n"
         << "  --seed INT                    RHS RNG seed\n"
         << "  --tol FLOAT                   solver tolerance\n"
         << "  --mpcg-maxits INT             MPCG max iterations\n"
@@ -361,9 +360,9 @@ AppOptions parse_args(int argc, char **argv)
         {
             opts.ic_level_k = parse_int(require_value(i, "--ic-level-k"), "--ic-level-k");
         }
-        else if (arg == "--psai-radius")
+        else if (arg == "--spai-radius")
         {
-            opts.psai_radius = parse_int(require_value(i, "--psai-radius"), "--psai-radius");
+            opts.spai_radius = parse_int(require_value(i, "--spai-radius"), "--spai-radius");
         }
         else if (arg == "--seed")
         {
@@ -449,8 +448,8 @@ AppOptions parse_args(int argc, char **argv)
         throw std::runtime_error("--tol must be positive");
     if (opts.ic_level_k < 0)
         throw std::runtime_error("--ic-level-k must be non-negative");
-    if (opts.psai_radius < 0)
-        throw std::runtime_error("--psai-radius must be non-negative");
+    if (opts.spai_radius < 0)
+        throw std::runtime_error("--spai-radius must be non-negative");
 
     using Prec = ichol::solver::ComputePrecision;
     if (opts.pcg_factor_precision != Prec::FP64 &&
@@ -572,7 +571,7 @@ SubdomainBundle build_subdomain_bundle(const ichol::matrix::CsrMatrix<double> &A
     ichol::precond::SubdomainPreconditionerOptions precond_opts;
     precond_opts.kind = opts.precond_kind;
     precond_opts.ic_level_k = opts.ic_level_k;
-    precond_opts.psai_radius = opts.psai_radius;
+    precond_opts.spai_radius = opts.spai_radius;
     precond_opts.precision = opts.params.prec_precond;
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -764,9 +763,6 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    const PetscErrorCode ierr_init = PetscInitializeNoArguments();
-    if (ierr_init != PETSC_SUCCESS)
-        return static_cast<int>(ierr_init);
 
     int exit_code = 0;
     try
@@ -822,8 +818,5 @@ int main(int argc, char **argv)
         exit_code = 1;
     }
 
-    const PetscErrorCode ierr_finalize = PetscFinalize();
-    if (ierr_finalize != PETSC_SUCCESS && exit_code == 0)
-        exit_code = static_cast<int>(ierr_finalize);
     return exit_code;
 }

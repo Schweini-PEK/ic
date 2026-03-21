@@ -39,13 +39,13 @@ namespace ichol::precond::detail
 
     void destroy_subdomain_incomplete_cholesky_context(void *ctx);
 
-    void *create_subdomain_psai_context(
+    void *create_subdomain_spai_context(
         const ichol::matrix::CsrMatrix<double> &A,
         const GridShape &global,
         const SubdomainRegion &region,
         const SubdomainPreconditionerOptions &options);
 
-    void apply_subdomain_psai(
+    void apply_subdomain_spai(
         void *ctx,
         const void *d_r,
         void *d_z,
@@ -53,5 +53,5 @@ namespace ichol::precond::detail
         ichol::solver::ComputePrecision prec,
         cudaStream_t stream);
 
-    void destroy_subdomain_psai_context(void *ctx);
+    void destroy_subdomain_spai_context(void *ctx);
 } // namespace ichol::precond::detail

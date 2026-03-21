@@ -16,6 +16,7 @@
 
 #include "ichol/pcg.hpp"
 #include "ichol/preconditioner.hpp"
+#include "backends/CUDA/mpcg_debug.hpp"
 
 #define CUDA_CHECK(call)                                                              \
     do                                                                                \
@@ -388,6 +389,72 @@ static void finalize_spmm_output(
 
     if (storage_ptr && storage_ptr != spmm_out)
         sync_block_to_storage(dst_fp64, storage_ptr, storage_map, count, threads, stream);
+}
+
+static void build_znew_columns_device(
+    const std::vector<ichol::precond::PrecondApply> &preconds,
+    const double *d_r,
+    void *d_r_precond,
+    double *d_Znew,
+    void *d_Znew_precond,
+    int n,
+    const StorageMap &precond_map,
+    int threads,
+    cudaStream_t stream,
+    cudaEvent_t main_stream_ready,
+    const std::vector<cudaStream_t> &precond_streams,
+    const std::vector<cudaEvent_t> &precond_events,
+    bool serial,
+    bool sync_after_each_apply)
+{
+    const int k = static_cast<int>(preconds.size());
+    sync_block_to_storage(d_r, d_r_precond, precond_map, n, threads, stream);
+
+    if (serial)
+    {
+        for (int t = 0; t < k; ++t)
+        {
+            const size_t offset = static_cast<size_t>(t) * static_cast<size_t>(n);
+            if (precond_map.storage_prec == ichol::solver::ComputePrecision::FP64)
+            {
+                CUDA_CHECK(cudaMemsetAsync(d_Znew + offset, 0, static_cast<size_t>(n) * sizeof(double), stream));
+                preconds[t].apply(preconds[t].ctx, d_r, d_Znew + offset, n, precond_map.storage_prec, stream);
+            }
+            else
+            {
+                void *d_Zlow = static_cast<void *>(static_cast<char *>(d_Znew_precond) + offset * precond_map.el_size);
+                CUDA_CHECK(cudaMemsetAsync(d_Zlow, 0, static_cast<size_t>(n) * precond_map.el_size, stream));
+                preconds[t].apply(preconds[t].ctx, d_r_precond, d_Zlow, n, precond_map.storage_prec, stream);
+            }
+            if (sync_after_each_apply)
+                CUDA_CHECK(cudaStreamSynchronize(stream));
+        }
+    }
+    else
+    {
+        CUDA_CHECK(cudaEventRecord(main_stream_ready, stream));
+        for (int t = 0; t < k; ++t)
+        {
+            CUDA_CHECK(cudaStreamWaitEvent(precond_streams[t], main_stream_ready, 0));
+            const size_t offset = static_cast<size_t>(t) * static_cast<size_t>(n);
+            if (precond_map.storage_prec == ichol::solver::ComputePrecision::FP64)
+            {
+                CUDA_CHECK(cudaMemsetAsync(d_Znew + offset, 0, static_cast<size_t>(n) * sizeof(double), precond_streams[t]));
+                preconds[t].apply(preconds[t].ctx, d_r, d_Znew + offset, n, precond_map.storage_prec, precond_streams[t]);
+            }
+            else
+            {
+                void *d_Zlow = static_cast<void *>(static_cast<char *>(d_Znew_precond) + offset * precond_map.el_size);
+                CUDA_CHECK(cudaMemsetAsync(d_Zlow, 0, static_cast<size_t>(n) * precond_map.el_size, precond_streams[t]));
+                preconds[t].apply(preconds[t].ctx, d_r_precond, d_Zlow, n, precond_map.storage_prec, precond_streams[t]);
+            }
+            CUDA_CHECK(cudaEventRecord(precond_events[t], precond_streams[t]));
+        }
+        for (int t = 0; t < k; ++t)
+            CUDA_CHECK(cudaStreamWaitEvent(stream, precond_events[t], 0));
+    }
+
+    sync_block_from_storage(d_Znew_precond, d_Znew, precond_map, n * k, threads, stream);
 }
 
 __global__ void k_build_col_scale_from_gdiag(const double *G, double *col_scale, int k, double diag_floor)
@@ -1228,30 +1295,21 @@ namespace ichol::solver
 
             // Apply each preconditioner to the same residual r.
             // Output columns form Znew(:, t).
-            sync_block_to_storage(d_r, d_r_precond, precond_map, n, threads, stream);
-            CUDA_CHECK(cudaEventRecord(main_stream_ready, stream));
-            for (int t = 0; t < k; ++t)
-            {
-                CUDA_CHECK(cudaStreamWaitEvent(precond_streams[t], main_stream_ready, 0));
-                const size_t offset = (size_t)t * (size_t)n;
-                if (precond_map.storage_prec == ComputePrecision::FP64)
-                {
-                    CUDA_CHECK(cudaMemsetAsync(d_Znew + offset, 0, (size_t)n * sizeof(double), precond_streams[t]));
-                    preconds[t].apply(preconds[t].ctx, d_r, d_Znew + offset, n, precond_map.storage_prec, precond_streams[t]);
-                }
-                else
-                {
-                    void *d_Zlow = (void *)((char *)d_Znew_precond + offset * precond_map.el_size);
-                    CUDA_CHECK(cudaMemsetAsync(d_Zlow, 0, (size_t)n * precond_map.el_size, precond_streams[t]));
-                    preconds[t].apply(preconds[t].ctx, d_r_precond, d_Zlow, n, precond_map.storage_prec, precond_streams[t]);
-                }
-                CUDA_CHECK(cudaEventRecord(precond_events[t], precond_streams[t]));
-            }
-            for (int t = 0; t < k; ++t)
-            {
-                CUDA_CHECK(cudaStreamWaitEvent(stream, precond_events[t], 0));
-            }
-            sync_block_from_storage(d_Znew_precond, d_Znew, precond_map, (int)nk, threads, stream);
+            build_znew_columns_device(
+                preconds,
+                d_r,
+                d_r_precond,
+                d_Znew,
+                d_Znew_precond,
+                n,
+                precond_map,
+                threads,
+                stream,
+                main_stream_ready,
+                precond_streams,
+                precond_events,
+                false,
+                false);
 
             // Znew can be stored in lower precision for the optional SpMM path,
             // but projection always starts from the fp64 copy used by the
@@ -1620,6 +1678,86 @@ namespace ichol::solver
 
         return result;
     }
+
+    namespace debug
+    {
+        std::vector<double> build_mpcg_znew_columns(
+            const std::vector<ichol::precond::PrecondApply> &preconds,
+            const std::vector<double> &h_r,
+            const ZnewBuildOptions &options)
+        {
+            const int n = static_cast<int>(h_r.size());
+            const int k = static_cast<int>(preconds.size());
+            const size_t nk = static_cast<size_t>(n) * static_cast<size_t>(k);
+            const int threads = 256;
+
+            StorageMap precond_map = get_precond_map(options.prec_precond);
+
+            cudaStream_t stream = nullptr;
+            CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+
+            std::vector<cudaStream_t> precond_streams(k, nullptr);
+            std::vector<cudaEvent_t> precond_events(k, nullptr);
+            cudaEvent_t main_stream_ready = nullptr;
+            CUDA_CHECK(cudaEventCreateWithFlags(&main_stream_ready, cudaEventDisableTiming));
+            for (int t = 0; t < k; ++t)
+            {
+                CUDA_CHECK(cudaStreamCreateWithFlags(&precond_streams[t], cudaStreamNonBlocking));
+                CUDA_CHECK(cudaEventCreateWithFlags(&precond_events[t], cudaEventDisableTiming));
+            }
+
+            double *d_r = nullptr;
+            double *d_Znew = nullptr;
+            void *d_r_precond = nullptr;
+            void *d_Znew_precond = nullptr;
+            std::vector<double> h_Znew(nk, 0.0);
+
+            CUDA_CHECK(cudaMalloc(&d_r, static_cast<size_t>(n) * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&d_Znew, nk * sizeof(double)));
+            CUDA_CHECK(cudaMemcpyAsync(d_r, h_r.data(), static_cast<size_t>(n) * sizeof(double), cudaMemcpyHostToDevice, stream));
+
+            if (precond_map.storage_prec != ComputePrecision::FP64)
+            {
+                CUDA_CHECK(cudaMalloc(&d_r_precond, static_cast<size_t>(n) * precond_map.el_size));
+                CUDA_CHECK(cudaMalloc(&d_Znew_precond, nk * precond_map.el_size));
+            }
+
+            build_znew_columns_device(
+                preconds,
+                d_r,
+                d_r_precond,
+                d_Znew,
+                d_Znew_precond,
+                n,
+                precond_map,
+                threads,
+                stream,
+                main_stream_ready,
+                precond_streams,
+                precond_events,
+                options.serial,
+                options.sync_after_each_apply);
+
+            CUDA_CHECK(cudaMemcpyAsync(h_Znew.data(), d_Znew, nk * sizeof(double), cudaMemcpyDeviceToHost, stream));
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+
+            CUDA_CHECK(cudaFree(d_r));
+            CUDA_CHECK(cudaFree(d_Znew));
+            if (d_r_precond)
+                CUDA_CHECK(cudaFree(d_r_precond));
+            if (d_Znew_precond)
+                CUDA_CHECK(cudaFree(d_Znew_precond));
+
+            for (int t = 0; t < k; ++t)
+            {
+                CUDA_CHECK(cudaEventDestroy(precond_events[t]));
+                CUDA_CHECK(cudaStreamDestroy(precond_streams[t]));
+            }
+            CUDA_CHECK(cudaEventDestroy(main_stream_ready));
+            CUDA_CHECK(cudaStreamDestroy(stream));
+            return h_Znew;
+        }
+    } // namespace debug
 
     template PCGResult mpcg<double>(
         const std::vector<int> &,

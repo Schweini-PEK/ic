@@ -39,17 +39,18 @@ namespace ichol::precond
 
     enum class SubdomainPreconditionerKind
     {
-        PSAI,
+        SPAI,
         ExactCholesky,
         IncompleteCholesky
     };
 
     struct SubdomainPreconditionerOptions
     {
-        SubdomainPreconditionerKind kind = SubdomainPreconditionerKind::PSAI;
-        int psai_radius = 1;
+        SubdomainPreconditionerKind kind = SubdomainPreconditionerKind::SPAI;
+        int spai_radius = 1;
         int ic_level_k = 0;
         ichol::solver::ComputePrecision precision = ichol::solver::ComputePrecision::FP64;
+        int debug_subdomain_index = -1;
     };
 
     std::vector<SubdomainRegion> partition_subdomains(

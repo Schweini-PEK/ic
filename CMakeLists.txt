@@ -11,5 +11,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --extended-lambda")
 
+enable_testing()
+
 add_subdirectory(src)
 add_subdirectory(test)
