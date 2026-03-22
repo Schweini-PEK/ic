@@ -620,6 +620,17 @@ struct PinvSVDWorkspace
     int max_nrhs = 0;
 };
 
+// Workspace for cuSOLVER Cholesky-based k×k solver (k > 32).
+struct CholWorkspace
+{
+    double *d_G_copy = nullptr; // k×k scratch: potrf overwrites in-place
+    double *d_work = nullptr;   // potrf device workspace
+    int *d_info = nullptr;      // potrf return code
+    int lwork = 0;
+    int k = 0;
+    int max_nrhs = 0;
+};
+
 // For very small systems, cuSOLVER launch/setup overhead can dominate.
 // This kernel solves G * X = B using in-kernel LU with partial pivoting.
 // It runs with one thread because k is tiny (<= 32).
@@ -846,6 +857,172 @@ __global__ void k_small_pinv_jacobi_svd(
     }
 }
 
+// --------------------------------------------------------------------------
+// Cholesky solver for small k (k <= 32), with LU fallback.
+// --------------------------------------------------------------------------
+
+// In-register LU factorisation + solve, factored out as a __device__ helper
+// so both k_small_lu_solve and k_small_chol_solve can call it.
+__device__ static void d_lu_solve_k32(
+    const double *G, // k×k input
+    const double *B, // k×nrhs input
+    double *X,       // k×nrhs output
+    int k,
+    int nrhs,
+    double rcond)
+{
+    constexpr int KMAX = 32;
+    double A[KMAX * KMAX];
+    double RHS[KMAX * KMAX];
+
+    double max_abs = 0.0;
+    for (int col = 0; col < k; ++col)
+        for (int row = 0; row < k; ++row)
+        {
+            const double v = G[row + col * k];
+            A[row + col * k] = v;
+            max_abs = fmax(max_abs, fabs(v));
+        }
+    for (int col = 0; col < nrhs; ++col)
+        for (int row = 0; row < k; ++row)
+            RHS[row + col * k] = B[row + col * k];
+
+    const double pivot_tol = fmax(1e-15, rcond * fmax(max_abs, 1.0));
+
+    for (int col = 0; col < k; ++col)
+    {
+        int piv = col;
+        double piv_abs = fabs(A[col + col * k]);
+        for (int row = col + 1; row < k; ++row)
+        {
+            const double cur = fabs(A[row + col * k]);
+            if (cur > piv_abs)
+            {
+                piv_abs = cur;
+                piv = row;
+            }
+        }
+        if (piv != col)
+        {
+            for (int j = col; j < k; ++j)
+            {
+                double tmp = A[col + j * k];
+                A[col + j * k] = A[piv + j * k];
+                A[piv + j * k] = tmp;
+            }
+            for (int j = 0; j < nrhs; ++j)
+            {
+                double tmp = RHS[col + j * k];
+                RHS[col + j * k] = RHS[piv + j * k];
+                RHS[piv + j * k] = tmp;
+            }
+        }
+        if (fabs(A[col + col * k]) < pivot_tol)
+            A[col + col * k] = (A[col + col * k] < 0.0) ? -pivot_tol : pivot_tol;
+
+        const double inv_diag = 1.0 / A[col + col * k];
+        for (int row = col + 1; row < k; ++row)
+        {
+            const double f = A[row + col * k] * inv_diag;
+            A[row + col * k] = 0.0;
+            for (int j = col + 1; j < k; ++j)
+                A[row + j * k] -= f * A[col + j * k];
+            for (int j = 0; j < nrhs; ++j)
+                RHS[row + j * k] -= f * RHS[col + j * k];
+        }
+    }
+
+    for (int j = 0; j < nrhs; ++j)
+        for (int i = k - 1; i >= 0; --i)
+        {
+            double sum = RHS[i + j * k];
+            for (int c = i + 1; c < k; ++c)
+                sum -= A[i + c * k] * X[c + j * k];
+            double d = A[i + i * k];
+            if (fabs(d) < pivot_tol)
+                d = (d < 0.0) ? -pivot_tol : pivot_tol;
+            X[i + j * k] = sum / d;
+        }
+}
+
+/**
+ * k_small_chol_solve:
+ * Solves G * X = B for small k (k <= 32) using in-register Cholesky.
+ * G must be SPD; if a non-positive pivot is detected the kernel falls back
+ * to LU with partial pivoting.  Runs single-threaded (one block, one thread).
+ */
+__global__ void k_small_chol_solve(
+    const double *G, // k×k SPD matrix
+    const double *B, // k×nrhs
+    double *X,       // k×nrhs output
+    int k,
+    int nrhs,
+    double rcond)
+{
+    if (threadIdx.x != 0 || blockIdx.x != 0)
+        return;
+
+    constexpr int KMAX = 32;
+    double L[KMAX * KMAX]; // lower-triangular Cholesky factor (column-major)
+    double Y[KMAX * KMAX]; // intermediate forward-solve result
+
+    // Compute max diagonal for the non-SPD pivot threshold.
+    double max_diag = 0.0;
+    for (int i = 0; i < k; ++i)
+        max_diag = fmax(max_diag, G[i + i * k]);
+    const double pivot_tol = rcond * fmax(max_diag, 1e-15);
+
+    // Symmetrize G into the lower triangle of L.
+    for (int i = 0; i < k; ++i)
+        for (int j = 0; j <= i; ++j)
+            L[i + j * k] = 0.5 * (G[i + j * k] + G[j + i * k]);
+
+    // In-place Cholesky (column-major, lower triangle).
+    for (int j = 0; j < k; ++j)
+    {
+        double diag = L[j + j * k];
+        for (int m = 0; m < j; ++m)
+            diag -= L[j + m * k] * L[j + m * k];
+
+        if (diag <= pivot_tol)
+        {
+            // Non-positive pivot: G is not SPD — fall back to LU.
+            d_lu_solve_k32(G, B, X, k, nrhs, rcond);
+            return;
+        }
+
+        L[j + j * k] = sqrt(diag);
+        const double inv_ljj = 1.0 / L[j + j * k];
+        for (int i = j + 1; i < k; ++i)
+        {
+            double s = L[i + j * k];
+            for (int m = 0; m < j; ++m)
+                s -= L[i + m * k] * L[j + m * k];
+            L[i + j * k] = s * inv_ljj;
+        }
+    }
+
+    // Forward substitution: L * Y = B
+    for (int col = 0; col < nrhs; ++col)
+        for (int i = 0; i < k; ++i)
+        {
+            double s = B[i + col * k];
+            for (int m = 0; m < i; ++m)
+                s -= L[i + m * k] * Y[m + col * k];
+            Y[i + col * k] = s / L[i + i * k];
+        }
+
+    // Backward substitution: L^T * X = Y  (L^T[i,m] = L[m,i])
+    for (int col = 0; col < nrhs; ++col)
+        for (int i = k - 1; i >= 0; --i)
+        {
+            double s = Y[i + col * k];
+            for (int m = i + 1; m < k; ++m)
+                s -= L[m + i * k] * X[m + col * k];
+            X[i + col * k] = s / L[i + i * k];
+        }
+}
+
 __global__ void k_build_s_inv_from_s(const double *S, double *S_inv, int k, double rcond)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -921,6 +1098,73 @@ static void pinv_svd_cuda(
     CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N, k, nrhs, k, dev_scalars.one64(), ws.d_VT, k, ws.d_T1, k, dev_scalars.zero64(), d_X, k));
 }
 
+// --------------------------------------------------------------------------
+// chol_solve_cuda: Cholesky-based k×k solve, with SVD fallback.
+// For k <= 32 dispatches to the in-register k_small_chol_solve kernel.
+// For k > 32 uses cusolverDnDpotrf + cusolverDnDpotrs; if potrf reports a
+// non-positive pivot (d_info > 0) it falls back to pinv_svd_cuda.
+// --------------------------------------------------------------------------
+static void chol_solve_cuda(
+    cusolverDnHandle_t cusolver,
+    cublasHandle_t cublas,
+    const double *d_G,
+    int k,
+    const double *d_B,
+    int nrhs,
+    double *d_X,
+    cudaStream_t stream,
+    double rcond,
+    CholWorkspace &chol_ws,
+    PinvSVDWorkspace &svd_ws,
+    const DeviceCublasScalars &dev_scalars)
+{
+    if (k <= 32)
+    {
+        k_small_chol_solve<<<1, 1, 0, stream>>>(d_G, d_B, d_X, k, nrhs, rcond);
+        return;
+    }
+
+    if (k != chol_ws.k || nrhs > chol_ws.max_nrhs)
+        throw std::runtime_error("chol_solve_cuda: workspace shape mismatch");
+
+    // Copy G for in-place factorisation (potrf overwrites the matrix).
+    CUDA_CHECK(cudaMemcpyAsync(chol_ws.d_G_copy, d_G,
+                               (size_t)k * k * sizeof(double),
+                               cudaMemcpyDeviceToDevice, stream));
+
+    // Cholesky factorisation (lower triangular, in-place on d_G_copy).
+    CUSOLVER_CHECK(cusolverDnDpotrf(
+        cusolver, CUBLAS_FILL_MODE_LOWER, k,
+        chol_ws.d_G_copy, k,
+        chol_ws.d_work, chol_ws.lwork,
+        chol_ws.d_info));
+
+    // Retrieve factorisation status — requires a stream sync.
+    int info = 0;
+    CUDA_CHECK(cudaMemcpyAsync(&info, chol_ws.d_info, sizeof(int),
+                               cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    if (info > 0)
+    {
+        // G is not positive definite: fall back to pseudo-inverse SVD.
+        pinv_svd_cuda(cusolver, cublas, d_G, k, d_B, nrhs, d_X,
+                      stream, rcond, svd_ws, dev_scalars);
+        return;
+    }
+
+    // Copy B into X; potrs solves in-place (overwrites X with the solution).
+    CUDA_CHECK(cudaMemcpyAsync(d_X, d_B,
+                               (size_t)k * nrhs * sizeof(double),
+                               cudaMemcpyDeviceToDevice, stream));
+
+    CUSOLVER_CHECK(cusolverDnDpotrs(
+        cusolver, CUBLAS_FILL_MODE_LOWER, k, nrhs,
+        chol_ws.d_G_copy, k,
+        d_X, k,
+        chol_ws.d_info));
+}
+
 namespace ichol::solver
 {
 
@@ -968,6 +1212,7 @@ namespace ichol::solver
         CublasScalars scalars;
         DeviceCublasScalars dev_scalars;
         PinvSVDWorkspace pinv_ws{};
+        CholWorkspace chol_ws{};
 
         // Precision controls:
         PrecisionMap g_map = get_precision_map(params.prec_gemm, params.prec_acc);
@@ -1114,6 +1359,20 @@ namespace ichol::solver
             CUDA_CHECK(cudaMalloc(&pinv_ws.d_S_inv, (size_t)k * sizeof(double)));
             CUDA_CHECK(cudaMalloc(&pinv_ws.d_T1, (size_t)k * (size_t)k * sizeof(double)));
             CUDA_CHECK(cudaMalloc(&pinv_ws.d_info, sizeof(int)));
+        }
+
+        // Workspace for Cholesky-based k×k solves (only when use_svd == false).
+        // For k <= 32 the device kernel needs no extra allocation.
+        if (!params.use_svd && k > 32)
+        {
+            chol_ws.k = k;
+            chol_ws.max_nrhs = k;
+            CUDA_CHECK(cudaMalloc(&chol_ws.d_G_copy, (size_t)k * (size_t)k * sizeof(double)));
+            CUSOLVER_CHECK(cusolverDnDpotrf_bufferSize(
+                cusolver, CUBLAS_FILL_MODE_LOWER, k,
+                chol_ws.d_G_copy, k, &chol_ws.lwork));
+            CUDA_CHECK(cudaMalloc(&chol_ws.d_work, (size_t)chol_ws.lwork * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&chol_ws.d_info, sizeof(int)));
         }
 
         double *d_P_hist64 = nullptr, *d_W_hist64 = nullptr;
@@ -1282,6 +1541,20 @@ namespace ichol::solver
                 dst_fp64, (int)nk, threads, stream);
         };
 
+        // Unified k×k solver: Cholesky path (default) or SVD (params.use_svd == true).
+        // Wraps both pinv_svd_cuda and chol_solve_cuda so call-sites stay uniform.
+        auto solve_kk = [&](const double *d_G_in, int nrhs_in,
+                            const double *d_B_in, double *d_X_out)
+        {
+            if (params.use_svd)
+                pinv_svd_cuda(cusolver, cublas, d_G_in, k, d_B_in, nrhs_in,
+                              d_X_out, stream, hist_rcond, pinv_ws, dev_scalars);
+            else
+                chol_solve_cuda(cusolver, cublas, d_G_in, k, d_B_in, nrhs_in,
+                                d_X_out, stream, hist_rcond,
+                                chol_ws, pinv_ws, dev_scalars);
+        };
+
         // Main MPCG iteration.
         for (int iter = 0; iter < params.maxits; ++iter)
         {
@@ -1326,6 +1599,68 @@ namespace ichol::solver
 
             auto project_against_history = [&]()
             {
+                if (hist_count == 0)
+                    return;
+
+                // ---------------------------------------------------------------
+                // Fast batched path: fp64 history buffers + fp64 GEMM output.
+                //
+                // All hist_count C matrices are computed from the same d_Pnew
+                // in a single cublasGemmStridedBatched call (classical A-orthog).
+                // History is always at contiguous slots 0..hist_count-1 because:
+                //   - When iter < m: hist_slots == [0..iter-1] (ring not yet full)
+                //   - When iter >= m: hist_count == m, ALL m slots are valid and
+                //     the projection sum is order-independent, so iterating over
+                //     slots 0..m-1 is mathematically equivalent.
+                // ---------------------------------------------------------------
+                if (d_W_hist64 && d_P_hist64 && g_map.output_type == CUDA_R_64F)
+                {
+                    // Batch 1: C[slot] = W[slot]^T * Pnew
+                    //   W[slot] is n×k stored at d_W_hist64 + slot*nk (stride = nk).
+                    //   Pnew is the same n×k matrix for all batches (stride = 0).
+                    //   C[slot] is k×k stored at d_hist_C + slot*k*k  (stride = k*k).
+                    CUBLAS_CHECK(cublasDgemmStridedBatched(
+                        cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                        k, k, n,
+                        dev_scalars.one64(),
+                        d_W_hist64, n, (long long)nk,
+                        d_Pnew,     n, 0LL,
+                        dev_scalars.zero64(),
+                        d_hist_C,   k, (long long)(k * k),
+                        hist_count));
+
+                    // Batch 2: Y[slot] = Ginv[slot] * C[slot]
+                    CUBLAS_CHECK(cublasDgemmStridedBatched(
+                        cublas, CUBLAS_OP_N, CUBLAS_OP_N,
+                        k, k, k,
+                        dev_scalars.one64(),
+                        d_Ginv_hist, k, (long long)(k * k),
+                        d_hist_C,    k, (long long)(k * k),
+                        dev_scalars.zero64(),
+                        d_hist_Y,    k, (long long)(k * k),
+                        hist_count));
+
+                    // Subtraction loop: Pnew -= P[slot] * Y[slot]  (n×k, kept as loop)
+                    for (int slot = 0; slot < hist_count; ++slot)
+                    {
+                        double *d_Pj = d_P_hist64 + (size_t)slot * nk;
+                        double *d_Yj = d_hist_Y   + (size_t)slot * (size_t)k * (size_t)k;
+                        CUBLAS_CHECK(cublasDgemm(
+                            cublas, CUBLAS_OP_N, CUBLAS_OP_N,
+                            n, k, k,
+                            dev_scalars.m_one64(),
+                            d_Pj,   n,
+                            d_Yj,   k,
+                            dev_scalars.one64(),
+                            d_Pnew, n));
+                    }
+                    return;
+                }
+
+                // ---------------------------------------------------------------
+                // Original sequential loop — handles LP history, LP GEMM, or any
+                // mix where the fp64 strided-batch path is not applicable.
+                // ---------------------------------------------------------------
                 for (int hist_idx = 0; hist_idx < hist_count; ++hist_idx)
                 {
                     const int slot = hist_slots[(size_t)hist_idx];
@@ -1489,8 +1824,8 @@ namespace ichol::solver
                 dev_scalars.zero64(),
                 d_rhs, 1));
 
-            // alpha = pinv(Gnew) * rhs (block step coefficients).
-            pinv_svd_cuda(cusolver, cublas, d_Gnew, k, d_rhs, 1, d_alpha, stream, hist_rcond, pinv_ws, dev_scalars);
+            // alpha = G^{-1} * rhs  (Cholesky by default, SVD when params.use_svd).
+            solve_kk(d_Gnew, 1, d_rhs, d_alpha);
 
             // x = x + Pnew * alpha
             CUBLAS_CHECK(cublasDgemv(
@@ -1553,12 +1888,8 @@ namespace ichol::solver
 
             double *Gdst = d_G_hist + (size_t)slot * (size_t)k * (size_t)k;
             CUDA_CHECK(cudaMemcpyAsync(Gdst, d_Gnew, k * k * sizeof(double), cudaMemcpyDeviceToDevice, stream));
-            pinv_svd_cuda(
-                cusolver, cublas,
-                d_Gnew, k,
-                d_eye, k,
-                d_Ginv_hist + (size_t)slot * (size_t)k * (size_t)k,
-                stream, hist_rcond, pinv_ws, dev_scalars);
+            solve_kk(d_Gnew, k, d_eye,
+                     d_Ginv_hist + (size_t)slot * (size_t)k * (size_t)k);
 
             CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, d_scalar_tmp + 1));
             CUDA_CHECK(cudaMemcpyAsync(&current_res_norm, d_scalar_tmp + 1, sizeof(double), cudaMemcpyDeviceToHost, stream));
@@ -1655,6 +1986,13 @@ namespace ichol::solver
         CUDA_CHECK(cudaFree(pinv_ws.d_S_inv));
         CUDA_CHECK(cudaFree(pinv_ws.d_T1));
         CUDA_CHECK(cudaFree(pinv_ws.d_info));
+
+        if (chol_ws.d_G_copy)
+            CUDA_CHECK(cudaFree(chol_ws.d_G_copy));
+        if (chol_ws.d_work)
+            CUDA_CHECK(cudaFree(chol_ws.d_work));
+        if (chol_ws.d_info)
+            CUDA_CHECK(cudaFree(chol_ws.d_info));
 
         if (d_Pnew_low)
         {

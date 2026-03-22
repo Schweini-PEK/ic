@@ -34,6 +34,20 @@ namespace ichol::solver
 
         bool verbose = false;
         bool precond_full = false;
+        // When false (default): solve G*alpha=rhs via Cholesky (potrf/potrs), falling
+        // back to the SVD path if the k×k system is detected as non-SPD.
+        // When true: always use the SVD (pinv) path, preserving prior behaviour.
+        bool use_svd = false;
+
+        // ── SPAI subdomain preconditioner parameters ──────────────────────────
+        // These control PETSc PCSPAI when subdomains use the SPAI preconditioner.
+        // Defaults match PETSc's built-in PCSPAI defaults so that adding these
+        // fields does not change numerical behaviour.
+        double spai_epsilon   = 0.4; // approximation accuracy target (PETSc default)
+        int    spai_nbsteps   = 5;   // minimisation steps per column  (PETSc default)
+        int    spai_max_cols  = 5;   // max column growth per step     (PETSc default)
+        int    spai_maxnew    = 5;   // max new columns per step       (PETSc default)
+        bool   spai_symmetric = false; // exploit SPD symmetry (false = PETSc default)
     };
 
     struct PCGResult

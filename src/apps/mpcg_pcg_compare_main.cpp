@@ -294,6 +294,7 @@ void set_default_params(AppOptions &opts)
     opts.params.store_Wnew = ichol::solver::ComputePrecision::FP64;
     opts.params.store_P_hist = ichol::solver::ComputePrecision::FP64;
     opts.params.store_W_hist = ichol::solver::ComputePrecision::FP64;
+    opts.params.use_svd = false;
 }
 
 void print_usage(const char *argv0)
@@ -321,6 +322,7 @@ void print_usage(const char *argv0)
         << "  --store-w-hist PREC           fp64|fp32|tf32|fp16|bf16\n"
         << "  --pcg-mode auto|blockdiag|additive\n"
         << "  --pcg-factor-precision PREC   fp64|fp32|fp16 for blockdiag pcg_cusparse_spsv\n"
+        << "  --use-svd                     use SVD (pinv) for alpha solve; default is Cholesky\n"
         << "  --help                        show this message\n";
 }
 
@@ -427,6 +429,10 @@ AppOptions parse_args(int argc, char **argv)
         else if (arg == "--pcg-factor-precision")
         {
             opts.pcg_factor_precision = parse_compute_precision(require_value(i, "--pcg-factor-precision"));
+        }
+        else if (arg == "--use-svd")
+        {
+            opts.params.use_svd = true;
         }
         else
         {

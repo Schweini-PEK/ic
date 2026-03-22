@@ -598,7 +598,7 @@ TEST(MPCG, 2D_Poisson_DD)
     std::vector<double> x(A.num_rows, 0.0);
 
     const ichol::precond::GridShape global_shape{n, n, 1};
-    const ichol::precond::SubdomainSize subdomain_size{8, 8, 1};
+    const ichol::precond::SubdomainSize subdomain_size{50, 50, 1};
     const auto regions = ichol::precond::partition_subdomains(global_shape, subdomain_size);
     ASSERT_FALSE(regions.empty());
 
@@ -624,7 +624,7 @@ TEST(MPCG, 2D_Poisson_DD)
         preconds.push_back({&ichol::precond::apply_subdomain_exact_spsv, ctx.get()});
 
     ichol::solver::PCGParams params;
-    params.maxits = 400;
+    params.maxits = 30;
     params.tol = 1e-10;
     params.restart = 0;
     params.prec_gemm = ichol::solver::ComputePrecision::FP64;
@@ -657,6 +657,7 @@ TEST(MPCG, 2D_Poisson_DD)
     ichol::solver::PCGParams pcg_params = params;
     pcg_params.custom_precond = nullptr;
 
+    pcg_params.maxits = 200;
     auto t2 = std::chrono::high_resolution_clock::now();
     auto pcg_result = ichol::solver::pcg_cusparse_spsv<double>(
         A.row_ptr, A.col_ind, A.values,

@@ -174,7 +174,7 @@ namespace ichol::precond::detail
         const ichol::matrix::CsrMatrix<double> &A,
         const GridShape &global,
         const SubdomainRegion &reg,
-        const SubdomainPreconditionerOptions & /*options*/)
+        const SubdomainPreconditionerOptions &options)
     {
         ensure_petsc_initialized();
 
@@ -193,18 +193,22 @@ namespace ichol::precond::detail
                     for (int x = reg.x0; x < reg.x1; ++x)
                         ctx->h_gidx.push_back(x + y * global.w + z * global.w * global.h);
 
-            // ── 2. Build global→local map and extract the subdomain block ─────
+            // ── 2. Build global→local map and extract the full symmetric subdomain block ──
+            // The global A is stored lower-triangular only.  PETSc SPAI needs the full
+            // SPD matrix M_i ≈ A_i^{-1} for correct approximate-inverse construction.
+            // Symmetrize explicitly: for every stored lower-tri entry (i,j) with j < i,
+            // add the transposed entry (j,i) so that PETSc sees the full operator.
             std::unordered_map<int, int> g2l;
             g2l.reserve(ctx->n_sub);
             for (int li = 0; li < ctx->n_sub; ++li)
                 g2l[ctx->h_gidx[li]] = li;
 
-            // CSR of A_sub (n_sub × n_sub, local coordinates)
-            std::vector<int>    sub_row_ptr(ctx->n_sub + 1, 0);
-            std::vector<int>    sub_col_ind;
-            std::vector<double> sub_val;
-            sub_col_ind.reserve(ctx->n_sub * 7);
-            sub_val.reserve(ctx->n_sub * 7);
+            // lower-triangular extraction (source: global A is lower-tri only)
+            std::vector<int>    lower_row_ptr(ctx->n_sub + 1, 0);
+            std::vector<int>    lower_col_ind;
+            std::vector<double> lower_val;
+            lower_col_ind.reserve(ctx->n_sub * 7);
+            lower_val.reserve(ctx->n_sub * 7);
 
             for (int li = 0; li < ctx->n_sub; ++li)
             {
@@ -214,27 +218,61 @@ namespace ichol::precond::detail
                     auto it = g2l.find(A.col_ind[k]);
                     if (it != g2l.end())
                     {
-                        sub_col_ind.push_back(it->second);
-                        sub_val.push_back(A.values[k]);
+                        lower_col_ind.push_back(it->second);
+                        lower_val.push_back(A.values[k]);
                     }
                 }
-                sub_row_ptr[li + 1] = static_cast<int>(sub_col_ind.size());
+                lower_row_ptr[li + 1] = static_cast<int>(lower_col_ind.size());
             }
 
-            // ── 3. PETSc: build A_sub, run SPAI, extract M via PCApply ───────
-            //  PETSc is not thread-safe; serialise via petsc_mutex.
+            // Reconstruct full symmetric matrix: reflect each off-diagonal lower entry.
+            std::vector<std::vector<std::pair<int, double>>> rows(ctx->n_sub);
+            for (int li = 0; li < ctx->n_sub; ++li)
+            {
+                for (int k = lower_row_ptr[li]; k < lower_row_ptr[li + 1]; ++k)
+                {
+                    const int    lj = lower_col_ind[k];
+                    const double v  = lower_val[k];
+                    rows[li].push_back({lj, v});
+                    if (lj != li)
+                        rows[lj].push_back({li, v}); // symmetric entry
+                }
+            }
+
+            std::vector<int>    full_row_ptr(ctx->n_sub + 1, 0);
+            std::vector<int>    full_col_ind;
+            std::vector<double> full_val;
+            full_col_ind.reserve(lower_col_ind.size() * 2);
+            full_val.reserve(lower_val.size() * 2);
+
+            for (int li = 0; li < ctx->n_sub; ++li)
+            {
+                auto &row = rows[li];
+                std::sort(row.begin(), row.end(),
+                          [](const auto &a, const auto &b) { return a.first < b.first; });
+                for (const auto &[lj, v] : row)
+                {
+                    full_col_ind.push_back(lj);
+                    full_val.push_back(v);
+                }
+                full_row_ptr[li + 1] = static_cast<int>(full_col_ind.size());
+            }
+
+            // ── 3. PETSc: build full A_sub, run SPAI, extract M directly ─────
+            // PETSc is not thread-safe; serialise via petsc_mutex.
+            // M is extracted via MatGetRow on PCSPAI's internally stored MATSEQAIJ.
             std::vector<int>    m_row_ptr_h;
             std::vector<int>    m_col_ind_h;
             std::vector<double> m_val_h;
             {
                 std::lock_guard<std::mutex> lock(petsc_mutex);
 
-                // Build PETSc SEQAIJ matrix for A_sub
+                // Build PETSc SEQAIJ matrix for the full symmetric A_sub.
                 Mat A_petsc;
                 {
                     std::vector<PetscInt> nnz_per_row(ctx->n_sub);
                     for (int li = 0; li < ctx->n_sub; ++li)
-                        nnz_per_row[li] = sub_row_ptr[li + 1] - sub_row_ptr[li];
+                        nnz_per_row[li] = full_row_ptr[li + 1] - full_row_ptr[li];
 
                     petsc_check(MatCreateSeqAIJ(PETSC_COMM_SELF, ctx->n_sub, ctx->n_sub,
                                                0, nnz_per_row.data(), &A_petsc),
@@ -242,70 +280,76 @@ namespace ichol::precond::detail
 
                     for (int li = 0; li < ctx->n_sub; ++li)
                     {
-                        for (int k = sub_row_ptr[li]; k < sub_row_ptr[li + 1]; ++k)
+                        for (int k = full_row_ptr[li]; k < full_row_ptr[li + 1]; ++k)
                         {
-                            const PetscInt    col = sub_col_ind[k];
-                            const PetscScalar val = sub_val[k];
+                            const PetscInt    col = full_col_ind[k];
+                            const PetscScalar val = full_val[k];
                             petsc_check(MatSetValue(A_petsc, li, col, val, INSERT_VALUES),
                                         "MatSetValue");
                         }
                     }
                     petsc_check(MatAssemblyBegin(A_petsc, MAT_FINAL_ASSEMBLY), "MatAssemblyBegin");
                     petsc_check(MatAssemblyEnd(A_petsc, MAT_FINAL_ASSEMBLY), "MatAssemblyEnd");
+                    // Inform PETSc of the symmetric sparsity pattern.
+                    petsc_check(MatSetOption(A_petsc, MAT_SYMMETRIC, PETSC_TRUE),
+                                "MatSetOption(SYMMETRIC)");
                 }
 
-                // Set up SPAI preconditioner
+                // Set up SPAI preconditioner with tuning parameters from options.
                 PC pc;
                 petsc_check(PCCreate(PETSC_COMM_SELF, &pc), "PCCreate");
                 petsc_check(PCSetType(pc, PCSPAI), "PCSetType(PCSPAI)");
                 petsc_check(PCSetOperators(pc, A_petsc, A_petsc), "PCSetOperators");
+                petsc_check(PCSPAISetEpsilon(pc, static_cast<PetscReal>(options.spai_epsilon)),
+                            "PCSPAISetEpsilon");
+                petsc_check(PCSPAISetNBSteps(pc, static_cast<PetscInt>(options.spai_nbsteps)),
+                            "PCSPAISetNBSteps");
+                petsc_check(PCSPAISetMaxNew(pc, static_cast<PetscInt>(options.spai_maxnew)),
+                            "PCSPAISetMaxNew");
+                if (options.spai_symmetric)
+                    petsc_check(PCSPAISetSp(pc, 1), "PCSPAISetSp");
                 petsc_check(PCSetUp(pc), "PCSetUp");
 
-                // Extract M column-by-column: PCApply(e_j) gives the j-th column of M.
-                // PETSc's PCSPAI.PCApply does MatMult(M_spai, x, y), so this is
-                // a sparse matrix-vector product against the already-computed SPAI matrix.
-                Vec e_j, m_j;
-                petsc_check(VecCreateSeq(PETSC_COMM_SELF, ctx->n_sub, &e_j), "VecCreateSeq e_j");
-                petsc_check(VecDuplicate(e_j, &m_j), "VecDuplicate m_j");
-
-                struct COOEntry
-                {
-                    int    row, col;
-                    double val;
-                };
+                // Extract M column-by-column: PCApply(e_j) = M * e_j = column j of M.
+                // PCSPAI stores M explicitly as a MATSEQAIJ and PCApply does MatMult;
+                // each call is therefore O(nnz of column j), not a full solve.
+                // PETSc has no public API to retrieve the stored M matrix directly
+                // (PC_SPAI::PM is an implementation detail), so we use PCApply here.
+                const double thresh = 1e-14;
+                struct COOEntry { int row, col; double val; };
                 std::vector<COOEntry> coo;
                 coo.reserve(static_cast<std::size_t>(ctx->n_sub) * 7);
 
-                const double thresh = 1e-14;
+                Vec e_j, m_j;
+                petsc_check(VecCreateSeq(PETSC_COMM_SELF, ctx->n_sub, &e_j), "VecCreateSeq e_j");
+                petsc_check(VecDuplicate(e_j, &m_j), "VecDuplicate m_j");
 
                 for (int j = 0; j < ctx->n_sub; ++j)
                 {
                     petsc_check(VecZeroEntries(e_j), "VecZeroEntries");
                     petsc_check(VecSetValue(e_j, j, 1.0, INSERT_VALUES), "VecSetValue");
                     petsc_check(VecAssemblyBegin(e_j), "VecAssemblyBegin e_j");
-                    petsc_check(VecAssemblyEnd(e_j), "VecAssemblyEnd e_j");
+                    petsc_check(VecAssemblyEnd(e_j),   "VecAssemblyEnd e_j");
                     petsc_check(PCApply(pc, e_j, m_j), "PCApply");
 
                     const PetscScalar *arr;
                     petsc_check(VecGetArrayRead(m_j, &arr), "VecGetArrayRead");
                     for (int i = 0; i < ctx->n_sub; ++i)
                     {
-                        if (std::abs(static_cast<double>(arr[i])) > thresh)
-                            coo.push_back({i, j, static_cast<double>(arr[i])});
+                        const double v = static_cast<double>(arr[i]);
+                        if (std::abs(v) > thresh)
+                            coo.push_back({i, j, v});
                     }
                     petsc_check(VecRestoreArrayRead(m_j, &arr), "VecRestoreArrayRead");
                 }
 
-                petsc_check(VecDestroy(&e_j), "VecDestroy e_j");
-                petsc_check(VecDestroy(&m_j), "VecDestroy m_j");
-                petsc_check(PCDestroy(&pc), "PCDestroy");
-                petsc_check(MatDestroy(&A_petsc), "MatDestroy");
-
-                // Sort COO by (row, col) and convert to CSR
-                std::sort(coo.begin(), coo.end(), [](const COOEntry &a, const COOEntry &b) {
-                    return a.row < b.row || (a.row == b.row && a.col < b.col);
-                });
-
+                // ── COO → CSR via scatter ──────────────────────────────────────────
+                // The PCApply loop above produces COO in column-major order
+                // (j = 0..n_sub-1).  Within each row the column indices are already
+                // ascending (j increases monotonically), so no explicit sort is needed
+                // after the scatter step.  A direct copy would reproduce column-major
+                // order in the value/col_ind arrays while row_ptr reflects row-major
+                // layout — the two would be inconsistent.  Scatter fixes this.
                 m_row_ptr_h.assign(ctx->n_sub + 1, 0);
                 for (const auto &e : coo)
                     m_row_ptr_h[e.row + 1]++;
@@ -314,11 +358,53 @@ namespace ichol::precond::detail
 
                 m_col_ind_h.resize(coo.size());
                 m_val_h.resize(coo.size());
-                for (std::size_t k = 0; k < coo.size(); ++k)
                 {
-                    m_col_ind_h[k] = coo[k].col;
-                    m_val_h[k]     = coo[k].val;
+                    std::vector<int> cursor(m_row_ptr_h.begin(),
+                                            m_row_ptr_h.begin() + ctx->n_sub);
+                    for (const auto &e : coo)
+                    {
+                        const int pos = cursor[e.row]++;
+                        m_col_ind_h[pos] = e.col;
+                        m_val_h[pos]     = e.val;
+                    }
                 }
+
+                // ── Validate: CPU CSR×ones must match PCApply(ones) ───────────────
+                // PETSc resources are still alive here so we can call PCApply again.
+                {
+                    std::vector<double> csr_ones(ctx->n_sub, 0.0);
+                    for (int i = 0; i < ctx->n_sub; ++i)
+                        for (int p = m_row_ptr_h[i]; p < m_row_ptr_h[i + 1]; ++p)
+                            csr_ones[static_cast<std::size_t>(i)] +=
+                                m_val_h[static_cast<std::size_t>(p)];
+
+                    petsc_check(VecSet(e_j, 1.0), "VecSet ones");
+                    petsc_check(PCApply(pc, e_j, m_j), "PCApply ones");
+                    const PetscScalar *arr_ones;
+                    petsc_check(VecGetArrayRead(m_j, &arr_ones), "VecGetArrayRead ones");
+                    double max_abs_diff = 0.0;
+                    double max_abs_ref  = 0.0;
+                    for (int i = 0; i < ctx->n_sub; ++i)
+                    {
+                        const double ref = static_cast<double>(arr_ones[i]);
+                        max_abs_diff = std::max(max_abs_diff,
+                            std::abs(csr_ones[static_cast<std::size_t>(i)] - ref));
+                        max_abs_ref  = std::max(max_abs_ref, std::abs(ref));
+                    }
+                    petsc_check(VecRestoreArrayRead(m_j, &arr_ones), "VecRestoreArrayRead ones");
+                    const double rel_diff =
+                        max_abs_diff / (max_abs_ref > 0.0 ? max_abs_ref : 1.0);
+                    if (rel_diff > 1e-10)
+                        throw std::runtime_error(
+                            "create_subdomain_spai_context: extracted CSR does not match "
+                            "PCApply (all-ones check): max_rel_dev=" +
+                            std::to_string(rel_diff));
+                }
+
+                petsc_check(VecDestroy(&e_j), "VecDestroy e_j");
+                petsc_check(VecDestroy(&m_j), "VecDestroy m_j");
+                petsc_check(PCDestroy(&pc), "PCDestroy");
+                petsc_check(MatDestroy(&A_petsc), "MatDestroy");
             } // release petsc_mutex
 
             ctx->nnz = static_cast<int>(m_col_ind_h.size());

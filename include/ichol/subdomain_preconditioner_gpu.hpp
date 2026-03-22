@@ -47,10 +47,18 @@ namespace ichol::precond
     struct SubdomainPreconditionerOptions
     {
         SubdomainPreconditionerKind kind = SubdomainPreconditionerKind::SPAI;
-        int spai_radius = 1;
+        int spai_radius = 1; // legacy stencil radius; unused by current PETSc SPAI backend
         int ic_level_k = 0;
         ichol::solver::ComputePrecision precision = ichol::solver::ComputePrecision::FP64;
         int debug_subdomain_index = -1;
+
+        // ── PETSc SPAI tuning ─────────────────────────────────────────────────
+        // Defaults match PETSc PCSPAI built-in defaults; changing them is safe.
+        double spai_epsilon   = 0.4; // approximation accuracy target
+        int    spai_nbsteps   = 5;   // minimisation steps per column
+        int    spai_max_cols  = 5;   // max column growth per step (maps to PCSpAISetMaxNew)
+        int    spai_maxnew    = 5;   // max new columns per step
+        bool   spai_symmetric = false; // if true, exploit SPD symmetry (PCSpAISetSp=1)
     };
 
     std::vector<SubdomainRegion> partition_subdomains(
