@@ -26,13 +26,13 @@
             throw std::runtime_error(std::string("CUDA: ") + cudaGetErrorString(_e)); \
     } while (0)
 
-#define CUBLAS_CHECK(call)                            \
-    do                                                \
-    {                                                 \
-        cublasStatus_t _s = (call);                   \
-        if (_s != CUBLAS_STATUS_SUCCESS)              \
+#define CUBLAS_CHECK(call)                                                                             \
+    do                                                                                                 \
+    {                                                                                                  \
+        cublasStatus_t _s = (call);                                                                    \
+        if (_s != CUBLAS_STATUS_SUCCESS)                                                               \
             throw std::runtime_error(std::string("cuBLAS Error at line ") + std::to_string(__LINE__) + \
-                                     " status=" + std::to_string(static_cast<int>(_s))); \
+                                     " status=" + std::to_string(static_cast<int>(_s)));               \
     } while (0)
 
 #define CUSPARSE_CHECK(call)                            \
@@ -1062,7 +1062,6 @@ static void pinv_svd_cuda(
     // Fast path for tiny systems: direct LU solve in one kernel launch.
     if (k <= 32)
     {
-        // k_small_lu_solve<<<1, 1, 0, stream>>>(d_G, d_B, d_X, k, nrhs, rcond);
         k_small_pinv_jacobi_svd<<<1, 1, 0, stream>>>(d_G, d_B, d_X, k, nrhs, rcond);
         return;
     }
@@ -1624,9 +1623,9 @@ namespace ichol::solver
                         k, k, n,
                         dev_scalars.one64(),
                         d_W_hist64, n, (long long)nk,
-                        d_Pnew,     n, 0LL,
+                        d_Pnew, n, 0LL,
                         dev_scalars.zero64(),
-                        d_hist_C,   k, (long long)(k * k),
+                        d_hist_C, k, (long long)(k * k),
                         hist_count));
 
                     // Batch 2: Y[slot] = Ginv[slot] * C[slot]
@@ -1635,22 +1634,22 @@ namespace ichol::solver
                         k, k, k,
                         dev_scalars.one64(),
                         d_Ginv_hist, k, (long long)(k * k),
-                        d_hist_C,    k, (long long)(k * k),
+                        d_hist_C, k, (long long)(k * k),
                         dev_scalars.zero64(),
-                        d_hist_Y,    k, (long long)(k * k),
+                        d_hist_Y, k, (long long)(k * k),
                         hist_count));
 
                     // Subtraction loop: Pnew -= P[slot] * Y[slot]  (n×k, kept as loop)
                     for (int slot = 0; slot < hist_count; ++slot)
                     {
                         double *d_Pj = d_P_hist64 + (size_t)slot * nk;
-                        double *d_Yj = d_hist_Y   + (size_t)slot * (size_t)k * (size_t)k;
+                        double *d_Yj = d_hist_Y + (size_t)slot * (size_t)k * (size_t)k;
                         CUBLAS_CHECK(cublasDgemm(
                             cublas, CUBLAS_OP_N, CUBLAS_OP_N,
                             n, k, k,
                             dev_scalars.m_one64(),
-                            d_Pj,   n,
-                            d_Yj,   k,
+                            d_Pj, n,
+                            d_Yj, k,
                             dev_scalars.one64(),
                             d_Pnew, n));
                     }
