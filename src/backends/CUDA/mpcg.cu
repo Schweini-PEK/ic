@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <cmath>
+#include <chrono>
+#include <cstdio>
 
 #include "ichol/pcg.hpp"
 #include "ichol/preconditioner.hpp"
@@ -104,6 +106,13 @@ struct SpmmMap
     cudaDataType_t data_type;
     cudaDataType_t compute_type;
     size_t el_size;
+};
+
+struct ProfilePhase
+{
+    cudaEvent_t start = nullptr;
+    cudaEvent_t stop = nullptr;
+    double total_ms = 0.0;
 };
 
 static ichol::solver::ComputePrecision normalize_precision(ichol::solver::ComputePrecision prec)
@@ -1177,10 +1186,20 @@ namespace ichol::solver
         std::vector<double> &h_x,
         const PCGParams &params)
     {
+        using Clock = std::chrono::steady_clock;
         const int n = static_cast<int>(h_b.size());                           // matrix size
         const int k = static_cast<int>(preconds.size());                      // # of precond
         const int m = (params.restart <= 0) ? params.maxits : params.restart; // history size (0 or negative means no restarts, i.e. full history up to maxits)
         const int64_t nnzA = (int64_t)h_valA.size();
+        const bool collect_timing = true;
+        const bool profile_enabled = params.verbose;
+        const auto total_wall_start = Clock::now();
+
+        ProfilePhase phase_precond{};
+        ProfilePhase phase_ortho{};
+        ProfilePhase phase_spmm{};
+        ProfilePhase phase_dense{};
+        ProfilePhase phase_reset{};
 
         // Create library handles and bind them to one non-blocking stream so
         // all operations are ordered on the same stream.
@@ -1197,6 +1216,39 @@ namespace ichol::solver
         CUSPARSE_CHECK(cusparseSetStream(cusparse, stream));
         CUSOLVER_CHECK(cusolverDnSetStream(cusolver, stream));
 
+        auto init_phase = [&](ProfilePhase &phase)
+        {
+            if (!collect_timing)
+                return;
+            CUDA_CHECK(cudaEventCreate(&phase.start));
+            CUDA_CHECK(cudaEventCreate(&phase.stop));
+        };
+        auto destroy_phase = [&](ProfilePhase &phase)
+        {
+            if (!phase.start)
+                return;
+            CUDA_CHECK(cudaEventDestroy(phase.start));
+            CUDA_CHECK(cudaEventDestroy(phase.stop));
+        };
+        auto phase_begin = [&](ProfilePhase &phase)
+        {
+            if (collect_timing)
+                CUDA_CHECK(cudaEventRecord(phase.start, stream));
+        };
+        auto phase_end = [&](ProfilePhase &phase)
+        {
+            if (collect_timing)
+                CUDA_CHECK(cudaEventRecord(phase.stop, stream));
+        };
+        auto phase_accumulate = [&](ProfilePhase &phase)
+        {
+            if (!collect_timing || !phase.start)
+                return;
+            float elapsed_ms = 0.0f;
+            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, phase.start, phase.stop));
+            phase.total_ms += static_cast<double>(elapsed_ms);
+        };
+
         // One stream/event per preconditioner so their apply() calls can run concurrently.
         std::vector<cudaStream_t> precond_streams(k);
         std::vector<cudaEvent_t> precond_events(k);
@@ -1207,6 +1259,12 @@ namespace ichol::solver
             CUDA_CHECK(cudaStreamCreateWithFlags(&precond_streams[t], cudaStreamNonBlocking));
             CUDA_CHECK(cudaEventCreateWithFlags(&precond_events[t], cudaEventDisableTiming));
         }
+
+        init_phase(phase_precond);
+        init_phase(phase_ortho);
+        init_phase(phase_spmm);
+        init_phase(phase_dense);
+        init_phase(phase_reset);
 
         CublasScalars scalars;
         DeviceCublasScalars dev_scalars;
@@ -1376,6 +1434,14 @@ namespace ichol::solver
 
         double *d_P_hist64 = nullptr, *d_W_hist64 = nullptr;
         void *d_P_histLP = nullptr, *d_W_histLP = nullptr;
+        const size_t P_hist_bytes =
+            (P_hist_map.storage_prec == ComputePrecision::FP64)
+                ? ((size_t)m * nk * sizeof(double))
+                : ((size_t)m * nk * P_hist_map.el_size);
+        const size_t W_hist_bytes =
+            (W_hist_map.storage_prec == ComputePrecision::FP64)
+                ? ((size_t)m * nk * sizeof(double))
+                : ((size_t)m * nk * W_hist_map.el_size);
 
         // Circular history buffers (size m) store previous P/W/G blocks.
         // Can be fp64 or compressed precision depending on params.
@@ -1394,6 +1460,16 @@ namespace ichol::solver
             CUDA_CHECK(cudaMalloc(&d_Pj_tmp, nk * sizeof(double)));
         if (d_W_histLP)
             CUDA_CHECK(cudaMalloc(&d_Wj_tmp, nk * sizeof(double)));
+
+        if (params.verbose)
+        {
+            std::fprintf(stderr,
+                         "[MPCG history] m=%d nk=%zu P_hist=%.3f MiB W_hist=%.3f MiB total=%.3f MiB\n",
+                         m, nk,
+                         (double)P_hist_bytes / (1024.0 * 1024.0),
+                         (double)W_hist_bytes / (1024.0 * 1024.0),
+                         (double)(P_hist_bytes + W_hist_bytes) / (1024.0 * 1024.0));
+        }
 
         // Create cuSPARSE descriptors:
         // matA: sparse CSR matrix A
@@ -1477,6 +1553,8 @@ namespace ichol::solver
         CUDA_CHECK(cudaMalloc(&d_spmmBuf, spmm_bufSize));
 
         PCGResult result{};
+        result.relResiduals.reserve((size_t)params.maxits + 1);
+        result.relResiduals.push_back(current_res_norm / bnorm);
         bool converged = false;
         const int threads = 256;
         const int blocks_nk = (int)((nk + (size_t)threads - 1) / (size_t)threads);
@@ -1540,6 +1618,8 @@ namespace ichol::solver
                 dst_fp64, (int)nk, threads, stream);
         };
 
+        const auto iter_wall_start = Clock::now();
+
         // Unified k×k solver: Cholesky path (default) or SVD (params.use_svd == true).
         // Wraps both pinv_svd_cuda and chol_solve_cuda so call-sites stay uniform.
         auto solve_kk = [&](const double *d_G_in, int nrhs_in,
@@ -1567,6 +1647,7 @@ namespace ichol::solver
 
             // Apply each preconditioner to the same residual r.
             // Output columns form Znew(:, t).
+            phase_begin(phase_precond);
             build_znew_columns_device(
                 preconds,
                 d_r,
@@ -1590,6 +1671,7 @@ namespace ichol::solver
 
             // Start from Znew, then orthogonalize against history below.
             CUDA_CHECK(cudaMemcpyAsync(d_Pnew, d_Znew, nk * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+            phase_end(phase_precond);
 
             const int hist_count = std::min(iter, m);
             hist_slots.clear();
@@ -1742,6 +1824,7 @@ namespace ichol::solver
                         d_Pnew, n));
                 }
             };
+            phase_begin(phase_ortho);
             project_against_history();
 
             if (enable_anorm_reprojection && hist_count > 0)
@@ -1766,10 +1849,14 @@ namespace ichol::solver
             column_norms_kernel<<<k, threads, threads * sizeof(double), stream>>>(d_Pnew, n, n, k, d_col_norms);
             k_scale_columns_from_norms<<<blocks_nk, threads, 0, stream>>>(d_Pnew, n, k, d_col_norms, 1e-30);
             sync_block_to_storage(d_Pnew, d_Pnew_store, Pnew_store_map, (int)nk, threads, stream);
+            phase_end(phase_ortho);
 
             // Wnew = A * Pnew (sparse-dense matrix multiply).
+            phase_begin(phase_spmm);
             run_spmm(d_Pnew, d_Pnew_store, Pnew_store_map, d_Wnew, d_Wnew_store, Wnew_store_map);
+            phase_end(phase_spmm);
 
+            phase_begin(phase_dense);
             if (g_map.output_type == CUDA_R_64F)
             {
                 // Gnew = Pnew^T * Wnew (k x k Gram-like matrix).
@@ -1849,6 +1936,7 @@ namespace ichol::solver
             // Periodically reset recursive residual drift: r = b - A*x.
             if ((iter + 1) % reset_iter == 0)
             {
+                phase_begin(phase_reset);
                 CUSPARSE_CHECK(cusparseSpMV(
                     cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
                     &scalars.s64_one, matA, vecX,
@@ -1856,6 +1944,7 @@ namespace ichol::solver
                     CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, d_spmvBuf));
                 CUDA_CHECK(cudaMemcpyAsync(d_r, d_b, (size_t)n * sizeof(double), cudaMemcpyDeviceToDevice, stream));
                 CUBLAS_CHECK(cublasDaxpy(cublas, n, dev_scalars.m_one64(), d_tmp, 1, d_r, 1));
+                phase_end(phase_reset);
             }
 
             // Save current blocks/matrix in ring-buffer slot for future orthogonalization.
@@ -1892,18 +1981,62 @@ namespace ichol::solver
 
             CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, d_scalar_tmp + 1));
             CUDA_CHECK(cudaMemcpyAsync(&current_res_norm, d_scalar_tmp + 1, sizeof(double), cudaMemcpyDeviceToHost, stream));
+            phase_end(phase_dense);
             CUDA_CHECK(cudaStreamSynchronize(stream));
 
+            phase_accumulate(phase_precond);
+            phase_accumulate(phase_ortho);
+            phase_accumulate(phase_spmm);
+            phase_accumulate(phase_dense);
+            if ((iter + 1) % reset_iter == 0)
+                phase_accumulate(phase_reset);
+
             result.iterations = iter + 1;
+            result.relResiduals.push_back(current_res_norm / bnorm);
         }
+
+        const auto iter_wall_end = Clock::now();
 
         // If we stopped due to max iterations (or maxits==0), return the latest residual.
         if (!converged)
             result.finalRes = current_res_norm;
 
         // Copy final solution back to host and wait for all queued GPU work.
+        const auto finalize_wall_start = Clock::now();
         CUDA_CHECK(cudaMemcpyAsync(h_x.data(), d_x, (size_t)n * sizeof(double), cudaMemcpyDeviceToHost, stream));
         CUDA_CHECK(cudaStreamSynchronize(stream));
+        const auto finalize_wall_end = Clock::now();
+
+        const double total_wall_ms = std::chrono::duration<double, std::milli>(finalize_wall_end - total_wall_start).count();
+        const double setup_wall_ms = std::chrono::duration<double, std::milli>(iter_wall_start - total_wall_start).count();
+        const double iter_wall_ms = std::chrono::duration<double, std::milli>(iter_wall_end - iter_wall_start).count();
+        const double finalize_wall_ms = std::chrono::duration<double, std::milli>(finalize_wall_end - finalize_wall_start).count();
+        const double dense_exclusive_ms = std::max(0.0, phase_dense.total_ms - phase_reset.total_ms);
+        const double accounted_iter_ms =
+            phase_precond.total_ms + phase_ortho.total_ms + phase_spmm.total_ms + dense_exclusive_ms + phase_reset.total_ms;
+        const double other_iter_ms = std::max(0.0, iter_wall_ms - accounted_iter_ms);
+
+        result.timing.total_ms = total_wall_ms;
+        result.timing.setup_ms = setup_wall_ms;
+        result.timing.iter_ms = iter_wall_ms;
+        result.timing.finalize_ms = finalize_wall_ms;
+        result.timing.preconditioner_apply_ms = phase_precond.total_ms;
+        result.timing.orthogonalization_ms = phase_ortho.total_ms;
+        result.timing.spmm_ms = phase_spmm.total_ms;
+        result.timing.dense_ms = dense_exclusive_ms;
+        result.timing.residual_reset_ms = phase_reset.total_ms;
+        result.timing.other_iter_ms = other_iter_ms;
+
+        if (profile_enabled)
+        {
+            std::fprintf(stderr,
+                         "[MPCG profile] n=%d k=%d iters=%d total=%.3fms setup=%.3fms iter=%.3fms finalize=%.3fms\n",
+                         n, k, result.iterations, total_wall_ms, setup_wall_ms, iter_wall_ms, finalize_wall_ms);
+            std::fprintf(stderr,
+                         "[MPCG profile] precond=%.3fms ortho=%.3fms spmm=%.3fms dense=%.3fms reset=%.3fms other_iter=%.3fms\n",
+                         phase_precond.total_ms, phase_ortho.total_ms, phase_spmm.total_ms,
+                         dense_exclusive_ms, phase_reset.total_ms, other_iter_ms);
+        }
 
         // Cleanup descriptors, buffers, and handles.
         CUSPARSE_CHECK(cusparseDestroyDnMat(dnB));
@@ -2007,6 +2140,11 @@ namespace ichol::solver
             CUDA_CHECK(cudaStreamDestroy(precond_streams[t]));
         }
         CUDA_CHECK(cudaEventDestroy(main_stream_ready));
+        destroy_phase(phase_precond);
+        destroy_phase(phase_ortho);
+        destroy_phase(phase_spmm);
+        destroy_phase(phase_dense);
+        destroy_phase(phase_reset);
 
         CUDA_CHECK(cudaStreamDestroy(stream));
         CUSPARSE_CHECK(cusparseDestroy(cusparse));

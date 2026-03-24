@@ -41,7 +41,8 @@ namespace ichol::precond
     {
         SPAI,
         ExactCholesky,
-        IncompleteCholesky
+        IncompleteCholesky,
+        FSAI
     };
 
     struct SubdomainPreconditionerOptions
@@ -49,6 +50,7 @@ namespace ichol::precond
         SubdomainPreconditionerKind kind = SubdomainPreconditionerKind::SPAI;
         int spai_radius = 1; // legacy stencil radius; unused by current PETSc SPAI backend
         int ic_level_k = 0;
+        int fsai_level_k = 0;
         ichol::solver::ComputePrecision precision = ichol::solver::ComputePrecision::FP64;
         int debug_subdomain_index = -1;
 

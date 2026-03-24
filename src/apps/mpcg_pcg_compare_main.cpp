@@ -50,6 +50,7 @@ struct AppOptions
     ichol::precond::SubdomainPreconditionerKind precond_kind =
         ichol::precond::SubdomainPreconditionerKind::ExactCholesky;
     int ic_level_k = 0;
+    int fsai_level_k = 0;
     int spai_radius = 1;
 
     ichol::solver::PCGParams params;
@@ -195,6 +196,8 @@ ichol::precond::SubdomainPreconditionerKind parse_precond_kind(const std::string
         return ichol::precond::SubdomainPreconditionerKind::ExactCholesky;
     if (v == "ic" || v == "ichol" || v == "incompletecholesky")
         return ichol::precond::SubdomainPreconditionerKind::IncompleteCholesky;
+    if (v == "fsai")
+        return ichol::precond::SubdomainPreconditionerKind::FSAI;
     if (v == "spai")
         return ichol::precond::SubdomainPreconditionerKind::SPAI;
     throw std::runtime_error("Unknown preconditioner kind: " + raw);
@@ -208,6 +211,8 @@ std::string precond_kind_to_string(ichol::precond::SubdomainPreconditionerKind k
         return "exact";
     case ichol::precond::SubdomainPreconditionerKind::IncompleteCholesky:
         return "ic";
+    case ichol::precond::SubdomainPreconditionerKind::FSAI:
+        return "fsai";
     case ichol::precond::SubdomainPreconditionerKind::SPAI:
         return "spai";
     }
@@ -282,7 +287,7 @@ void apply_unit_col_prescaling_system(ichol::matrix::CsrMatrix<double> &A,
 
 void set_default_params(AppOptions &opts)
 {
-    opts.params.maxits = 40;
+    opts.params.maxits = 60;
     opts.params.tol = 1e-10;
     opts.params.restart = 0;
     opts.params.prec_gemm = ichol::solver::ComputePrecision::FP64;
@@ -303,8 +308,9 @@ void print_usage(const char *argv0)
         << "Usage: " << argv0 << " [options]\n"
         << "  --n INT                       3D Poisson grid size per dimension\n"
         << "  --subdomain WxHxD             subdomain size, e.g. 16x16x16\n"
-        << "  --precond-kind exact|ic|spai  subdomain preconditioner family\n"
+        << "  --precond-kind exact|ic|fsai|spai  subdomain preconditioner family\n"
         << "  --ic-level-k INT              level-k for incomplete Cholesky subdomains\n"
+        << "  --fsai-level-k INT            level-k symbolic IC pattern used by FSAI subdomains\n"
         << "  --spai-radius INT             radius hint for SPAI subdomains\n"
         << "  --seed INT                    RHS RNG seed\n"
         << "  --tol FLOAT                   solver tolerance\n"
@@ -361,6 +367,10 @@ AppOptions parse_args(int argc, char **argv)
         else if (arg == "--ic-level-k")
         {
             opts.ic_level_k = parse_int(require_value(i, "--ic-level-k"), "--ic-level-k");
+        }
+        else if (arg == "--fsai-level-k")
+        {
+            opts.fsai_level_k = parse_int(require_value(i, "--fsai-level-k"), "--fsai-level-k");
         }
         else if (arg == "--spai-radius")
         {
@@ -454,6 +464,8 @@ AppOptions parse_args(int argc, char **argv)
         throw std::runtime_error("--tol must be positive");
     if (opts.ic_level_k < 0)
         throw std::runtime_error("--ic-level-k must be non-negative");
+    if (opts.fsai_level_k < 0)
+        throw std::runtime_error("--fsai-level-k must be non-negative");
     if (opts.spai_radius < 0)
         throw std::runtime_error("--spai-radius must be non-negative");
 
@@ -577,6 +589,7 @@ SubdomainBundle build_subdomain_bundle(const ichol::matrix::CsrMatrix<double> &A
     ichol::precond::SubdomainPreconditionerOptions precond_opts;
     precond_opts.kind = opts.precond_kind;
     precond_opts.ic_level_k = opts.ic_level_k;
+    precond_opts.fsai_level_k = opts.fsai_level_k;
     precond_opts.spai_radius = opts.spai_radius;
     precond_opts.precision = opts.params.prec_precond;
 
@@ -719,6 +732,7 @@ void print_config(const AppOptions &opts,
         << " subdomain=(" << opts.subdomain.x << "," << opts.subdomain.y << "," << opts.subdomain.z << ")"
         << " subdomains=" << bundle.regions.size()
         << " precond_kind=" << precond_kind_to_string(opts.precond_kind)
+        << " fsai_level_k=" << opts.fsai_level_k
         << " mpcg_restart=" << opts.params.restart
         << " mpcg_maxits=" << opts.params.maxits
         << " pcg_maxits=" << opts.pcg_maxits
@@ -746,7 +760,18 @@ void print_run(const char *label,
               << " finalRes=" << run.result.finalRes
               << " end_to_end=" << (run.precond_secs + run.solve_secs) << "s"
               << " solve_time=" << run.solve_secs << "s"
-              << " precond_gen_time=" << run.precond_secs << "s\n";
+              << " precond_gen_time=" << run.precond_secs << "s"
+              << " solver_total_ms=" << run.result.timing.total_ms
+              << " solver_setup_ms=" << run.result.timing.setup_ms
+              << " solver_iter_ms=" << run.result.timing.iter_ms
+              << " solver_finalize_ms=" << run.result.timing.finalize_ms
+              << " precond_apply_ms=" << run.result.timing.preconditioner_apply_ms
+              << " ortho_ms=" << run.result.timing.orthogonalization_ms
+              << " spmm_ms=" << run.result.timing.spmm_ms
+              << " dense_ms=" << run.result.timing.dense_ms
+              << " reset_ms=" << run.result.timing.residual_reset_ms
+              << " other_iter_ms=" << run.result.timing.other_iter_ms
+              << "\n";
 }
 } // namespace
 

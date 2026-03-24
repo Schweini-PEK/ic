@@ -30,3 +30,4 @@ test/test_io
 matlab/
 src/factor/symbolic/snode_schedule.hpp
 src/factor/symbolic/supernodal_ll_plan.hpp
+test_artifacts/

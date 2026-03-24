@@ -917,6 +917,49 @@ namespace
         }
         return diag;
     }
+
+    std::vector<double> full_csr_to_dense(const ichol::matrix::CsrMatrix<double> &A)
+    {
+        std::vector<double> dense(static_cast<std::size_t>(A.num_rows) * static_cast<std::size_t>(A.num_cols), 0.0);
+        for (int i = 0; i < A.num_rows; ++i)
+        {
+            for (int p = A.row_ptr[static_cast<std::size_t>(i)];
+                 p < A.row_ptr[static_cast<std::size_t>(i) + 1]; ++p)
+            {
+                const int j = A.col_ind[static_cast<std::size_t>(p)];
+                dense[static_cast<std::size_t>(i) * static_cast<std::size_t>(A.num_cols) + static_cast<std::size_t>(j)] =
+                    A.values[static_cast<std::size_t>(p)];
+            }
+        }
+        return dense;
+    }
+
+    double frobenius_norm_identity_minus_product(const std::vector<double> &M,
+                                                 const std::vector<double> &A,
+                                                 int n)
+    {
+        if (M.size() != static_cast<std::size_t>(n) * static_cast<std::size_t>(n) ||
+            A.size() != static_cast<std::size_t>(n) * static_cast<std::size_t>(n))
+        {
+            throw std::runtime_error("frobenius_norm_identity_minus_product: size mismatch");
+        }
+
+        double accum = 0.0;
+        for (int i = 0; i < n; ++i)
+        {
+            for (int j = 0; j < n; ++j)
+            {
+                double value = (i == j) ? 1.0 : 0.0;
+                for (int k = 0; k < n; ++k)
+                {
+                    value -= M[static_cast<std::size_t>(i) * static_cast<std::size_t>(n) + static_cast<std::size_t>(k)] *
+                             A[static_cast<std::size_t>(k) * static_cast<std::size_t>(n) + static_cast<std::size_t>(j)];
+                }
+                accum += value * value;
+            }
+        }
+        return std::sqrt(accum);
+    }
 } // namespace
 
 TEST(DDPrecond, ExactSubdomainApplyCorrectness)
@@ -1301,6 +1344,110 @@ TEST(DDPrecond, SPAISubdomainApplyQuality)
               << " max_rel_solution_diff=" << max_rel_solution_diff
               << " max_jacobi_rel_exact_residual=" << max_jacobi_rel_exact_residual
               << " max_jacobi_rel_solution_diff=" << max_jacobi_rel_solution_diff << "\n";
+}
+
+TEST(DDPrecond, FSAISubdomainApplyQuality)
+{
+    if (!cuda_device_available())
+        GTEST_SKIP() << "CUDA device unavailable";
+
+    constexpr int kFsaiGridN = 8;
+    constexpr int kFsaiSubExtent = 4;
+
+    ProblemSetup setup;
+    setup.A = ichol::io::gen_3dpoi<double>(kFsaiGridN);
+    setup.global_shape = {kFsaiGridN, kFsaiGridN, kFsaiGridN};
+    setup.subdomain_size = {kFsaiSubExtent, kFsaiSubExtent, kFsaiSubExtent};
+    setup.rhs.assign(static_cast<std::size_t>(setup.A.num_rows), 1.0);
+    apply_unit_col_prescaling_system(setup.A, setup.rhs);
+    setup.regions = ichol::precond::partition_subdomains(setup.global_shape, setup.subdomain_size);
+
+    ASSERT_EQ(setup.A.num_rows, kFsaiGridN * kFsaiGridN * kFsaiGridN);
+    ASSERT_EQ(setup.regions.size(), 8u);
+
+    for (int fsai_level_k = 0; fsai_level_k <= 5; ++fsai_level_k)
+    {
+        std::vector<SubdomainContextPtr> contexts;
+        const auto build_t0 = std::chrono::high_resolution_clock::now();
+        try
+        {
+            ichol::precond::SubdomainPreconditionerOptions options;
+            options.kind = ichol::precond::SubdomainPreconditionerKind::FSAI;
+            options.ic_level_k = 0;
+            options.fsai_level_k = fsai_level_k;
+            options.precision = ichol::solver::ComputePrecision::FP64;
+
+            auto raw_contexts = ichol::precond::create_subdomain_preconditioner_contexts_parallel(
+                setup.A, setup.global_shape, setup.regions, options);
+            contexts.reserve(raw_contexts.size());
+            for (auto *ctx : raw_contexts)
+                contexts.emplace_back(ctx);
+        }
+        catch (const std::exception &e)
+        {
+            FAIL() << "FSAI context creation failed for k=" << fsai_level_k << ": " << e.what();
+        }
+        const auto build_t1 = std::chrono::high_resolution_clock::now();
+        const double build_secs = std::chrono::duration<double>(build_t1 - build_t0).count();
+        ASSERT_EQ(contexts.size(), setup.regions.size());
+
+        double max_operator_fro_norm = 0.0;
+        double sum_operator_fro_norm = 0.0;
+
+        for (std::size_t subdomain = 0; subdomain < setup.regions.size(); ++subdomain)
+        {
+            SCOPED_TRACE("k=" + std::to_string(fsai_level_k) + " subdomain=" + std::to_string(subdomain));
+
+            const auto &reg = setup.regions[subdomain];
+            const auto gidx = build_subdomain_gidx_host(setup.global_shape, reg);
+            const auto A_full = extract_full_subdomain_csr(setup.A, setup.global_shape, reg);
+            const int nsub = A_full.num_rows;
+            const auto A_dense = full_csr_to_dense(A_full);
+            std::vector<double> M_dense(static_cast<std::size_t>(nsub) * static_cast<std::size_t>(nsub), 0.0);
+
+            for (int col = 0; col < nsub; ++col)
+            {
+                std::vector<double> e_local(static_cast<std::size_t>(nsub), 0.0);
+                e_local[static_cast<std::size_t>(col)] = 1.0;
+                const auto e_global = scatter_subvector(setup.A.num_rows, gidx, e_local);
+
+                std::vector<double> m_col_global;
+                try
+                {
+                    m_col_global = apply_subdomain_context(contexts[subdomain].get(), e_global, setup.A.num_rows);
+                }
+                catch (const std::exception &e)
+                {
+                    FAIL() << "FSAI basis apply failed for k=" << fsai_level_k
+                           << ", subdomain " << subdomain << ", column " << col << ": " << e.what();
+                }
+
+                assert_zero_outside_support(m_col_global, gidx);
+                const auto m_col_local = gather_subvector(m_col_global, gidx);
+                for (int row = 0; row < nsub; ++row)
+                {
+                    const double value = m_col_local[static_cast<std::size_t>(row)];
+                    ASSERT_TRUE(std::isfinite(value));
+                    M_dense[static_cast<std::size_t>(row) * static_cast<std::size_t>(nsub) + static_cast<std::size_t>(col)] = value;
+                }
+            }
+
+            const double operator_fro_norm = frobenius_norm_identity_minus_product(M_dense, A_dense, nsub);
+            ASSERT_TRUE(std::isfinite(operator_fro_norm));
+            max_operator_fro_norm = std::max(max_operator_fro_norm, operator_fro_norm);
+            sum_operator_fro_norm += operator_fro_norm;
+        }
+
+        std::cout << "[DDPrecond.FSAI] k=" << fsai_level_k
+                  << " grid_size=("
+                  << setup.global_shape.w << "," << setup.global_shape.h << "," << setup.global_shape.d << ")"
+                  << " subdomain_size=("
+                  << setup.subdomain_size.w << "," << setup.subdomain_size.h << "," << setup.subdomain_size.d << ")"
+                  << " generation_time_s=" << build_secs
+                  << " avg_fro_norm_I_minus_MA=" << (sum_operator_fro_norm / static_cast<double>(setup.regions.size()))
+                  << " max_fro_norm_I_minus_MA=" << max_operator_fro_norm
+                  << "\n";
+    }
 }
 
 // Isolates the SPAI extraction path from preconditioner quality:

@@ -57,6 +57,9 @@ namespace ichol::precond
             case SubdomainPreconditionerKind::IncompleteCholesky:
                 ctx->impl = detail::create_subdomain_incomplete_cholesky_context(A, global_shape, region, options);
                 break;
+            case SubdomainPreconditionerKind::FSAI:
+                ctx->impl = detail::create_subdomain_fsai_context(A, global_shape, region, options);
+                break;
             case SubdomainPreconditionerKind::SPAI:
                 ctx->impl = detail::create_subdomain_spai_context(A, global_shape, region, options);
                 break;
@@ -148,6 +151,9 @@ namespace ichol::precond
         case SubdomainPreconditionerKind::IncompleteCholesky:
             detail::apply_subdomain_incomplete_cholesky(ctx->impl, d_r, d_z, N, prec, stream);
             break;
+        case SubdomainPreconditionerKind::FSAI:
+            detail::apply_subdomain_fsai(ctx->impl, d_r, d_z, N, prec, stream);
+            break;
         case SubdomainPreconditionerKind::SPAI:
             detail::apply_subdomain_spai(ctx->impl, d_r, d_z, N, prec, stream);
             break;
@@ -167,6 +173,9 @@ namespace ichol::precond
             break;
         case SubdomainPreconditionerKind::IncompleteCholesky:
             detail::destroy_subdomain_incomplete_cholesky_context(ctx->impl);
+            break;
+        case SubdomainPreconditionerKind::FSAI:
+            detail::destroy_subdomain_fsai_context(ctx->impl);
             break;
         case SubdomainPreconditionerKind::SPAI:
             detail::destroy_subdomain_spai_context(ctx->impl);

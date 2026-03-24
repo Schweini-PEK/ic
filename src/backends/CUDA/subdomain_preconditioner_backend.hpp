@@ -39,6 +39,22 @@ namespace ichol::precond::detail
 
     void destroy_subdomain_incomplete_cholesky_context(void *ctx);
 
+    void *create_subdomain_fsai_context(
+        const ichol::matrix::CsrMatrix<double> &A,
+        const GridShape &global,
+        const SubdomainRegion &region,
+        const SubdomainPreconditionerOptions &options);
+
+    void apply_subdomain_fsai(
+        void *ctx,
+        const void *d_r,
+        void *d_z,
+        int N,
+        ichol::solver::ComputePrecision prec,
+        cudaStream_t stream);
+
+    void destroy_subdomain_fsai_context(void *ctx);
+
     void *create_subdomain_spai_context(
         const ichol::matrix::CsrMatrix<double> &A,
         const GridShape &global,

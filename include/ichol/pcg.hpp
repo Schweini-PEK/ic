@@ -52,8 +52,24 @@ namespace ichol::solver
 
     struct PCGResult
     {
+        struct Timing
+        {
+            double total_ms = 0.0;
+            double setup_ms = 0.0;
+            double iter_ms = 0.0;
+            double finalize_ms = 0.0;
+            double preconditioner_apply_ms = 0.0;
+            double orthogonalization_ms = 0.0;
+            double spmm_ms = 0.0;
+            double dense_ms = 0.0;
+            double residual_reset_ms = 0.0;
+            double other_iter_ms = 0.0;
+        };
+
         int iterations = 0;
         double finalRes = 0.0;
+        std::vector<double> relResiduals;
+        Timing timing;
     };
 
     /**

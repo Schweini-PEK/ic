@@ -10,6 +10,7 @@
 #include <type_traits>
 #include <numeric>
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 
 #include "ichol/half.hpp"
@@ -402,6 +403,9 @@ namespace ichol::solver
         const PCGParams &params,
         FactorizedPrecondBackend factorized_backend)
     {
+        using Clock = std::chrono::steady_clock;
+        const auto total_wall_start = Clock::now();
+
         CusparseHandle cusparseHandle;
         CublasHandle cublasHandle;
 
@@ -616,16 +620,18 @@ namespace ichol::solver
         if (bnorm == 0.0)
             bnorm = 1.0;
 
-        double sptrsv_total_ms = 0.0;
-        int sptrsv_timed_iters = 0;
-        CudaEvent sptrsv_start, sptrsv_stop;
+        CudaEvent precond_start, precond_stop;
         double last_res_norm = bnorm;
         int last_completed_iter = 0;
+        result.relResiduals.reserve((size_t)params.maxits + 1);
+        result.relResiduals.push_back(last_res_norm / bnorm);
+        const auto iter_wall_start = Clock::now();
 
         // --- Main Loop ---
         for (int k = 1; k <= params.maxits; k++)
         {
             // (1) z = M^-1 r
+            CUDA_CHECK(cudaEventRecord(precond_start, stream));
             if (use_custom_precond)
             {
                 if (custom_precond_prec == ichol::solver::ComputePrecision::FP64)
@@ -654,7 +660,6 @@ namespace ichol::solver
             else
             {
                 cast_vec<SolveT, double><<<(n + 255) / 256, 256, 0, stream>>>(n, d_r.get(), d_r_work);
-                CUDA_CHECK(cudaEventRecord(sptrsv_start, stream));
                 if (factorized_backend == FactorizedPrecondBackend::CustomLevelsets)
                 {
                     sptrsv_plan_L.solve<int, SolveT>(n, d_csrRowPtrL.get(), d_csrColIndL.get(), d_valL.get(), d_r_work, d_w_work, false, stream);
@@ -673,15 +678,13 @@ namespace ichol::solver
                         &alpha, spMatLt, vecW_factor, vecZ_factor, cuda_data_type<SolveT>(),
                         CUSPARSE_SPSV_ALG_DEFAULT, spsv_descr_Lt));
                 }
-                CUDA_CHECK(cudaEventRecord(sptrsv_stop, stream));
                 cast_vec<double, SolveT><<<(n + 255) / 256, 256, 0, stream>>>(n, d_z_work, d_z.get());
-
-                float iter_ms = 0.0f;
-                CUDA_CHECK(cudaEventSynchronize(sptrsv_stop));
-                CUDA_CHECK(cudaEventElapsedTime(&iter_ms, sptrsv_start, sptrsv_stop));
-                sptrsv_total_ms += iter_ms;
-                sptrsv_timed_iters++;
             }
+            CUDA_CHECK(cudaEventRecord(precond_stop, stream));
+            float precond_iter_ms = 0.0f;
+            CUDA_CHECK(cudaEventSynchronize(precond_stop));
+            CUDA_CHECK(cudaEventElapsedTime(&precond_iter_ms, precond_start, precond_stop));
+            result.timing.preconditioner_apply_ms += static_cast<double>(precond_iter_ms);
 
             double rhoOld = rho;
             CUBLAS_CHECK(cublasDdot(cublasHandle, n, d_r.get(), 1, d_z.get(), 1, &rho));
@@ -729,6 +732,7 @@ namespace ichol::solver
             CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_r.get(), 1, &res_norm));
             last_res_norm = res_norm;
             last_completed_iter = k;
+            result.relResiduals.push_back(res_norm / bnorm);
             if (res_norm <= params.tol * bnorm)
             {
                 result.iterations = k;
@@ -743,9 +747,17 @@ namespace ichol::solver
             result.finalRes = last_res_norm;
         }
 
+        const auto iter_wall_end = Clock::now();
+        const auto finalize_wall_start = Clock::now();
         CUDA_CHECK(cudaStreamSynchronize(stream));
         h_x.resize(n);
         CUDA_CHECK(cudaMemcpy(h_x.data(), d_x.get(), n * sizeof(double), cudaMemcpyDeviceToHost));
+        const auto finalize_wall_end = Clock::now();
+
+        result.timing.setup_ms = std::chrono::duration<double, std::milli>(iter_wall_start - total_wall_start).count();
+        result.timing.iter_ms = std::chrono::duration<double, std::milli>(iter_wall_end - iter_wall_start).count();
+        result.timing.finalize_ms = std::chrono::duration<double, std::milli>(finalize_wall_end - finalize_wall_start).count();
+        result.timing.total_ms = std::chrono::duration<double, std::milli>(finalize_wall_end - total_wall_start).count();
         return result;
     }
     
