@@ -1,7 +1,5 @@
-#ifndef ICHOL_USE_MKL_MPCG
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
-#endif
 
 #include <algorithm>
 #include <chrono>
@@ -19,16 +17,12 @@
 #include <utility>
 #include <vector>
 
+#include "ichol/half.hpp"
 #include "ichol/matrix_formats.hpp"
 #include "ichol/mtx_read.hpp"
 #include "ichol/pcg.hpp"
 #include "ichol/preconditioner.hpp"
-#ifdef ICHOL_USE_MKL_MPCG
-#include "ichol/subdomain_preconditioner_mkl.hpp"
-#else
-#include "ichol/half.hpp"
 #include "ichol/subdomain_preconditioner_gpu.hpp"
-#endif
 #include "factor/numerical/factorize.hpp"
 
 namespace
@@ -54,11 +48,7 @@ struct AppOptions
     unsigned int seed = 20260303u;
 
     ichol::precond::SubdomainPreconditionerKind precond_kind =
-#ifdef ICHOL_USE_MKL_MPCG
-        ichol::precond::SubdomainPreconditionerKind::IncompleteCholesky;
-#else
         ichol::precond::SubdomainPreconditionerKind::ExactCholesky;
-#endif
     int ic_level_k = 0;
     int fsai_level_k = 0;
     int spai_radius = 1;
@@ -72,30 +62,14 @@ struct AppOptions
 
 struct SubdomainContextDeleter
 {
-    void operator()(
-#ifdef ICHOL_USE_MKL_MPCG
-        ichol::precond::SubdomainIncompleteCholeskyMklContext *ctx
-#else
-        ichol::precond::SubdomainSpSVContext *ctx
-#endif
-    ) const
+    void operator()(ichol::precond::SubdomainSpSVContext *ctx) const
     {
         if (ctx != nullptr)
-#ifdef ICHOL_USE_MKL_MPCG
-            ichol::precond::destroy_subdomain_incomplete_cholesky_mkl_context(ctx);
-#else
             ichol::precond::destroy_subdomain_spsv_context(ctx);
-#endif
     }
 };
 
-using SubdomainContextPtr = std::unique_ptr<
-#ifdef ICHOL_USE_MKL_MPCG
-    ichol::precond::SubdomainIncompleteCholeskyMklContext,
-#else
-    ichol::precond::SubdomainSpSVContext,
-#endif
-    SubdomainContextDeleter>;
+using SubdomainContextPtr = std::unique_ptr<ichol::precond::SubdomainSpSVContext, SubdomainContextDeleter>;
 
 struct SubdomainBundle
 {
@@ -111,6 +85,18 @@ struct SolverRun
     double precond_secs = 0.0;
     double solve_secs = 0.0;
 };
+
+void cuda_check(cudaError_t err, const char *what)
+{
+    if (err != cudaSuccess)
+        throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(err));
+}
+
+void cublas_check(cublasStatus_t st, const char *what)
+{
+    if (st != CUBLAS_STATUS_SUCCESS)
+        throw std::runtime_error(std::string(what) + " failed with cuBLAS status " + std::to_string(static_cast<int>(st)));
+}
 
 std::string trim_copy(std::string s)
 {
@@ -329,7 +315,6 @@ void print_usage(const char *argv0)
         << "  --seed INT                    RHS RNG seed\n"
         << "  --tol FLOAT                   solver tolerance\n"
         << "  --mpcg-maxits INT             MPCG max iterations\n"
-        << "  --pcg-maxits INT              PCG max iterations\n"
         << "  --mpcg-restart INT            MPCG restart/window size; 0 => full history\n"
         << "  --prec-gemm PREC              fp64|fp32|tf32|fp16|bf16\n"
         << "  --prec-spmm PREC              fp64|fp32|tf32|fp16|bf16\n"
@@ -340,12 +325,8 @@ void print_usage(const char *argv0)
         << "  --store-wnew PREC             fp64|fp32|tf32|fp16|bf16\n"
         << "  --store-p-hist PREC           fp64|fp32|tf32|fp16|bf16\n"
         << "  --store-w-hist PREC           fp64|fp32|tf32|fp16|bf16\n"
-        << "  --pcg-mode auto|blockdiag|additive\n"
-        << "  --pcg-factor-precision PREC   fp64|fp32|fp16 for blockdiag pcg_cusparse_spsv\n"
         << "  --use-svd                     use SVD (pinv) for alpha solve; default is Cholesky\n"
-#ifdef ICHOL_USE_MKL_MPCG
-        << "  Note: the MKL MPCG build currently supports --precond ic only.\n"
-#endif
+        << "  Note: mpcg_ms recomputes W history from stored P history, so --store-w-hist only affects baseline mpcg.\n"
         << "  --help                        show this message\n";
 }
 
@@ -497,19 +478,6 @@ AppOptions parse_args(int argc, char **argv)
     return opts;
 }
 
-#ifndef ICHOL_USE_MKL_MPCG
-void cuda_check(cudaError_t err, const char *what)
-{
-    if (err != cudaSuccess)
-        throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(err));
-}
-
-void cublas_check(cublasStatus_t st, const char *what)
-{
-    if (st != CUBLAS_STATUS_SUCCESS)
-        throw std::runtime_error(std::string(what) + " failed with cuBLAS status " + std::to_string(static_cast<int>(st)));
-}
-
 class AdditivePrecondContext
 {
 public:
@@ -595,7 +563,6 @@ private:
     float *tmp32_ = nullptr;
     int capacity_ = 0;
 };
-#endif
 
 PcgMode resolve_pcg_mode(const AppOptions &opts)
 {
@@ -625,15 +592,8 @@ SubdomainBundle build_subdomain_bundle(const ichol::matrix::CsrMatrix<double> &A
     precond_opts.precision = opts.params.prec_precond;
 
     auto t0 = std::chrono::high_resolution_clock::now();
-#ifdef ICHOL_USE_MKL_MPCG
-    if (opts.precond_kind != ichol::precond::SubdomainPreconditionerKind::IncompleteCholesky)
-        throw std::runtime_error("MKL MPCG path currently supports --precond ic only");
-    auto raw_contexts = ichol::precond::create_subdomain_incomplete_cholesky_mkl_contexts_parallel(
-        A, global_shape, bundle.regions, precond_opts);
-#else
     auto raw_contexts = ichol::precond::create_subdomain_preconditioner_contexts_parallel(
         A, global_shape, bundle.regions, precond_opts);
-#endif
 
     bundle.contexts.reserve(raw_contexts.size());
     for (auto *ctx : raw_contexts)
@@ -641,11 +601,7 @@ SubdomainBundle build_subdomain_bundle(const ichol::matrix::CsrMatrix<double> &A
 
     bundle.preconds.reserve(bundle.contexts.size());
     for (const auto &ctx : bundle.contexts)
-#ifdef ICHOL_USE_MKL_MPCG
-        bundle.preconds.push_back({&ichol::precond::apply_subdomain_incomplete_cholesky_mkl, ctx.get()});
-#else
         bundle.preconds.push_back({&ichol::precond::apply_subdomain_exact_spsv, ctx.get()});
-#endif
 
     auto t1 = std::chrono::high_resolution_clock::now();
     bundle.build_secs = std::chrono::duration<double>(t1 - t0).count();
@@ -673,7 +629,27 @@ SolverRun run_mpcg(const ichol::matrix::CsrMatrix<double> &A,
     return run;
 }
 
-#ifndef ICHOL_USE_MKL_MPCG
+SolverRun run_mpcg_ms(const ichol::matrix::CsrMatrix<double> &A,
+                      const std::vector<double> &b,
+                      const AppOptions &opts,
+                      const SubdomainBundle &bundle)
+{
+    SolverRun run;
+    run.precond_secs = bundle.build_secs;
+
+    std::vector<double> x(A.num_rows, 0.0);
+    auto t0 = std::chrono::high_resolution_clock::now();
+    run.result = ichol::solver::mpcg_ms<double>(
+        A.row_ptr, A.col_ind, A.values,
+        bundle.preconds,
+        b,
+        x,
+        opts.params);
+    auto t1 = std::chrono::high_resolution_clock::now();
+    run.solve_secs = std::chrono::duration<double>(t1 - t0).count();
+    return run;
+}
+
 template <typename T>
 ichol::solver::PCGResult run_blockdiag_pcg_impl(const ichol::matrix::CsrMatrix<double> &A,
                                                 const ichol::matrix::CsrMatrix<double> &L_block,
@@ -764,11 +740,9 @@ SolverRun run_additive_pcg(const ichol::matrix::CsrMatrix<double> &A,
     run.solve_secs = std::chrono::duration<double>(t1 - t0).count();
     return run;
 }
-#endif
 
 void print_config(const AppOptions &opts,
-                  const SubdomainBundle &bundle,
-                  PcgMode resolved_pcg_mode)
+                  const SubdomainBundle &bundle)
 {
     std::cout
         << "[Config] n=" << opts.n
@@ -779,8 +753,6 @@ void print_config(const AppOptions &opts,
         << " fsai_level_k=" << opts.fsai_level_k
         << " mpcg_restart=" << opts.params.restart
         << " mpcg_maxits=" << opts.params.maxits
-        << " pcg_maxits=" << opts.pcg_maxits
-        << " pcg_mode=" << pcg_mode_to_string(resolved_pcg_mode)
         << " prec_gemm=" << precision_to_string(opts.params.prec_gemm)
         << " prec_spmm=" << precision_to_string(opts.params.prec_spmm)
         << " prec_precond=" << precision_to_string(opts.params.prec_precond)
@@ -790,7 +762,6 @@ void print_config(const AppOptions &opts,
         << " store_wnew=" << precision_to_string(opts.params.store_Wnew)
         << " store_p_hist=" << precision_to_string(opts.params.store_P_hist)
         << " store_w_hist=" << precision_to_string(opts.params.store_W_hist)
-        << " pcg_factor_precision=" << precision_to_string(opts.pcg_factor_precision)
         << " tol=" << opts.params.tol
         << " seed=" << opts.seed
         << "\n";
@@ -842,13 +813,6 @@ int main(int argc, char **argv)
     int exit_code = 0;
     try
     {
-        const PcgMode resolved_pcg_mode = resolve_pcg_mode(opts);
-        if (resolved_pcg_mode == PcgMode::BlockDiagonal &&
-            opts.precond_kind != ichol::precond::SubdomainPreconditionerKind::ExactCholesky)
-        {
-            throw std::runtime_error("pcg_mode=blockdiag requires --precond exact");
-        }
-
         auto A = ichol::io::gen_3dpoi<double>(opts.n);
         std::vector<double> b(A.num_rows);
         {
@@ -863,33 +827,21 @@ int main(int argc, char **argv)
         const double stopping_scale = (bnorm > 0.0) ? bnorm : 1.0;
 
         SubdomainBundle bundle = build_subdomain_bundle(A, opts);
-        print_config(opts, bundle, resolved_pcg_mode);
+        print_config(opts, bundle);
 
-        const SolverRun mpcg_run = run_mpcg(A, b, opts, bundle);
+        // Warmup
+        SolverRun mpcg_ms_run = run_mpcg_ms(A, b, opts, bundle);
+        SolverRun mpcg_run = run_mpcg(A, b, opts, bundle);
+
+        mpcg_ms_run = run_mpcg_ms(A, b, opts, bundle);
+        print_run("[MPCG-MS]", mpcg_ms_run);
+        mpcg_run = run_mpcg(A, b, opts, bundle);
         print_run("[MPCG]", mpcg_run);
 
-#ifdef ICHOL_USE_MKL_MPCG
-        std::cout << "[Note] ICHOL_USE_MKL_MPCG currently switches only the MPCG path to CPU/oneMKL; the PCG comparison path remains CUDA-backed and is skipped in this build.\n";
-#else
-        SolverRun pcg_run;
-        if (resolved_pcg_mode == PcgMode::BlockDiagonal)
-        {
-            pcg_run = run_blockdiag_pcg(A, b, opts);
-            print_run("[PCG blockdiag/cuSPARSE-SpSV]", pcg_run);
-            std::cout << "[Note] blockdiag PCG ignores prec_precond; its preconditioner solve precision is set by --pcg-factor-precision.\n";
-        }
-        else
-        {
-            pcg_run = run_additive_pcg(A, b, opts, bundle);
-            print_run("[PCG additive/custom-precond]", pcg_run);
-            std::cout << "[Note] additive PCG reuses the subdomain PrecondApply objects, so prec_precond affects this PCG path.\n";
-        }
-
-        if (pcg_run.result.finalRes > opts.params.tol * stopping_scale)
-            std::cerr << "[Warn] PCG did not reach the requested tolerance.\n";
-#endif
         if (mpcg_run.result.finalRes > opts.params.tol * stopping_scale)
             std::cerr << "[Warn] MPCG did not reach the requested tolerance.\n";
+        if (mpcg_ms_run.result.finalRes > opts.params.tol * stopping_scale)
+            std::cerr << "[Warn] MPCG-MS did not reach the requested tolerance.\n";
     }
     catch (const std::exception &e)
     {

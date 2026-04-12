@@ -5,8 +5,8 @@
 #define ICHOL_PRECONDITIONER_HPP
 
 #include <vector>
-#include <cuda_runtime.h>
 
+#include "ichol/cuda_compat.hpp"
 #include "ichol/matrix_formats.hpp"
 #include "ichol/precision.hpp"
 

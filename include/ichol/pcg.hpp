@@ -43,11 +43,11 @@ namespace ichol::solver
         // These control PETSc PCSPAI when subdomains use the SPAI preconditioner.
         // Defaults match PETSc's built-in PCSPAI defaults so that adding these
         // fields does not change numerical behaviour.
-        double spai_epsilon   = 0.4; // approximation accuracy target (PETSc default)
-        int    spai_nbsteps   = 5;   // minimisation steps per column  (PETSc default)
-        int    spai_max_cols  = 5;   // max column growth per step     (PETSc default)
-        int    spai_maxnew    = 5;   // max new columns per step       (PETSc default)
-        bool   spai_symmetric = false; // exploit SPD symmetry (false = PETSc default)
+        double spai_epsilon = 0.4;   // approximation accuracy target (PETSc default)
+        int spai_nbsteps = 5;        // minimisation steps per column  (PETSc default)
+        int spai_max_cols = 5;       // max column growth per step     (PETSc default)
+        int spai_maxnew = 5;         // max new columns per step       (PETSc default)
+        bool spai_symmetric = false; // exploit SPD symmetry (false = PETSc default)
     };
 
     struct PCGResult
@@ -141,6 +141,41 @@ namespace ichol::solver
         const std::vector<double> &h_b,
         std::vector<double> &h_x,
         const PCGParams &params);
+
+    template <typename T_L>
+    PCGResult mpcg_cpu_baseline(
+        const std::vector<int> &h_csrRowPtrA,
+        const std::vector<int> &h_csrColIndA,
+        const std::vector<double> &h_valA,
+        const std::vector<ichol::precond::PrecondApply> &preconds,
+        const std::vector<double> &h_b,
+        std::vector<double> &h_x,
+        const PCGParams &params);
+
+#ifndef ICHOL_USE_MKL_MPCG
+    // Memory Saving MPCG: Recompute W_{i+1} in each iteration instead of storing it.
+    template <typename T_L>
+    PCGResult mpcg_ms(
+        const std::vector<int> &h_csrRowPtrA,
+        const std::vector<int> &h_csrColIndA,
+        const std::vector<double> &h_valA,
+        const std::vector<ichol::precond::PrecondApply> &preconds,
+        const std::vector<double> &h_b,
+        std::vector<double> &h_x,
+        const PCGParams &params);
+
+    template <typename T_L>
+    PCGResult mpcg_mixed(
+        const std::vector<int> &h_csrRowPtrA,
+        const std::vector<int> &h_csrColIndA,
+        const std::vector<double> &h_valA,
+        const std::vector<ichol::precond::PrecondApply> &preconds,
+        const std::vector<double> &h_b,
+        std::vector<double> &h_x,
+        int m_64,
+        int m_32,
+        const PCGParams &params);
+#endif
 } // namespace ichol::solver
 
 #endif // ICHOL_PCG_HPP

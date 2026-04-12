@@ -6,6 +6,13 @@ file(GLOB_RECURSE ICHOL_SRC CONFIGURE_DEPENDS
 
 list(FILTER ICHOL_SRC EXCLUDE REGEX ".*/apps/.*")
 
+option(ICHOL_USE_MKL_MPCG "Use the CPU oneMKL MPCG backend instead of the CUDA MPCG backend" OFF)
+if (ICHOL_USE_MKL_MPCG)
+    list(FILTER ICHOL_SRC EXCLUDE REGEX ".*/backends/CUDA/mpcg\\.cu$")
+else()
+    list(FILTER ICHOL_SRC EXCLUDE REGEX ".*/solver/mpcg_mkl\\.cpp$")
+endif()
+
 add_library(ichol STATIC ${ICHOL_SRC})
 
 target_include_directories(ichol PUBLIC
@@ -63,6 +70,20 @@ target_link_libraries(ichol PUBLIC
     CUDA::cusolver
 )
 
+find_path(MKL_INCLUDE_DIR mkl.h
+    HINTS "$ENV{MKLROOT}/include" "$ENV{EBROOTIMKL}/mkl/2023.2.0/include")
+find_library(MKL_RT_LIB mkl_rt
+    HINTS "$ENV{MKLROOT}/lib/intel64" "$ENV{EBROOTIMKL}/mkl/2023.2.0/lib/intel64")
+
+if (ICHOL_USE_MKL_MPCG)
+    if (NOT MKL_INCLUDE_DIR OR NOT MKL_RT_LIB)
+        message(FATAL_ERROR "ICHOL_USE_MKL_MPCG requires Intel oneMKL (mkl.h and mkl_rt)")
+    endif()
+    target_include_directories(ichol PUBLIC ${MKL_INCLUDE_DIR})
+    target_link_libraries(ichol PUBLIC ${MKL_RT_LIB})
+    target_compile_definitions(ichol PUBLIC ICHOL_USE_MKL_MPCG=1)
+endif()
+
 target_link_libraries(ichol PUBLIC PkgConfig::PETSC)
 
 option(ICHOL_USE_OPENMP "Enable OpenMP parallelism for supernodal numeric" ON)
@@ -96,6 +117,45 @@ add_executable(mpcg_pcg_compare
 )
 
 target_link_libraries(mpcg_pcg_compare PRIVATE ichol)
+
+if (NOT ICHOL_USE_MKL_MPCG)
+    if (MKL_INCLUDE_DIR AND MKL_RT_LIB)
+        add_library(ichol_mkl_baseline STATIC
+            solver/mpcg_mkl.cpp
+        )
+
+        target_include_directories(ichol_mkl_baseline PUBLIC
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src
+            ${MKL_INCLUDE_DIR})
+
+        target_link_libraries(ichol_mkl_baseline PUBLIC
+            ichol
+            ${MKL_RT_LIB})
+
+        add_executable(mpcg_cpu_baseline
+            apps/mpcg_cpu_baseline.cpp
+        )
+
+        target_link_libraries(mpcg_cpu_baseline PRIVATE
+            ichol
+            ichol_mkl_baseline)
+    else()
+        message(WARNING "Intel oneMKL not found: mpcg_cpu_baseline target will be disabled")
+    endif()
+
+    add_executable(mpcg_improve
+        apps/mpcg_improve.cpp
+    )
+
+    target_link_libraries(mpcg_improve PRIVATE ichol)
+
+    add_executable(mpcg_mixed_store
+        apps/mpcg_mixed_store.cpp
+    )
+
+    target_link_libraries(mpcg_mixed_store PRIVATE ichol)
+endif()
 
 find_path(CUDSS_INCLUDE_DIR cudss.h
     HINTS "$ENV{EBROOTCUDSS}/include" "$ENV{CUDA_HOME}/include" "$ENV{EBROOTCUDA}/include")

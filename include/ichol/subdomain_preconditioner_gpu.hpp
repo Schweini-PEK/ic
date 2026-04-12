@@ -5,68 +5,12 @@
 
 #include <vector>
 
-#include <cuda_runtime.h>
-
+#include "ichol/cuda_compat.hpp"
 #include "ichol/matrix_formats.hpp"
-#include "ichol/options.hpp"
-#include "ichol/precision.hpp"
+#include "ichol/subdomain_preconditioner_common.hpp"
 
 namespace ichol::precond
 {
-    struct GridShape
-    {
-        int w = 0;
-        int h = 0;
-        int d = 1;
-    };
-
-    struct SubdomainSize
-    {
-        int w = 0;
-        int h = 0;
-        int d = 1;
-    };
-
-    struct SubdomainRegion
-    {
-        int x0 = 0;
-        int x1 = 0;
-        int y0 = 0;
-        int y1 = 0;
-        int z0 = 0;
-        int z1 = 1;
-    };
-
-    enum class SubdomainPreconditionerKind
-    {
-        SPAI,
-        ExactCholesky,
-        IncompleteCholesky,
-        FSAI
-    };
-
-    struct SubdomainPreconditionerOptions
-    {
-        SubdomainPreconditionerKind kind = SubdomainPreconditionerKind::SPAI;
-        int spai_radius = 1; // legacy stencil radius; unused by current PETSc SPAI backend
-        int ic_level_k = 0;
-        int fsai_level_k = 0;
-        ichol::solver::ComputePrecision precision = ichol::solver::ComputePrecision::FP64;
-        int debug_subdomain_index = -1;
-
-        // ── PETSc SPAI tuning ─────────────────────────────────────────────────
-        // Defaults match PETSc PCSPAI built-in defaults; changing them is safe.
-        double spai_epsilon   = 0.4; // approximation accuracy target
-        int    spai_nbsteps   = 5;   // minimisation steps per column
-        int    spai_max_cols  = 5;   // max column growth per step (maps to PCSpAISetMaxNew)
-        int    spai_maxnew    = 5;   // max new columns per step
-        bool   spai_symmetric = false; // if true, exploit SPD symmetry (PCSpAISetSp=1)
-    };
-
-    std::vector<SubdomainRegion> partition_subdomains(
-        const GridShape &global_shape,
-        const SubdomainSize &subdomain_size);
-
     struct SubdomainPreconditionerContext;
     using SubdomainSpSVContext = SubdomainPreconditionerContext;
 
