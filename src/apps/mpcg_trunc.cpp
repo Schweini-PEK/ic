@@ -1,12 +1,7 @@
-#include <cuda_runtime.h>
-#include <cublas_v2.h>
-
 #include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <cmath>
-#include <cstdlib>
-#include <future>
 #include <iostream>
 #include <memory>
 #include <numeric>
@@ -14,10 +9,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <utility>
 #include <vector>
 
-#include "ichol/half.hpp"
 #include "ichol/matrix_formats.hpp"
 #include "ichol/mtx_read.hpp"
 #include "ichol/pcg.hpp"
@@ -34,13 +27,6 @@ struct Int3
     int z = 0;
 };
 
-enum class PcgMode
-{
-    Auto,
-    BlockDiagonal,
-    Additive
-};
-
 struct AppOptions
 {
     int n = 32;
@@ -54,9 +40,6 @@ struct AppOptions
     int spai_radius = 1;
 
     ichol::solver::PCGParams params;
-    int pcg_maxits = 100;
-    PcgMode pcg_mode = PcgMode::Auto;
-    ichol::solver::ComputePrecision pcg_factor_precision = ichol::solver::ComputePrecision::FP64;
     bool show_help = false;
 };
 
@@ -86,17 +69,16 @@ struct SolverRun
     double solve_secs = 0.0;
 };
 
-void cuda_check(cudaError_t err, const char *what)
+struct RestartSweepRun
 {
-    if (err != cudaSuccess)
-        throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(err));
-}
+    int restart = 0;
+    char symbol = '?';
+    SolverRun run;
+};
 
-void cublas_check(cublasStatus_t st, const char *what)
-{
-    if (st != CUBLAS_STATUS_SUCCESS)
-        throw std::runtime_error(std::string(what) + " failed with cuBLAS status " + std::to_string(static_cast<int>(st)));
-}
+constexpr int kRestartWindows[] = {0, 5, 10, 15, 20, 25, 30, 35};
+constexpr char kPlotSymbols[] = {'F', '5', 'A', 'B', 'C', 'D', 'E', 'G'};
+constexpr int kPlotRows = 18;
 
 std::string trim_copy(std::string s)
 {
@@ -159,21 +141,6 @@ ichol::solver::ComputePrecision parse_compute_precision(const std::string &raw)
     throw std::runtime_error("Unknown precision: " + raw);
 }
 
-ichol::solver::ComputePrecision normalize_custom_precond_precision(ichol::solver::ComputePrecision prec)
-{
-    using Prec = ichol::solver::ComputePrecision;
-    switch (prec)
-    {
-    case Prec::FP64:
-        return Prec::FP64;
-    case Prec::FP32:
-    case Prec::TF32:
-        return Prec::FP32;
-    default:
-        throw std::runtime_error("custom preconditioner apply path supports FP64 and FP32 only");
-    }
-}
-
 Int3 parse_triplet(const std::string &raw)
 {
     std::string s = to_lower_copy(trim_copy(raw));
@@ -215,32 +182,6 @@ std::string precond_kind_to_string(ichol::precond::SubdomainPreconditionerKind k
         return "fsai";
     case ichol::precond::SubdomainPreconditionerKind::SPAI:
         return "spai";
-    }
-    return "unknown";
-}
-
-PcgMode parse_pcg_mode(const std::string &raw)
-{
-    const std::string v = to_lower_copy(trim_copy(raw));
-    if (v == "auto")
-        return PcgMode::Auto;
-    if (v == "blockdiag" || v == "block_diagonal")
-        return PcgMode::BlockDiagonal;
-    if (v == "additive")
-        return PcgMode::Additive;
-    throw std::runtime_error("Unknown pcg mode: " + raw);
-}
-
-std::string pcg_mode_to_string(PcgMode mode)
-{
-    switch (mode)
-    {
-    case PcgMode::Auto:
-        return "auto";
-    case PcgMode::BlockDiagonal:
-        return "blockdiag";
-    case PcgMode::Additive:
-        return "additive";
     }
     return "unknown";
 }
@@ -315,7 +256,6 @@ void print_usage(const char *argv0)
         << "  --seed INT                    RHS RNG seed\n"
         << "  --tol FLOAT                   solver tolerance\n"
         << "  --mpcg-maxits INT             MPCG max iterations\n"
-        << "  --mpcg-restart INT            MPCG restart/window size; 0 => full history\n"
         << "  --prec-gemm PREC              fp64|fp32|tf32|fp16|bf16\n"
         << "  --prec-spmm PREC              fp64|fp32|tf32|fp16|bf16\n"
         << "  --prec-precond PREC           fp64|fp32|tf32\n"
@@ -326,7 +266,8 @@ void print_usage(const char *argv0)
         << "  --store-p-hist PREC           fp64|fp32|tf32|fp16|bf16\n"
         << "  --store-w-hist PREC           fp64|fp32|tf32|fp16|bf16\n"
         << "  --use-svd                     use SVD (pinv) for alpha solve; default is Cholesky\n"
-        << "  Note: mpcg_ms recomputes W history from stored P history, so --store-w-hist only affects baseline mpcg.\n"
+        << "  Fixed restart sweep: 0, 5, 10, 15, 20, 25\n"
+        << "  Each restart is executed twice: warmup first, then timed run.\n"
         << "  --help                        show this message\n";
 }
 
@@ -386,14 +327,6 @@ AppOptions parse_args(int argc, char **argv)
         {
             opts.params.maxits = parse_int(require_value(i, "--mpcg-maxits"), "--mpcg-maxits");
         }
-        else if (arg == "--pcg-maxits")
-        {
-            opts.pcg_maxits = parse_int(require_value(i, "--pcg-maxits"), "--pcg-maxits");
-        }
-        else if (arg == "--mpcg-restart")
-        {
-            opts.params.restart = parse_int(require_value(i, "--mpcg-restart"), "--mpcg-restart");
-        }
         else if (arg == "--prec-gemm")
         {
             opts.params.prec_gemm = parse_compute_precision(require_value(i, "--prec-gemm"));
@@ -430,14 +363,6 @@ AppOptions parse_args(int argc, char **argv)
         {
             opts.params.store_W_hist = parse_compute_precision(require_value(i, "--store-w-hist"));
         }
-        else if (arg == "--pcg-mode")
-        {
-            opts.pcg_mode = parse_pcg_mode(require_value(i, "--pcg-mode"));
-        }
-        else if (arg == "--pcg-factor-precision")
-        {
-            opts.pcg_factor_precision = parse_compute_precision(require_value(i, "--pcg-factor-precision"));
-        }
         else if (arg == "--use-svd")
         {
             opts.params.use_svd = true;
@@ -454,10 +379,6 @@ AppOptions parse_args(int argc, char **argv)
         throw std::runtime_error("--subdomain entries must be positive");
     if (opts.params.maxits <= 0)
         throw std::runtime_error("--mpcg-maxits must be positive");
-    if (opts.pcg_maxits <= 0)
-        throw std::runtime_error("--pcg-maxits must be positive");
-    if (opts.params.restart < 0)
-        throw std::runtime_error("--mpcg-restart must be non-negative");
     if (opts.params.tol <= 0.0)
         throw std::runtime_error("--tol must be positive");
     if (opts.ic_level_k < 0)
@@ -467,110 +388,7 @@ AppOptions parse_args(int argc, char **argv)
     if (opts.spai_radius < 0)
         throw std::runtime_error("--spai-radius must be non-negative");
 
-    using Prec = ichol::solver::ComputePrecision;
-    if (opts.pcg_factor_precision != Prec::FP64 &&
-        opts.pcg_factor_precision != Prec::FP32 &&
-        opts.pcg_factor_precision != Prec::FP16)
-    {
-        throw std::runtime_error("--pcg-factor-precision supports fp64, fp32, or fp16 only");
-    }
-
     return opts;
-}
-
-class AdditivePrecondContext
-{
-public:
-    explicit AdditivePrecondContext(const std::vector<ichol::precond::PrecondApply> &preconds)
-        : preconds_(preconds)
-    {
-        cublas_check(cublasCreate(&cublas_), "cublasCreate");
-    }
-
-    ~AdditivePrecondContext()
-    {
-        if (tmp64_ != nullptr)
-            cudaFree(tmp64_);
-        if (tmp32_ != nullptr)
-            cudaFree(tmp32_);
-        if (cublas_ != nullptr)
-            cublasDestroy(cublas_);
-    }
-
-    static void apply(void *ctx,
-                      const void *d_r,
-                      void *d_z,
-                      int n,
-                      ichol::solver::ComputePrecision prec,
-                      cudaStream_t stream)
-    {
-        static_cast<AdditivePrecondContext *>(ctx)->apply_impl(d_r, d_z, n, prec, stream);
-    }
-
-private:
-    void ensure_capacity(int n)
-    {
-        if (n <= capacity_)
-            return;
-        if (tmp64_ != nullptr)
-            cuda_check(cudaFree(tmp64_), "cudaFree(tmp64)");
-        if (tmp32_ != nullptr)
-            cuda_check(cudaFree(tmp32_), "cudaFree(tmp32)");
-        cuda_check(cudaMalloc(&tmp64_, static_cast<std::size_t>(n) * sizeof(double)), "cudaMalloc(tmp64)");
-        cuda_check(cudaMalloc(&tmp32_, static_cast<std::size_t>(n) * sizeof(float)), "cudaMalloc(tmp32)");
-        capacity_ = n;
-    }
-
-    void apply_impl(const void *d_r,
-                    void *d_z,
-                    int n,
-                    ichol::solver::ComputePrecision prec,
-                    cudaStream_t stream)
-    {
-        const auto norm_prec = normalize_custom_precond_precision(prec);
-        ensure_capacity(n);
-        cublas_check(cublasSetStream(cublas_, stream), "cublasSetStream");
-
-        if (norm_prec == ichol::solver::ComputePrecision::FP64)
-        {
-            auto *out = static_cast<double *>(d_z);
-            cuda_check(cudaMemsetAsync(out, 0, static_cast<std::size_t>(n) * sizeof(double), stream), "cudaMemsetAsync(additive out fp64)");
-            const double alpha = 1.0;
-            for (const auto &precond : preconds_)
-            {
-                cuda_check(cudaMemsetAsync(tmp64_, 0, static_cast<std::size_t>(n) * sizeof(double), stream), "cudaMemsetAsync(additive tmp fp64)");
-                precond.apply(precond.ctx, d_r, tmp64_, n, norm_prec, stream);
-                cublas_check(cublasDaxpy(cublas_, n, &alpha, tmp64_, 1, out, 1), "cublasDaxpy");
-            }
-        }
-        else
-        {
-            auto *out = static_cast<float *>(d_z);
-            cuda_check(cudaMemsetAsync(out, 0, static_cast<std::size_t>(n) * sizeof(float), stream), "cudaMemsetAsync(additive out fp32)");
-            const float alpha = 1.0f;
-            for (const auto &precond : preconds_)
-            {
-                cuda_check(cudaMemsetAsync(tmp32_, 0, static_cast<std::size_t>(n) * sizeof(float), stream), "cudaMemsetAsync(additive tmp fp32)");
-                precond.apply(precond.ctx, d_r, tmp32_, n, norm_prec, stream);
-                cublas_check(cublasSaxpy(cublas_, n, &alpha, tmp32_, 1, out, 1), "cublasSaxpy");
-            }
-        }
-    }
-
-    std::vector<ichol::precond::PrecondApply> preconds_;
-    cublasHandle_t cublas_ = nullptr;
-    double *tmp64_ = nullptr;
-    float *tmp32_ = nullptr;
-    int capacity_ = 0;
-};
-
-PcgMode resolve_pcg_mode(const AppOptions &opts)
-{
-    if (opts.pcg_mode != PcgMode::Auto)
-        return opts.pcg_mode;
-    if (opts.precond_kind == ichol::precond::SubdomainPreconditionerKind::ExactCholesky)
-        return PcgMode::BlockDiagonal;
-    return PcgMode::Additive;
 }
 
 SubdomainBundle build_subdomain_bundle(const ichol::matrix::CsrMatrix<double> &A,
@@ -608,10 +426,10 @@ SubdomainBundle build_subdomain_bundle(const ichol::matrix::CsrMatrix<double> &A
     return bundle;
 }
 
-SolverRun run_mpcg(const ichol::matrix::CsrMatrix<double> &A,
-                   const std::vector<double> &b,
-                   const AppOptions &opts,
-                   const SubdomainBundle &bundle)
+SolverRun run_mpcg_with_params(const ichol::matrix::CsrMatrix<double> &A,
+                               const std::vector<double> &b,
+                               const SubdomainBundle &bundle,
+                               const ichol::solver::PCGParams &params)
 {
     SolverRun run;
     run.precond_secs = bundle.build_secs;
@@ -623,122 +441,17 @@ SolverRun run_mpcg(const ichol::matrix::CsrMatrix<double> &A,
         bundle.preconds,
         b,
         x,
-        opts.params);
+        params);
     auto t1 = std::chrono::high_resolution_clock::now();
     run.solve_secs = std::chrono::duration<double>(t1 - t0).count();
     return run;
 }
 
-SolverRun run_mpcg_ms(const ichol::matrix::CsrMatrix<double> &A,
-                      const std::vector<double> &b,
-                      const AppOptions &opts,
-                      const SubdomainBundle &bundle)
+std::string restart_label(int restart)
 {
-    SolverRun run;
-    run.precond_secs = bundle.build_secs;
-
-    std::vector<double> x(A.num_rows, 0.0);
-    auto t0 = std::chrono::high_resolution_clock::now();
-    run.result = ichol::solver::mpcg_ms<double>(
-        A.row_ptr, A.col_ind, A.values,
-        bundle.preconds,
-        b,
-        x,
-        opts.params);
-    auto t1 = std::chrono::high_resolution_clock::now();
-    run.solve_secs = std::chrono::duration<double>(t1 - t0).count();
-    return run;
-}
-
-template <typename T>
-ichol::solver::PCGResult run_blockdiag_pcg_impl(const ichol::matrix::CsrMatrix<double> &A,
-                                                const ichol::matrix::CsrMatrix<double> &L_block,
-                                                const std::vector<double> &b,
-                                                const AppOptions &opts)
-{
-    auto L_t = ichol::matrix::convert_csr_precision<double, T>(L_block);
-    std::vector<double> x(A.num_rows, 0.0);
-    std::vector<double> h_D(A.num_rows, 1.0);
-    ichol::solver::PCGParams pcg_params = opts.params;
-    pcg_params.custom_precond = nullptr;
-    pcg_params.maxits = opts.pcg_maxits;
-    return ichol::solver::pcg_cusparse_spsv<T>(
-        A.row_ptr, A.col_ind, A.values,
-        L_t.row_ptr, L_t.col_ind, L_t.values,
-        b,
-        x,
-        h_D,
-        pcg_params);
-}
-
-SolverRun run_blockdiag_pcg(const ichol::matrix::CsrMatrix<double> &A,
-                            const std::vector<double> &b,
-                            const AppOptions &opts)
-{
-    if (opts.precond_kind != ichol::precond::SubdomainPreconditionerKind::ExactCholesky)
-        throw std::runtime_error("blockdiag PCG mode requires --precond exact");
-
-    SolverRun run;
-    auto t_build0 = std::chrono::high_resolution_clock::now();
-    auto L_block = ichol::precond::build_block_diagonal_exact_preconditioner_3d(
-        A, opts.n, opts.subdomain.x, opts.subdomain.y, opts.subdomain.z);
-    auto t_build1 = std::chrono::high_resolution_clock::now();
-    run.precond_secs = std::chrono::duration<double>(t_build1 - t_build0).count();
-
-    auto t_solve0 = std::chrono::high_resolution_clock::now();
-    switch (opts.pcg_factor_precision)
-    {
-    case ichol::solver::ComputePrecision::FP64:
-        run.result = run_blockdiag_pcg_impl<double>(A, L_block, b, opts);
-        break;
-    case ichol::solver::ComputePrecision::FP32:
-        run.result = run_blockdiag_pcg_impl<float>(A, L_block, b, opts);
-        break;
-    case ichol::solver::ComputePrecision::FP16:
-        run.result = run_blockdiag_pcg_impl<half_float::half>(A, L_block, b, opts);
-        break;
-    default:
-        throw std::runtime_error("unsupported pcg factor precision");
-    }
-    auto t_solve1 = std::chrono::high_resolution_clock::now();
-    run.solve_secs = std::chrono::duration<double>(t_solve1 - t_solve0).count();
-    return run;
-}
-
-SolverRun run_additive_pcg(const ichol::matrix::CsrMatrix<double> &A,
-                           const std::vector<double> &b,
-                           const AppOptions &opts,
-                           const SubdomainBundle &bundle)
-{
-    normalize_custom_precond_precision(opts.params.prec_precond);
-
-    SolverRun run;
-    run.precond_secs = bundle.build_secs;
-
-    AdditivePrecondContext additive_ctx(bundle.preconds);
-    ichol::precond::PrecondApply additive_precond{&AdditivePrecondContext::apply, &additive_ctx};
-
-    std::vector<double> x(A.num_rows, 0.0);
-    std::vector<double> h_D(A.num_rows, 1.0);
-    ichol::solver::PCGParams pcg_params = opts.params;
-    pcg_params.custom_precond = &additive_precond;
-    pcg_params.maxits = opts.pcg_maxits;
-
-    const std::vector<int> empty_row_ptr;
-    const std::vector<int> empty_col_ind;
-    const std::vector<double> empty_vals;
-
-    auto t0 = std::chrono::high_resolution_clock::now();
-    run.result = ichol::solver::pcg<double>(
-        A.row_ptr, A.col_ind, A.values,
-        empty_row_ptr, empty_col_ind, empty_vals,
-        b,
-        x,
-        h_D,
-        pcg_params);
-    auto t1 = std::chrono::high_resolution_clock::now();
-    run.solve_secs = std::chrono::duration<double>(t1 - t0).count();
-    return run;
+    if (restart == 0)
+        return "[MPCG-FULL]";
+    return "[MPCG-R" + std::to_string(restart) + "]";
 }
 
 void print_config(const AppOptions &opts,
@@ -752,8 +465,9 @@ void print_config(const AppOptions &opts,
         << " precond_kind=" << precond_kind_to_string(opts.precond_kind)
         << " ic_level_k=" << opts.ic_level_k
         << " fsai_level_k=" << opts.fsai_level_k
-        << " mpcg_restart=" << opts.params.restart
+        << " spai_radius=" << opts.spai_radius
         << " mpcg_maxits=" << opts.params.maxits
+        << " restart_sweep=[0,5,10,15,20,25,30,35]"
         << " prec_gemm=" << precision_to_string(opts.params.prec_gemm)
         << " prec_spmm=" << precision_to_string(opts.params.prec_spmm)
         << " prec_precond=" << precision_to_string(opts.params.prec_precond)
@@ -768,7 +482,7 @@ void print_config(const AppOptions &opts,
         << "\n";
 }
 
-void print_run(const char *label,
+void print_run(const std::string &label,
                const SolverRun &run)
 {
     std::cout << label
@@ -788,6 +502,101 @@ void print_run(const char *label,
               << " reset_ms=" << run.result.timing.residual_reset_ms
               << " other_iter_ms=" << run.result.timing.other_iter_ms
               << "\n";
+}
+
+void print_rel_residuals(const std::string &label,
+                         const ichol::solver::PCGResult &result)
+{
+    std::cout << label << " relres:";
+    if (result.relResiduals.empty())
+    {
+        std::cout << " <empty>\n";
+        return;
+    }
+
+    for (std::size_t i = 0; i < result.relResiduals.size(); ++i)
+        std::cout << " (" << i << "," << result.relResiduals[i] << ")";
+    std::cout << "\n";
+}
+
+void print_residual_plot(const std::vector<RestartSweepRun> &runs)
+{
+    int max_iter = 0;
+    double min_log = 0.0;
+    double max_log = 0.0;
+    bool have_value = false;
+
+    for (const RestartSweepRun &entry : runs)
+    {
+        max_iter = std::max(max_iter, static_cast<int>(entry.run.result.relResiduals.size()));
+        for (double rr : entry.run.result.relResiduals)
+        {
+            const double clamped = std::max(rr, 1e-300);
+            const double lv = std::log10(clamped);
+            if (!have_value)
+            {
+                min_log = lv;
+                max_log = lv;
+                have_value = true;
+            }
+            else
+            {
+                min_log = std::min(min_log, lv);
+                max_log = std::max(max_log, lv);
+            }
+        }
+    }
+
+    std::cout << "[Residual Plot] log10(relative residual) vs iteration\n";
+    for (const RestartSweepRun &entry : runs)
+        std::cout << "  " << entry.symbol << " => restart=" << entry.restart << "\n";
+
+    if (!have_value || max_iter == 0)
+    {
+        std::cout << "  <no residual history available>\n";
+        return;
+    }
+
+    if (std::abs(max_log - min_log) < 1e-12)
+    {
+        max_log += 0.5;
+        min_log -= 0.5;
+    }
+
+    std::vector<std::string> grid(static_cast<std::size_t>(kPlotRows), std::string(static_cast<std::size_t>(max_iter), ' '));
+
+    for (const RestartSweepRun &entry : runs)
+    {
+        for (std::size_t iter = 0; iter < entry.run.result.relResiduals.size(); ++iter)
+        {
+            const double rr = std::max(entry.run.result.relResiduals[iter], 1e-300);
+            const double lv = std::log10(rr);
+            const double t = (lv - min_log) / (max_log - min_log);
+            int row = static_cast<int>(std::llround((1.0 - t) * (kPlotRows - 1)));
+            row = std::max(0, std::min(kPlotRows - 1, row));
+            char &cell = grid[static_cast<std::size_t>(row)][iter];
+            if (cell == ' ')
+                cell = entry.symbol;
+            else if (cell != entry.symbol)
+                cell = '*';
+        }
+    }
+
+    for (int row = 0; row < kPlotRows; ++row)
+    {
+        const double y = max_log - (max_log - min_log) * static_cast<double>(row) / static_cast<double>(kPlotRows - 1);
+        std::cout << y << " |" << grid[static_cast<std::size_t>(row)] << "\n";
+    }
+
+    std::cout << "       +";
+    for (int iter = 0; iter < max_iter; ++iter)
+        std::cout << '-';
+    std::cout << "\n";
+
+    std::cout << "        ";
+    for (int iter = 0; iter < max_iter; ++iter)
+        std::cout << (iter % 10);
+    std::cout << "\n";
 }
 } // namespace
 
@@ -810,7 +619,6 @@ int main(int argc, char **argv)
         return 0;
     }
 
-
     int exit_code = 0;
     try
     {
@@ -830,19 +638,31 @@ int main(int argc, char **argv)
         SubdomainBundle bundle = build_subdomain_bundle(A, opts);
         print_config(opts, bundle);
 
-        // Warmup
-        SolverRun mpcg_ms_run = run_mpcg_ms(A, b, opts, bundle);
-        SolverRun mpcg_run = run_mpcg(A, b, opts, bundle);
+        std::vector<RestartSweepRun> runs;
+        runs.reserve(static_cast<std::size_t>(std::size(kRestartWindows)));
 
-        mpcg_ms_run = run_mpcg_ms(A, b, opts, bundle);
-        print_run("[MPCG-MS]", mpcg_ms_run);
-        mpcg_run = run_mpcg(A, b, opts, bundle);
-        print_run("[MPCG]", mpcg_run);
+        for (std::size_t idx = 0; idx < std::size(kRestartWindows); ++idx)
+        {
+            ichol::solver::PCGParams run_params = opts.params;
+            run_params.restart = kRestartWindows[idx];
 
-        if (mpcg_run.result.finalRes > opts.params.tol * stopping_scale)
-            std::cerr << "[Warn] MPCG did not reach the requested tolerance.\n";
-        if (mpcg_ms_run.result.finalRes > opts.params.tol * stopping_scale)
-            std::cerr << "[Warn] MPCG-MS did not reach the requested tolerance.\n";
+            (void)run_mpcg_with_params(A, b, bundle, run_params);
+
+            RestartSweepRun entry;
+            entry.restart = run_params.restart;
+            entry.symbol = kPlotSymbols[idx];
+            entry.run = run_mpcg_with_params(A, b, bundle, run_params);
+            runs.push_back(entry);
+
+            const std::string label = restart_label(entry.restart);
+            print_run(label, entry.run);
+            print_rel_residuals(label, entry.run.result);
+
+            if (entry.run.result.finalRes > opts.params.tol * stopping_scale)
+                std::cerr << "[Warn] " << label << " did not reach the requested tolerance.\n";
+        }
+
+        print_residual_plot(runs);
     }
     catch (const std::exception &e)
     {

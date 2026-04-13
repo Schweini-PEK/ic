@@ -72,6 +72,7 @@ struct SolverRun
 constexpr int kTruncatedHistory = 20;
 constexpr int kMixedHistory64 = 10;
 constexpr int kMixedHistory32 = 10;
+constexpr int kMixedHistory16 = 10;
 
 std::string trim_copy(std::string s)
 {
@@ -224,10 +225,14 @@ void set_default_params(AppOptions &opts)
     opts.params.maxits = 60;
     opts.params.tol = 1e-10;
     opts.params.restart = 0;
+    opts.params.m_64 = kMixedHistory64;
+    opts.params.m_32 = kMixedHistory32;
+    opts.params.m_16 = kMixedHistory16;
     opts.params.prec_gemm = ichol::solver::ComputePrecision::FP64;
     opts.params.prec_spmm = ichol::solver::ComputePrecision::FP64;
     opts.params.prec_precond = ichol::solver::ComputePrecision::FP64;
     opts.params.prec_acc = ichol::solver::ComputePrecision::FP64;
+    opts.params.acc_prec = ichol::solver::ComputePrecision::FP64;
     opts.params.store_Znew = ichol::solver::ComputePrecision::FP64;
     opts.params.store_Pnew = ichol::solver::ComputePrecision::FP64;
     opts.params.store_Wnew = ichol::solver::ComputePrecision::FP64;
@@ -249,17 +254,21 @@ void print_usage(const char *argv0)
         << "  --seed INT                    RHS RNG seed\n"
         << "  --tol FLOAT                   solver tolerance\n"
         << "  --mpcg-maxits INT             MPCG max iterations\n"
+        << "  --mixed-m64 INT               FP64 mixed-history length\n"
+        << "  --mixed-m32 INT               FP32 mixed-history length\n"
+        << "  --mixed-m16 INT               FP16 mixed-history length\n"
         << "  --prec-gemm PREC              fp64|fp32|tf32|fp16|bf16\n"
         << "  --prec-spmm PREC              fp64|fp32|tf32|fp16|bf16\n"
         << "  --prec-precond PREC           fp64|fp32|tf32\n"
         << "  --prec-acc PREC               fp64|fp32|tf32|fp16|bf16\n"
+        << "  --acc-prec PREC               fp64|fp32|fp16 (mixed-history projection accumulation)\n"
         << "  --store-znew PREC             fp64|fp32|tf32|fp16|bf16\n"
         << "  --store-pnew PREC             fp64|fp32|tf32|fp16|bf16\n"
         << "  --store-wnew PREC             fp64|fp32|tf32|fp16|bf16\n"
         << "  --store-p-hist PREC           fp64|fp32|tf32|fp16|bf16\n"
         << "  --store-w-hist PREC           fp64|fp32|tf32|fp16|bf16\n"
         << "  --use-svd                     use SVD (pinv) for alpha solve; default is Cholesky\n"
-        << "  Fixed runs: full mpcg, truncated mpcg(restart=20), mixed mpcg(m64=10,m32=20)\n"
+        << "  Fixed runs: full mpcg, truncated mpcg(restart=20), mixed mpcg(m64/m32/m16 from params)\n"
         << "  Each method is executed twice: warmup first, then timed run.\n"
         << "  --help                        show this message\n";
 }
@@ -320,6 +329,18 @@ AppOptions parse_args(int argc, char **argv)
         {
             opts.params.maxits = parse_int(require_value(i, "--mpcg-maxits"), "--mpcg-maxits");
         }
+        else if (arg == "--mixed-m64")
+        {
+            opts.params.m_64 = parse_int(require_value(i, "--mixed-m64"), "--mixed-m64");
+        }
+        else if (arg == "--mixed-m32")
+        {
+            opts.params.m_32 = parse_int(require_value(i, "--mixed-m32"), "--mixed-m32");
+        }
+        else if (arg == "--mixed-m16")
+        {
+            opts.params.m_16 = parse_int(require_value(i, "--mixed-m16"), "--mixed-m16");
+        }
         else if (arg == "--prec-gemm")
         {
             opts.params.prec_gemm = parse_compute_precision(require_value(i, "--prec-gemm"));
@@ -335,6 +356,10 @@ AppOptions parse_args(int argc, char **argv)
         else if (arg == "--prec-acc")
         {
             opts.params.prec_acc = parse_compute_precision(require_value(i, "--prec-acc"));
+        }
+        else if (arg == "--acc-prec")
+        {
+            opts.params.acc_prec = parse_compute_precision(require_value(i, "--acc-prec"));
         }
         else if (arg == "--store-znew")
         {
@@ -372,6 +397,12 @@ AppOptions parse_args(int argc, char **argv)
         throw std::runtime_error("--subdomain entries must be positive");
     if (opts.params.maxits <= 0)
         throw std::runtime_error("--mpcg-maxits must be positive");
+    if (opts.params.m_64 <= 0)
+        throw std::runtime_error("--mixed-m64 must be positive");
+    if (opts.params.m_32 < 0)
+        throw std::runtime_error("--mixed-m32 must be non-negative");
+    if (opts.params.m_16 < 0)
+        throw std::runtime_error("--mixed-m16 must be non-negative");
     if (opts.params.tol <= 0.0)
         throw std::runtime_error("--tol must be positive");
     if (opts.ic_level_k < 0)
@@ -455,12 +486,23 @@ SolverRun run_mpcg_mixed_with_params(const ichol::matrix::CsrMatrix<double> &A,
         bundle.preconds,
         b,
         x,
-        kMixedHistory64,
-        kMixedHistory32,
         params);
     auto t1 = std::chrono::high_resolution_clock::now();
     run.solve_secs = std::chrono::duration<double>(t1 - t0).count();
     return run;
+}
+
+std::string trunc_label(const ichol::solver::PCGParams &params)
+{
+    return "[MPCG-TRUNC" + std::to_string(params.restart) + "]";
+}
+
+std::string mixed_label(const ichol::solver::PCGParams &params)
+{
+    return "[MPCG-MIXED-" +
+           std::to_string(params.m_64) + "-" +
+           std::to_string(params.m_32) + "-" +
+           std::to_string(params.m_16) + "]";
 }
 
 void print_config(const AppOptions &opts,
@@ -475,13 +517,15 @@ void print_config(const AppOptions &opts,
         << " fsai_level_k=" << opts.fsai_level_k
         << " mpcg_restart=" << opts.params.restart
         << " mpcg_maxits=" << opts.params.maxits
-        << " mixed_m64=" << kMixedHistory64
-        << " mixed_m32=" << kMixedHistory32
+        << " mixed_m64=" << opts.params.m_64
+        << " mixed_m32=" << opts.params.m_32
+        << " mixed_m16=" << opts.params.m_16
         << " truncated_restart=" << kTruncatedHistory
         << " prec_gemm=" << precision_to_string(opts.params.prec_gemm)
         << " prec_spmm=" << precision_to_string(opts.params.prec_spmm)
         << " prec_precond=" << precision_to_string(opts.params.prec_precond)
         << " prec_acc=" << precision_to_string(opts.params.prec_acc)
+        << " acc_prec=" << precision_to_string(opts.params.acc_prec)
         << " store_znew=" << precision_to_string(opts.params.store_Znew)
         << " store_pnew=" << precision_to_string(opts.params.store_Pnew)
         << " store_wnew=" << precision_to_string(opts.params.store_Wnew)
@@ -512,6 +556,21 @@ void print_run(const char *label,
               << " reset_ms=" << run.result.timing.residual_reset_ms
               << " other_iter_ms=" << run.result.timing.other_iter_ms
               << "\n";
+}
+
+void print_rel_residuals(const std::string &label,
+                         const ichol::solver::PCGResult &result)
+{
+    std::cout << label << " relres:";
+    if (result.relResiduals.empty())
+    {
+        std::cout << " <empty>\n";
+        return;
+    }
+
+    for (std::size_t i = 0; i < result.relResiduals.size(); ++i)
+        std::cout << " (" << i << "," << result.relResiduals[i] << ")";
+    std::cout << "\n";
 }
 } // namespace
 
@@ -566,20 +625,26 @@ int main(int argc, char **argv)
         SolverRun mixed_run = run_mpcg_mixed_with_params(A, b, bundle, mixed_params);
 
         full_run = run_mpcg_with_params(A, b, bundle, full_params);
+        const std::string trunc_run_label = trunc_label(truncated_params);
+        const std::string mixed_run_label = mixed_label(mixed_params);
+
         print_run("[MPCG]", full_run);
+        print_rel_residuals("[MPCG]", full_run.result);
 
         trunc_run = run_mpcg_with_params(A, b, bundle, truncated_params);
-        print_run("[MPCG-TRUNC20]", trunc_run);
+        print_run(trunc_run_label.c_str(), trunc_run);
+        print_rel_residuals(trunc_run_label, trunc_run.result);
 
         mixed_run = run_mpcg_mixed_with_params(A, b, bundle, mixed_params);
-        print_run("[MPCG-MIXED-10-20]", mixed_run);
+        print_run(mixed_run_label.c_str(), mixed_run);
+        print_rel_residuals(mixed_run_label, mixed_run.result);
 
         if (full_run.result.finalRes > opts.params.tol * stopping_scale)
             std::cerr << "[Warn] MPCG did not reach the requested tolerance.\n";
         if (trunc_run.result.finalRes > opts.params.tol * stopping_scale)
-            std::cerr << "[Warn] MPCG-TRUNC20 did not reach the requested tolerance.\n";
+            std::cerr << "[Warn] " << trunc_run_label << " did not reach the requested tolerance.\n";
         if (mixed_run.result.finalRes > opts.params.tol * stopping_scale)
-            std::cerr << "[Warn] MPCG-MIXED-10-20 did not reach the requested tolerance.\n";
+            std::cerr << "[Warn] " << mixed_run_label << " did not reach the requested tolerance.\n";
     }
     catch (const std::exception &e)
     {

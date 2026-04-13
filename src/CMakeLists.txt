@@ -150,6 +150,18 @@ if (NOT ICHOL_USE_MKL_MPCG)
 
     target_link_libraries(mpcg_improve PRIVATE ichol)
 
+    add_executable(mpcg_trunc
+        apps/mpcg_trunc.cpp
+    )
+
+    target_link_libraries(mpcg_trunc PRIVATE ichol)
+
+    add_executable(heatmap_vis
+        apps/heatmap_vis.cpp
+    )
+
+    target_link_libraries(heatmap_vis PRIVATE ichol)
+
     add_executable(mpcg_mixed_store
         apps/mpcg_mixed_store.cpp
     )

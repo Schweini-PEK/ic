@@ -1,5 +1,8 @@
 #include "backends/CUDA/subdomain_preconditioner_backend.hpp"
 #include "backends/CUDA/subdomain_sparse_solve_common.cuh"
+#include "factor/numerical/factorize.hpp"
+#include "factor/numerical/detail/numeric_plan.hpp"
+#include "factor/symbolic/symbolic.hpp"
 
 #include <cusparse.h>
 
@@ -264,6 +267,40 @@ namespace
         return out;
     }
 
+    LegacyIc0Factorization factorize_subdomain_ic(const ichol::matrix::CsrMatrix<double> &A_sub,
+                                                  int ic_level_k)
+    {
+        if (ic_level_k == 0)
+            return factorize_subdomain_ic0(A_sub);
+
+        LegacyIc0Factorization out;
+        auto A_sub_copy = A_sub;
+
+        ichol::SymbolicOptions sym_opts;
+        sym_opts.ordering = ichol::Ordering::Identity;
+        sym_opts.level_k = ic_level_k;
+        auto sym_plan = ichol::symbolic::ic_analyze(A_sub_copy, sym_opts);
+
+        ichol::IncompleteCholeskyOptions ic_opts;
+        ic_opts.scaling = ichol::Scaling::None;
+        ic_opts.pivot_shift_strategy = ichol::PivotShiftStrategy::None;
+        ic_opts.algorithm = ichol::FactorizationAlgorithm::ICKDT;
+        ic_opts.max_restarts = 1;
+        ic_opts.verbose = false;
+        ic_opts.lfil = A_sub.num_rows;
+        ic_opts.drop_tol = 0.0;
+
+        ichol::numeric::NumericPlan num_plan;
+        const auto L_sub = ichol::numeric::incomplete_cholesky_preconditioner<double>(A_sub_copy, sym_plan, num_plan, ic_opts);
+
+        out.row_ptr_l = L_sub.row_ptr;
+        out.col_ind_l = L_sub.col_ind;
+        out.val_l = L_sub.values;
+        build_csr_transpose(L_sub.num_rows, out.row_ptr_l, out.col_ind_l, out.val_l,
+                            out.row_ptr_lt, out.col_ind_lt, out.val_lt);
+        return out;
+    }
+
     template <typename T>
     void apply_ic_impl(
         SubdomainIncompleteCholeskyContext *ctx,
@@ -312,7 +349,7 @@ namespace ichol::precond::detail
 
             ctx->storage_prec = normalize_sparse_solve_precision(options.precision);
             const auto A_sub = extract_lower_subdomain_csr(A, global, reg);
-            const auto factor = factorize_subdomain_ic0(A_sub);
+            const auto factor = factorize_subdomain_ic(A_sub, options.ic_level_k);
 
             cuda_check(cudaMalloc(&ctx->d_gidx, static_cast<std::size_t>(ctx->nsub) * sizeof(int)));
             build_subdomain_gidx(ctx->d_gidx, lw, lh, ld, global.w, global.h, reg.x0, reg.y0, reg.z0);

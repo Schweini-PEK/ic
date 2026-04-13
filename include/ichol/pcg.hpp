@@ -13,11 +13,17 @@ namespace ichol::solver
         int maxits = 500;
         double tol = 1e-10;
         int restart = 0;
+        int m_64 = 10;
+        int m_32 = 10;
+        int m_16 = 10;
 
         ComputePrecision prec_gemm = ComputePrecision::FP64;
         ComputePrecision prec_spmm = ComputePrecision::FP64;
         ComputePrecision prec_precond = ComputePrecision::FP64;
         ComputePrecision prec_acc = ComputePrecision::FP64;
+        // Mixed-history projection accumulation policy for mpcg_mixed.
+        // Allowed values: FP16, FP32, FP64.
+        ComputePrecision acc_prec = ComputePrecision::FP64;
 
         ComputePrecision store_Znew = ComputePrecision::FP64;
         ComputePrecision store_Pnew = ComputePrecision::FP64;
@@ -69,6 +75,7 @@ namespace ichol::solver
         int iterations = 0;
         double finalRes = 0.0;
         std::vector<double> relResiduals;
+        std::vector<double> orthog_relcorr_heatmap;
         Timing timing;
     };
 
@@ -153,6 +160,16 @@ namespace ichol::solver
         const PCGParams &params);
 
 #ifndef ICHOL_USE_MKL_MPCG
+    template <typename T_L>
+    PCGResult mpcg_vis(
+        const std::vector<int> &h_csrRowPtrA,
+        const std::vector<int> &h_csrColIndA,
+        const std::vector<double> &h_valA,
+        const std::vector<ichol::precond::PrecondApply> &preconds,
+        const std::vector<double> &h_b,
+        std::vector<double> &h_x,
+        const PCGParams &params);
+
     // Memory Saving MPCG: Recompute W_{i+1} in each iteration instead of storing it.
     template <typename T_L>
     PCGResult mpcg_ms(
@@ -172,8 +189,6 @@ namespace ichol::solver
         const std::vector<ichol::precond::PrecondApply> &preconds,
         const std::vector<double> &h_b,
         std::vector<double> &h_x,
-        int m_64,
-        int m_32,
         const PCGParams &params);
 #endif
 } // namespace ichol::solver
