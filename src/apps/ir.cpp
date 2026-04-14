@@ -40,6 +40,7 @@ struct AppOptions
     int spai_radius = 1;
 
     ichol::solver::PCGParams params;
+    double ir_tol = 1e-10;
     bool show_help = false;
 };
 
@@ -69,7 +70,6 @@ struct SolverRun
     double solve_secs = 0.0;
 };
 
-constexpr int kTruncatedHistory = 30;
 constexpr int kMixedHistory64 = 10;
 constexpr int kMixedHistory32 = 10;
 constexpr int kMixedHistory16 = 10;
@@ -223,7 +223,7 @@ void apply_unit_col_prescaling_system(ichol::matrix::CsrMatrix<double> &A,
 void set_default_params(AppOptions &opts)
 {
     opts.params.maxits = 60;
-    opts.params.tol = 1e-10;
+    opts.params.tol = 1e-5;
     opts.params.restart = 0;
     opts.params.m_64 = kMixedHistory64;
     opts.params.m_32 = kMixedHistory32;
@@ -252,8 +252,8 @@ void print_usage(const char *argv0)
         << "  --fsai-level-k INT            level-k symbolic IC pattern used by FSAI subdomains\n"
         << "  --spai-radius INT             radius hint for SPAI subdomains\n"
         << "  --seed INT                    RHS RNG seed\n"
-        << "  --tol FLOAT                   solver tolerance\n"
-        << "  --mpcg-maxits INT             MPCG max iterations\n"
+        << "  --tol FLOAT                   iterative refinement tolerance\n"
+        << "  --mpcg-maxits INT             outer IR and inner MPCG max iterations\n"
         << "  --mixed-m64 INT               FP64 mixed-history length\n"
         << "  --mixed-m32 INT               FP32 mixed-history length\n"
         << "  --mixed-m16 INT               FP16 mixed-history length\n"
@@ -268,8 +268,8 @@ void print_usage(const char *argv0)
         << "  --store-p-hist PREC           fp64|fp32|tf32|fp16|bf16\n"
         << "  --store-w-hist PREC           fp64|fp32|tf32|fp16|bf16\n"
         << "  --use-svd                     use SVD (pinv) for alpha solve; default is Cholesky\n"
-        << "  Fixed runs: full mpcg, truncated mpcg(restart=30), mixed mpcg(m64/m32/m16 from params)\n"
-        << "  Each method is executed twice: warmup first, then timed run.\n"
+        << "  Runs iterative refinement with MPCG low-storage as the inner solver; warmup first, then timed run.\n"
+        << "  Default tolerances: IR=1e-10, inner MPCG=1e-5.\n"
         << "  --help                        show this message\n";
 }
 
@@ -323,7 +323,7 @@ AppOptions parse_args(int argc, char **argv)
         }
         else if (arg == "--tol")
         {
-            opts.params.tol = parse_double(require_value(i, "--tol"), "--tol");
+            opts.ir_tol = parse_double(require_value(i, "--tol"), "--tol");
         }
         else if (arg == "--mpcg-maxits")
         {
@@ -405,7 +405,7 @@ AppOptions parse_args(int argc, char **argv)
         throw std::runtime_error("--mixed-m16 must be non-negative");
     if (opts.params.m_64 == 0 && opts.params.m_32 == 0 && opts.params.m_16 == 0)
         throw std::runtime_error("At least one of --mixed-m64/--mixed-m32/--mixed-m16 must be positive");
-    if (opts.params.tol <= 0.0)
+    if (opts.ir_tol <= 0.0)
         throw std::runtime_error("--tol must be positive");
     if (opts.ic_level_k < 0)
         throw std::runtime_error("--ic-level-k must be non-negative");
@@ -452,17 +452,17 @@ SubdomainBundle build_subdomain_bundle(const ichol::matrix::CsrMatrix<double> &A
     return bundle;
 }
 
-SolverRun run_mpcg_with_params(const ichol::matrix::CsrMatrix<double> &A,
-                               const std::vector<double> &b,
-                               const SubdomainBundle &bundle,
-                               const ichol::solver::PCGParams &params)
+SolverRun run_ir_with_params(const ichol::matrix::CsrMatrix<double> &A,
+                             const std::vector<double> &b,
+                             const SubdomainBundle &bundle,
+                             const ichol::solver::IterativeRefinementParams &params)
 {
     SolverRun run;
     run.precond_secs = bundle.build_secs;
 
     std::vector<double> x(A.num_rows, 0.0);
     auto t0 = std::chrono::high_resolution_clock::now();
-    run.result = ichol::solver::mpcg<double>(
+    run.result = ichol::solver::ir<double>(
         A.row_ptr, A.col_ind, A.values,
         bundle.preconds,
         b,
@@ -473,35 +473,9 @@ SolverRun run_mpcg_with_params(const ichol::matrix::CsrMatrix<double> &A,
     return run;
 }
 
-SolverRun run_mpcg_mixed_with_params(const ichol::matrix::CsrMatrix<double> &A,
-                                     const std::vector<double> &b,
-                                     const SubdomainBundle &bundle,
-                                     const ichol::solver::PCGParams &params)
+std::string ir_label(const ichol::solver::PCGParams &params)
 {
-    SolverRun run;
-    run.precond_secs = bundle.build_secs;
-
-    std::vector<double> x(A.num_rows, 0.0);
-    auto t0 = std::chrono::high_resolution_clock::now();
-    run.result = ichol::solver::mpcg_mixed<double>(
-        A.row_ptr, A.col_ind, A.values,
-        bundle.preconds,
-        b,
-        x,
-        params);
-    auto t1 = std::chrono::high_resolution_clock::now();
-    run.solve_secs = std::chrono::duration<double>(t1 - t0).count();
-    return run;
-}
-
-std::string trunc_label(const ichol::solver::PCGParams &params)
-{
-    return "[MPCG-TRUNC" + std::to_string(params.restart) + "]";
-}
-
-std::string mixed_label(const ichol::solver::PCGParams &params)
-{
-    return "[MPCG-MIXED-" +
+    return "[IR-MPCG-LOW-" +
            std::to_string(params.m_64) + "-" +
            std::to_string(params.m_32) + "-" +
            std::to_string(params.m_16) + "]";
@@ -518,11 +492,10 @@ void print_config(const AppOptions &opts,
         << " precond_kind=" << precond_kind_to_string(opts.precond_kind)
         << " fsai_level_k=" << opts.fsai_level_k
         << " mpcg_restart=" << opts.params.restart
-        << " mpcg_maxits=" << opts.params.maxits
+        << " maxits=" << opts.params.maxits
         << " mixed_m64=" << opts.params.m_64
         << " mixed_m32=" << opts.params.m_32
         << " mixed_m16=" << opts.params.m_16
-        << " truncated_restart=" << kTruncatedHistory
         << " prec_gemm=" << precision_to_string(opts.params.prec_gemm)
         << " prec_spmm=" << precision_to_string(opts.params.prec_spmm)
         << " prec_precond=" << precision_to_string(opts.params.prec_precond)
@@ -533,7 +506,8 @@ void print_config(const AppOptions &opts,
         << " store_wnew=" << precision_to_string(opts.params.store_Wnew)
         << " store_p_hist=" << precision_to_string(opts.params.store_P_hist)
         << " store_w_hist=" << precision_to_string(opts.params.store_W_hist)
-        << " tol=" << opts.params.tol
+        << " ir_tol=" << opts.ir_tol
+        << " mpcg_tol=" << opts.params.tol
         << " seed=" << opts.seed
         << "\n";
 }
@@ -614,39 +588,21 @@ int main(int argc, char **argv)
         SubdomainBundle bundle = build_subdomain_bundle(A, opts);
         print_config(opts, bundle);
 
-        const ichol::solver::PCGParams full_params = opts.params;
+        ichol::solver::IterativeRefinementParams ir_params;
+        ir_params.maxits = opts.params.maxits;
+        ir_params.tol = opts.ir_tol;
+        ir_params.inner_params = opts.params;
 
-        ichol::solver::PCGParams truncated_params = opts.params;
-        truncated_params.restart = kTruncatedHistory;
+        const std::string run_label = ir_label(ir_params.inner_params);
 
-        const ichol::solver::PCGParams mixed_params = opts.params;
+        (void)run_ir_with_params(A, b, bundle, ir_params);
 
-        // Warmup
-        SolverRun full_run = run_mpcg_with_params(A, b, bundle, full_params);
-        SolverRun trunc_run = run_mpcg_with_params(A, b, bundle, truncated_params);
-        SolverRun mixed_run = run_mpcg_mixed_with_params(A, b, bundle, mixed_params);
+        const SolverRun ir_run = run_ir_with_params(A, b, bundle, ir_params);
+        print_run(run_label.c_str(), ir_run);
+        print_rel_residuals(run_label, ir_run.result);
 
-        full_run = run_mpcg_with_params(A, b, bundle, full_params);
-        const std::string trunc_run_label = trunc_label(truncated_params);
-        const std::string mixed_run_label = mixed_label(mixed_params);
-
-        print_run("[MPCG]", full_run);
-        print_rel_residuals("[MPCG]", full_run.result);
-
-        trunc_run = run_mpcg_with_params(A, b, bundle, truncated_params);
-        print_run(trunc_run_label.c_str(), trunc_run);
-        print_rel_residuals(trunc_run_label, trunc_run.result);
-
-        mixed_run = run_mpcg_mixed_with_params(A, b, bundle, mixed_params);
-        print_run(mixed_run_label.c_str(), mixed_run);
-        print_rel_residuals(mixed_run_label, mixed_run.result);
-
-        if (full_run.result.finalRes > opts.params.tol * stopping_scale)
-            std::cerr << "[Warn] MPCG did not reach the requested tolerance.\n";
-        if (trunc_run.result.finalRes > opts.params.tol * stopping_scale)
-            std::cerr << "[Warn] " << trunc_run_label << " did not reach the requested tolerance.\n";
-        if (mixed_run.result.finalRes > opts.params.tol * stopping_scale)
-            std::cerr << "[Warn] " << mixed_run_label << " did not reach the requested tolerance.\n";
+        if (ir_run.result.finalRes > opts.ir_tol * stopping_scale)
+            std::cerr << "[Warn] " << run_label << " did not reach the requested tolerance.\n";
     }
     catch (const std::exception &e)
     {
