@@ -396,9 +396,6 @@ __global__ void k_cast_f2d_mat(const float *src, double *dst, int N)
 
 __global__ void k_axpy_half_vec(const __half *src, __half *dst, int N)
 {
-    // Localized fallback helper: preserve an fp16 tier accumulator even if a
-    // target rejects the pure fp16 GEMM triplet and we had to widen one slot's
-    // dense math to fp32 first.
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= N)
         return;
@@ -2441,6 +2438,1372 @@ namespace ichol::solver
         int oldest = 0;
     };
 
+    struct MixedHistoryRing16Low
+    {
+        __half *d_P = nullptr;
+        __half *d_W = nullptr;
+        float *d_Ginv = nullptr;
+        int capacity = 0;
+        int count = 0;
+        int oldest = 0;
+    };
+
+    template <typename T_L>
+    static PCGResult mpcg_low_storage_core(
+        int n,
+        int64_t nnzA,
+        int *d_rowPtrA,
+        int *d_colIndA,
+        double *d_valA,
+        const std::vector<ichol::precond::PrecondApply> &preconds,
+        const double *d_b,
+        double *d_x,
+        const PCGParams &params,
+        std::vector<double> *h_x_out = nullptr)
+    {
+        using Clock = std::chrono::steady_clock;
+        const char *solver_label = "MPCG-LOW-STORAGE";
+
+        const int k = static_cast<int>(preconds.size());
+        const int m_64 = params.m_64;
+        const int m_32 = params.m_32;
+        const int m_16 = params.m_16;
+
+        if (m_64 < 0)
+            throw std::runtime_error("mpcg_low_storage_impl: m_64 must be non-negative");
+        if (m_32 < 0)
+            throw std::runtime_error("mpcg_low_storage_impl: m_32 must be non-negative");
+        if (m_16 < 0)
+            throw std::runtime_error("mpcg_low_storage_impl: m_16 must be non-negative");
+
+        const bool collect_timing = true;
+        const bool profile_enabled = params.verbose;
+        const auto total_wall_start = Clock::now();
+        double warmup_wall_ms = 0.0;
+
+        ProfilePhase phase_precond{};
+        ProfilePhase phase_ortho{};
+        ProfilePhase phase_spmm{};
+        ProfilePhase phase_dense{};
+        ProfilePhase phase_reset{};
+
+        cublasHandle_t cublas = nullptr;
+        cusparseHandle_t cusparse = nullptr;
+        cusolverDnHandle_t cusolver = nullptr;
+        CUBLAS_CHECK(cublasCreate(&cublas));
+        CUSPARSE_CHECK(cusparseCreate(&cusparse));
+        CUSOLVER_CHECK(cusolverDnCreate(&cusolver));
+
+        cudaStream_t stream = nullptr;
+        CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+        CUBLAS_CHECK(cublasSetStream(cublas, stream));
+        CUSPARSE_CHECK(cusparseSetStream(cusparse, stream));
+        CUSOLVER_CHECK(cusolverDnSetStream(cusolver, stream));
+
+        auto init_phase = [&](ProfilePhase &phase)
+        {
+            if (!collect_timing)
+                return;
+            CUDA_CHECK(cudaEventCreate(&phase.start));
+            CUDA_CHECK(cudaEventCreate(&phase.stop));
+        };
+        auto destroy_phase = [&](ProfilePhase &phase)
+        {
+            if (!phase.start)
+                return;
+            CUDA_CHECK(cudaEventDestroy(phase.start));
+            CUDA_CHECK(cudaEventDestroy(phase.stop));
+        };
+        auto phase_begin = [&](ProfilePhase &phase)
+        {
+            if (collect_timing)
+                CUDA_CHECK(cudaEventRecord(phase.start, stream));
+        };
+        auto phase_end = [&](ProfilePhase &phase)
+        {
+            if (collect_timing)
+                CUDA_CHECK(cudaEventRecord(phase.stop, stream));
+        };
+        auto phase_accumulate = [&](ProfilePhase &phase)
+        {
+            if (!collect_timing || !phase.start)
+                return;
+            float elapsed_ms = 0.0f;
+            CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, phase.start, phase.stop));
+            phase.total_ms += static_cast<double>(elapsed_ms);
+        };
+
+        init_phase(phase_precond);
+        init_phase(phase_ortho);
+        init_phase(phase_spmm);
+        init_phase(phase_dense);
+        init_phase(phase_reset);
+
+        std::vector<cudaStream_t> precond_streams(k);
+        std::vector<cudaEvent_t> precond_events(k);
+        cudaEvent_t main_stream_ready = nullptr;
+        CUDA_CHECK(cudaEventCreateWithFlags(&main_stream_ready, cudaEventDisableTiming));
+        for (int t = 0; t < k; ++t)
+        {
+            CUDA_CHECK(cudaStreamCreateWithFlags(&precond_streams[t], cudaStreamNonBlocking));
+            CUDA_CHECK(cudaEventCreateWithFlags(&precond_events[t], cudaEventDisableTiming));
+        }
+
+        cudaStream_t proj64_stream = nullptr;
+        cudaStream_t proj32_stream = nullptr;
+        cudaStream_t proj16_stream = nullptr;
+        CUDA_CHECK(cudaStreamCreateWithFlags(&proj64_stream, cudaStreamNonBlocking));
+        CUDA_CHECK(cudaStreamCreateWithFlags(&proj32_stream, cudaStreamNonBlocking));
+        CUDA_CHECK(cudaStreamCreateWithFlags(&proj16_stream, cudaStreamNonBlocking));
+
+        cublasHandle_t cublas_proj64 = nullptr;
+        cublasHandle_t cublas_proj32 = nullptr;
+        cublasHandle_t cublas_proj16 = nullptr;
+        CUBLAS_CHECK(cublasCreate(&cublas_proj64));
+        CUBLAS_CHECK(cublasCreate(&cublas_proj32));
+        CUBLAS_CHECK(cublasCreate(&cublas_proj16));
+        CUBLAS_CHECK(cublasSetStream(cublas_proj64, proj64_stream));
+        CUBLAS_CHECK(cublasSetStream(cublas_proj32, proj32_stream));
+        CUBLAS_CHECK(cublasSetStream(cublas_proj16, proj16_stream));
+
+        cudaEvent_t proj_input_ready = nullptr;
+        cudaEvent_t proj64_done = nullptr;
+        cudaEvent_t proj32_done = nullptr;
+        cudaEvent_t proj16_done = nullptr;
+        CUDA_CHECK(cudaEventCreateWithFlags(&proj_input_ready, cudaEventDisableTiming));
+        CUDA_CHECK(cudaEventCreateWithFlags(&proj64_done, cudaEventDisableTiming));
+        CUDA_CHECK(cudaEventCreateWithFlags(&proj32_done, cudaEventDisableTiming));
+        CUDA_CHECK(cudaEventCreateWithFlags(&proj16_done, cudaEventDisableTiming));
+
+        CublasScalars scalars;
+        DeviceCublasScalars dev_scalars;
+        PinvSVDWorkspace pinv_ws{};
+        CholWorkspace chol_ws{};
+
+        const ComputePrecision requested_proj_acc =
+            normalize_projection_accum_precision(params.acc_prec);
+        const ComputePrecision hist32_acc_prec =
+            resolve_history_tier_accum_precision(ComputePrecision::FP32, requested_proj_acc);
+        const ComputePrecision hist16_acc_prec =
+            resolve_history_tier_accum_precision(ComputePrecision::FP16, requested_proj_acc);
+
+        PrecisionMap g_map = get_precision_map(params.prec_gemm, params.prec_acc);
+        SpmmMap spmm_map = get_spmm_map(params.prec_spmm, params.prec_acc);
+        StorageMap precond_map = get_precond_map(params.prec_precond);
+        StorageMap Znew_store_map = get_storage_map(params.store_Znew);
+        StorageMap Pnew_store_map = get_storage_map(params.store_Pnew);
+        StorageMap Wnew_store_map = get_storage_map(params.store_Wnew);
+
+        const bool enable_anorm_reprojection =
+            (m_32 > 0 || m_16 > 0) && params.projection_anorm_drop_tol > 0.0;
+        const bool use_mixed_spmm = (spmm_map.io_prec != ComputePrecision::FP64);
+        const double anorm_drop_tol_sq =
+            params.projection_anorm_drop_tol * params.projection_anorm_drop_tol;
+
+        const size_t nk = static_cast<size_t>(n) * static_cast<size_t>(k);
+
+        void *d_valA_spmm = nullptr;
+        double *d_r = nullptr;
+        double *d_tmp = nullptr;
+
+        CUDA_CHECK(cudaMalloc(&d_r, static_cast<size_t>(n) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_tmp, static_cast<size_t>(n) * sizeof(double)));
+
+        const float h_s32[] = {1.0f, 0.0f, -1.0f};
+        const double h_s64[] = {1.0, 0.0, -1.0};
+        CUDA_CHECK(cudaMalloc(&dev_scalars.d_s32, 3 * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&dev_scalars.d_s64, 3 * sizeof(double)));
+        CUDA_CHECK(cudaMemcpyAsync(dev_scalars.d_s32, h_s32, 3 * sizeof(float), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev_scalars.d_s64, h_s64, 3 * sizeof(double), cudaMemcpyHostToDevice, stream));
+        CUBLAS_CHECK(cublasSetPointerMode(cublas, CUBLAS_POINTER_MODE_DEVICE));
+        CUBLAS_CHECK(cublasSetPointerMode(cublas_proj64, CUBLAS_POINTER_MODE_DEVICE));
+        CUBLAS_CHECK(cublasSetPointerMode(cublas_proj32, CUBLAS_POINTER_MODE_DEVICE));
+        CUBLAS_CHECK(cublasSetPointerMode(cublas_proj16, CUBLAS_POINTER_MODE_DEVICE));
+
+        if (use_mixed_spmm)
+        {
+            CUDA_CHECK(cudaMalloc(&d_valA_spmm, static_cast<size_t>(nnzA) * spmm_map.el_size));
+            const int spmm_cast_threads = 256;
+            const int spmm_cast_blocks = static_cast<int>((nnzA + spmm_cast_threads - 1) / spmm_cast_threads);
+            k_cast_d2any<<<spmm_cast_blocks, spmm_cast_threads, 0, stream>>>(
+                d_valA, d_valA_spmm, static_cast<int>(nnzA), spmm_map.io_prec);
+        }
+
+        double *d_Znew = nullptr;
+        double *d_Pnew = nullptr;
+        double *d_Wnew = nullptr;
+        double *d_Wz = nullptr;
+        void *d_r_precond = nullptr;
+        void *d_Znew_precond = nullptr;
+        void *d_Znew_store = nullptr;
+        void *d_Pnew_store = nullptr;
+        void *d_Wnew_store = nullptr;
+        void *d_spmm_in_tmp = nullptr;
+        void *d_spmm_out_tmp = nullptr;
+
+        CUDA_CHECK(cudaMalloc(&d_Znew, nk * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_Pnew, nk * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_Wnew, nk * sizeof(double)));
+        if (enable_anorm_reprojection)
+            CUDA_CHECK(cudaMalloc(&d_Wz, nk * sizeof(double)));
+
+        if (precond_map.storage_prec != ComputePrecision::FP64)
+        {
+            CUDA_CHECK(cudaMalloc(&d_r_precond, static_cast<size_t>(n) * precond_map.el_size));
+            CUDA_CHECK(cudaMalloc(&d_Znew_precond, nk * precond_map.el_size));
+        }
+
+        if (Znew_store_map.storage_prec != ComputePrecision::FP64)
+            CUDA_CHECK(cudaMalloc(&d_Znew_store, nk * Znew_store_map.el_size));
+        if (Pnew_store_map.storage_prec != ComputePrecision::FP64)
+            CUDA_CHECK(cudaMalloc(&d_Pnew_store, nk * Pnew_store_map.el_size));
+        if (Wnew_store_map.storage_prec != ComputePrecision::FP64)
+            CUDA_CHECK(cudaMalloc(&d_Wnew_store, nk * Wnew_store_map.el_size));
+
+        const bool need_spmm_input_tmp =
+            use_mixed_spmm &&
+            ((Znew_store_map.storage_prec != spmm_map.io_prec) ||
+             (Pnew_store_map.storage_prec != spmm_map.io_prec));
+        const bool need_spmm_output_tmp =
+            use_mixed_spmm &&
+            ((Wnew_store_map.storage_prec != spmm_map.io_prec) ||
+             enable_anorm_reprojection);
+
+        if (need_spmm_input_tmp)
+            CUDA_CHECK(cudaMalloc(&d_spmm_in_tmp, nk * spmm_map.el_size));
+        if (need_spmm_output_tmp)
+            CUDA_CHECK(cudaMalloc(&d_spmm_out_tmp, nk * spmm_map.el_size));
+
+        double *d_Pnew_low = nullptr;
+        double *d_Wnew_low = nullptr;
+        double *d_Wj_low = nullptr;
+        float *d_C_gemm = nullptr;
+        if (g_map.output_type != CUDA_R_64F)
+        {
+            CUDA_CHECK(cudaMalloc(&d_Pnew_low, nk * g_map.el_size));
+            CUDA_CHECK(cudaMalloc(&d_Wnew_low, nk * g_map.el_size));
+            CUDA_CHECK(cudaMalloc(&d_Wj_low, nk * g_map.el_size));
+            CUDA_CHECK(cudaMalloc(&d_C_gemm, static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(float)));
+        }
+
+        double *d_Gnew = nullptr;
+        double *d_rhs = nullptr;
+        double *d_alpha = nullptr;
+        double *d_col_scale = nullptr;
+        double *d_scalar_tmp = nullptr;
+        double *d_col_norms = nullptr;
+        double *d_z_anorm_cols = nullptr;
+        double *d_p_anorm_cols = nullptr;
+        double *d_eye = nullptr;
+        int *d_reproject_flag = nullptr;
+
+        CUDA_CHECK(cudaMalloc(&d_Gnew, static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_rhs, static_cast<size_t>(k) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_alpha, static_cast<size_t>(k) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_col_scale, static_cast<size_t>(k) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_scalar_tmp, 2 * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_col_norms, static_cast<size_t>(k) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_z_anorm_cols, static_cast<size_t>(k) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_p_anorm_cols, static_cast<size_t>(k) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_reproject_flag, sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&d_eye, static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(double)));
+        k_set_identity<<<((k * k) + 255) / 256, 256, 0, stream>>>(d_eye, k);
+
+        if (k > 32)
+        {
+            pinv_ws.k = k;
+            pinv_ws.max_nrhs = k;
+            CUSOLVER_CHECK(cusolverDnDgesvd_bufferSize(cusolver, k, k, &pinv_ws.lwork));
+            CUDA_CHECK(cudaMalloc(&pinv_ws.d_G_copy, static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&pinv_ws.d_S, static_cast<size_t>(k) * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&pinv_ws.d_U, static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&pinv_ws.d_VT, static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&pinv_ws.d_work, static_cast<size_t>(pinv_ws.lwork) * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&pinv_ws.d_S_inv, static_cast<size_t>(k) * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&pinv_ws.d_T1, static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&pinv_ws.d_info, sizeof(int)));
+        }
+
+        if (!params.use_svd && k > 32)
+        {
+            chol_ws.k = k;
+            chol_ws.max_nrhs = k;
+            CUDA_CHECK(cudaMalloc(&chol_ws.d_G_copy, static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(double)));
+            CUSOLVER_CHECK(cusolverDnDpotrf_bufferSize(
+                cusolver, CUBLAS_FILL_MODE_LOWER, k,
+                chol_ws.d_G_copy, k, &chol_ws.lwork));
+            CUDA_CHECK(cudaMalloc(&chol_ws.d_work, static_cast<size_t>(chol_ws.lwork) * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&chol_ws.d_info, sizeof(int)));
+        }
+
+        MixedHistoryRing64 hist64{};
+        hist64.capacity = m_64;
+        MixedHistoryRing32 hist32{};
+        hist32.capacity = m_32;
+        MixedHistoryRing16Low hist16{};
+        hist16.capacity = m_16;
+
+        if (hist64.capacity > 0)
+        {
+            CUDA_CHECK(cudaMalloc(&hist64.d_P, static_cast<size_t>(hist64.capacity) * nk * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&hist64.d_W, static_cast<size_t>(hist64.capacity) * nk * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&hist64.d_Ginv, static_cast<size_t>(hist64.capacity) * static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(double)));
+        }
+
+        if (hist32.capacity > 0)
+        {
+            CUDA_CHECK(cudaMalloc(&hist32.d_P, static_cast<size_t>(hist32.capacity) * nk * sizeof(float)));
+            CUDA_CHECK(cudaMalloc(&hist32.d_W, static_cast<size_t>(hist32.capacity) * nk * sizeof(float)));
+            CUDA_CHECK(cudaMalloc(&hist32.d_Ginv, static_cast<size_t>(hist32.capacity) * static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(float)));
+        }
+
+        if (hist16.capacity > 0)
+        {
+            CUDA_CHECK(cudaMalloc(&hist16.d_P, static_cast<size_t>(hist16.capacity) * nk * sizeof(__half)));
+            CUDA_CHECK(cudaMalloc(&hist16.d_W, static_cast<size_t>(hist16.capacity) * nk * sizeof(__half)));
+            CUDA_CHECK(cudaMalloc(&hist16.d_Ginv, static_cast<size_t>(hist16.capacity) * static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(float)));
+        }
+
+        if (params.verbose)
+        {
+            const double fp64_hist_bytes =
+                static_cast<double>(
+                    static_cast<size_t>(hist64.capacity) * nk * 2 * sizeof(double) +
+                    static_cast<size_t>(hist64.capacity) * static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(double));
+            const double fp32_hist_bytes =
+                static_cast<double>(
+                    static_cast<size_t>(hist32.capacity) * nk * 2 * sizeof(float) +
+                    static_cast<size_t>(hist32.capacity) * static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(float));
+            const double fp16_hist_bytes =
+                static_cast<double>(
+                    static_cast<size_t>(hist16.capacity) * nk * 2 * sizeof(__half) +
+                    static_cast<size_t>(hist16.capacity) * static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(float));
+
+            std::fprintf(stderr,
+                         "[%s history] m64=%d m32=%d m16=%d nk=%zu fp64=%.3f MiB fp32=%.3f MiB fp16-low=%.3f MiB total=%.3f MiB\n",
+                         solver_label, hist64.capacity, hist32.capacity, hist16.capacity, nk,
+                         fp64_hist_bytes / (1024.0 * 1024.0),
+                         fp32_hist_bytes / (1024.0 * 1024.0),
+                         fp16_hist_bytes / (1024.0 * 1024.0),
+                         (fp64_hist_bytes + fp32_hist_bytes + fp16_hist_bytes) / (1024.0 * 1024.0));
+        }
+
+        double *d_hist_C64 = nullptr;
+        double *d_hist_Y64 = nullptr;
+        double *d_corr64 = nullptr;
+        CUDA_CHECK(cudaMalloc(&d_hist_C64, static_cast<size_t>(std::max(1, hist64.capacity)) * static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_hist_Y64, static_cast<size_t>(std::max(1, hist64.capacity)) * static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_corr64, nk * sizeof(double)));
+
+        float *d_Pnew_proj32 = nullptr;
+        float *d_hist_C32 = nullptr;
+        float *d_hist_Y32 = nullptr;
+        float *d_delta32 = nullptr;
+        float *d_corr32 = nullptr;
+        double *d_corr32_fp64 = nullptr;
+        double *d_delta32_fp64 = nullptr;
+        if (hist32.capacity > 0)
+        {
+            CUDA_CHECK(cudaMalloc(&d_Pnew_proj32, nk * sizeof(float)));
+            CUDA_CHECK(cudaMalloc(&d_hist_C32, static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(float)));
+            CUDA_CHECK(cudaMalloc(&d_hist_Y32, static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(float)));
+            CUDA_CHECK(cudaMalloc(&d_delta32, nk * sizeof(float)));
+            CUDA_CHECK(cudaMalloc(&d_corr32_fp64, nk * sizeof(double)));
+            if (hist32_acc_prec == ComputePrecision::FP64)
+                CUDA_CHECK(cudaMalloc(&d_delta32_fp64, nk * sizeof(double)));
+            else
+                CUDA_CHECK(cudaMalloc(&d_corr32, nk * sizeof(float)));
+        }
+
+        float *d_Pnew_proj16_f32 = nullptr;
+        float *d_W16_tmp32 = nullptr;
+        float *d_P16_tmp32 = nullptr;
+        float *d_hist_C16_f32 = nullptr;
+        float *d_hist_Y16_f32 = nullptr;
+        float *d_delta16_fp32 = nullptr;
+        float *d_corr16_fp32 = nullptr;
+        double *d_corr16_fp64 = nullptr;
+        double *d_delta16_fp64 = nullptr;
+        if (hist16.capacity > 0)
+        {
+            CUDA_CHECK(cudaMalloc(&d_Pnew_proj16_f32, nk * sizeof(float)));
+            CUDA_CHECK(cudaMalloc(&d_W16_tmp32, nk * sizeof(float)));
+            CUDA_CHECK(cudaMalloc(&d_P16_tmp32, nk * sizeof(float)));
+            CUDA_CHECK(cudaMalloc(&d_hist_C16_f32, static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(float)));
+            CUDA_CHECK(cudaMalloc(&d_hist_Y16_f32, static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(float)));
+            CUDA_CHECK(cudaMalloc(&d_delta16_fp32, nk * sizeof(float)));
+            CUDA_CHECK(cudaMalloc(&d_corr16_fp64, nk * sizeof(double)));
+            if (hist16_acc_prec == ComputePrecision::FP64)
+                CUDA_CHECK(cudaMalloc(&d_delta16_fp64, nk * sizeof(double)));
+            else
+                CUDA_CHECK(cudaMalloc(&d_corr16_fp32, nk * sizeof(float)));
+        }
+
+        cusparseSpMatDescr_t matA = nullptr;
+        cusparseSpMatDescr_t matA_spmm = nullptr;
+        cusparseDnMatDescr_t dnB = nullptr;
+        cusparseDnMatDescr_t dnC = nullptr;
+        cusparseDnVecDescr_t vecX = nullptr;
+        cusparseDnVecDescr_t vecTmp = nullptr;
+        void *d_spmvBuf = nullptr;
+        void *d_spmmBuf = nullptr;
+
+        CUSPARSE_CHECK(cusparseCreateCsr(
+            &matA, n, n, nnzA,
+            d_rowPtrA, d_colIndA, d_valA,
+            CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
+            CUSPARSE_INDEX_BASE_ZERO,
+            CUDA_R_64F));
+
+        if (use_mixed_spmm)
+        {
+            CUSPARSE_CHECK(cusparseCreateCsr(
+                &matA_spmm, n, n, nnzA,
+                d_rowPtrA, d_colIndA, d_valA_spmm,
+                CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
+                CUSPARSE_INDEX_BASE_ZERO,
+                spmm_map.data_type));
+        }
+
+        void *spmm_B_ptr = use_mixed_spmm
+                               ? (d_spmm_in_tmp ? d_spmm_in_tmp : d_Pnew_store)
+                               : static_cast<void *>(d_Pnew);
+        void *spmm_C_ptr = use_mixed_spmm
+                               ? (d_spmm_out_tmp ? d_spmm_out_tmp : d_Wnew_store)
+                               : static_cast<void *>(d_Wnew);
+
+        CUSPARSE_CHECK(cusparseCreateDnMat(&dnB, n, k, n, spmm_B_ptr,
+                                           use_mixed_spmm ? spmm_map.data_type : CUDA_R_64F,
+                                           CUSPARSE_ORDER_COL));
+        CUSPARSE_CHECK(cusparseCreateDnMat(&dnC, n, k, n, spmm_C_ptr,
+                                           use_mixed_spmm ? spmm_map.data_type : CUDA_R_64F,
+                                           CUSPARSE_ORDER_COL));
+
+        CUSPARSE_CHECK(cusparseCreateDnVec(&vecX, n, d_x, CUDA_R_64F));
+        CUSPARSE_CHECK(cusparseCreateDnVec(&vecTmp, n, d_tmp, CUDA_R_64F));
+
+        size_t spmv_buf_size = 0;
+        CUSPARSE_CHECK(cusparseSpMV_bufferSize(
+            cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
+            &scalars.s64_one, matA, vecX,
+            &scalars.s64_zero, vecTmp,
+            CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, &spmv_buf_size));
+        CUDA_CHECK(cudaMalloc(&d_spmvBuf, spmv_buf_size));
+
+        CUSPARSE_CHECK(cusparseSpMV(
+            cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
+            &scalars.s64_one, matA, vecX,
+            &scalars.s64_zero, vecTmp,
+            CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, d_spmvBuf));
+
+        CUDA_CHECK(cudaMemcpyAsync(d_r, d_b, static_cast<size_t>(n) * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+        CUBLAS_CHECK(cublasDaxpy(cublas, n, dev_scalars.m_one64(), d_tmp, 1, d_r, 1));
+
+        double bnorm = 0.0;
+        CUBLAS_CHECK(cublasDnrm2(cublas, n, d_b, 1, d_scalar_tmp + 0));
+        CUDA_CHECK(cudaMemcpyAsync(&bnorm, d_scalar_tmp + 0, sizeof(double), cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        if (bnorm == 0.0)
+            bnorm = 1.0;
+
+        double current_res_norm = 0.0;
+        CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, d_scalar_tmp + 1));
+        CUDA_CHECK(cudaMemcpyAsync(&current_res_norm, d_scalar_tmp + 1, sizeof(double), cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+
+        size_t spmm_buf_size = 0;
+        CUSPARSE_CHECK(cusparseSpMM_bufferSize(
+            cusparse,
+            CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+            scalars.one(use_mixed_spmm ? spmm_map.compute_type : CUDA_R_64F),
+            use_mixed_spmm ? matA_spmm : matA, dnB,
+            scalars.zero(use_mixed_spmm ? spmm_map.compute_type : CUDA_R_64F), dnC,
+            use_mixed_spmm ? spmm_map.compute_type : CUDA_R_64F,
+            CUSPARSE_SPMM_ALG_DEFAULT, &spmm_buf_size));
+        CUDA_CHECK(cudaMalloc(&d_spmmBuf, spmm_buf_size));
+
+        const int threads = 256;
+        const int blocks_nk = static_cast<int>((nk + static_cast<size_t>(threads) - 1) / static_cast<size_t>(threads));
+        const int blocks_kk = static_cast<int>(((static_cast<size_t>(k) * static_cast<size_t>(k)) + static_cast<size_t>(threads) - 1) / static_cast<size_t>(threads));
+
+        double hist_rcond = get_safe_rcond(
+            (hist16.capacity > 0) ? ComputePrecision::FP16 : (hist32.capacity > 0) ? ComputePrecision::FP32
+                                                                                   : ComputePrecision::FP64,
+            params.rcond_base);
+        hist_rcond = std::max(hist_rcond, 1e-15);
+        const int reset_iter = (hist32.capacity > 0 || hist16.capacity > 0) ? 10 : 50;
+        const StorageMap fp64_storage = get_storage_map(ComputePrecision::FP64);
+
+        auto run_spmm = [&](const double *src_fp64,
+                            void *src_store,
+                            const StorageMap &src_store_map,
+                            double *dst_fp64,
+                            void *dst_store,
+                            const StorageMap &dst_store_map)
+        {
+            if (!use_mixed_spmm)
+            {
+                CUSPARSE_CHECK(cusparseDnMatSetValues(dnB, const_cast<double *>(src_fp64)));
+                CUSPARSE_CHECK(cusparseDnMatSetValues(dnC, dst_fp64));
+                CUSPARSE_CHECK(cusparseSpMM(
+                    cusparse,
+                    CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                    &scalars.s64_one, matA, dnB,
+                    &scalars.s64_zero, dnC,
+                    CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_spmmBuf));
+                sync_block_to_storage(dst_fp64, dst_store, dst_store_map, static_cast<int>(nk), threads, stream);
+                return;
+            }
+
+            void *b_ptr = prepare_spmm_input(
+                src_fp64, src_store, src_store_map, spmm_map,
+                d_spmm_in_tmp, static_cast<int>(nk), threads, stream);
+
+            void *c_ptr = nullptr;
+            if (dst_store && dst_store_map.storage_prec == spmm_map.io_prec)
+                c_ptr = dst_store;
+            else
+                c_ptr = d_spmm_out_tmp;
+
+            if (!c_ptr)
+                throw std::runtime_error("mpcg_low_storage_impl: missing temporary SpMM output buffer");
+
+            CUSPARSE_CHECK(cusparseDnMatSetValues(dnB, b_ptr));
+            CUSPARSE_CHECK(cusparseDnMatSetValues(dnC, c_ptr));
+            CUSPARSE_CHECK(cusparseSpMM(
+                cusparse,
+                CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                scalars.one(spmm_map.compute_type), matA_spmm, dnB,
+                scalars.zero(spmm_map.compute_type), dnC,
+                spmm_map.compute_type, CUSPARSE_SPMM_ALG_DEFAULT, d_spmmBuf));
+
+            finalize_spmm_output(
+                c_ptr, spmm_map, dst_store, dst_store_map,
+                dst_fp64, static_cast<int>(nk), threads, stream);
+        };
+
+        auto solve_kk = [&](const double *d_G_in, int nrhs_in,
+                            const double *d_B_in, double *d_X_out)
+        {
+            if (params.use_svd)
+                pinv_svd_cuda(cusolver, cublas, d_G_in, k, d_B_in, nrhs_in,
+                              d_X_out, stream, hist_rcond, pinv_ws, dev_scalars);
+            else
+                chol_solve_cuda(cusolver, cublas, d_G_in, k, d_B_in, nrhs_in,
+                                d_X_out, stream, hist_rcond, chol_ws, pinv_ws, dev_scalars);
+        };
+
+        auto demote_fp32_slot_to_fp16 = [&](int src_slot)
+        {
+            if (hist16.capacity == 0)
+                return;
+
+            const int dst_slot = (hist16.count < hist16.capacity) ? hist16.count : hist16.oldest;
+
+            __half *dstP = hist16.d_P + static_cast<size_t>(dst_slot) * nk;
+            __half *dstW = hist16.d_W + static_cast<size_t>(dst_slot) * nk;
+            float *dstGinv = hist16.d_Ginv + static_cast<size_t>(dst_slot) * static_cast<size_t>(k) * static_cast<size_t>(k);
+
+            k_cast_f2any<<<blocks_nk, threads, 0, stream>>>(
+                hist32.d_P + static_cast<size_t>(src_slot) * nk, dstP, static_cast<int>(nk), ComputePrecision::FP16);
+            k_cast_f2any<<<blocks_nk, threads, 0, stream>>>(
+                hist32.d_W + static_cast<size_t>(src_slot) * nk, dstW, static_cast<int>(nk), ComputePrecision::FP16);
+
+            CUDA_CHECK(cudaMemcpyAsync(
+                dstGinv,
+                hist32.d_Ginv + static_cast<size_t>(src_slot) * static_cast<size_t>(k) * static_cast<size_t>(k),
+                static_cast<size_t>(k) * static_cast<size_t>(k) * sizeof(float),
+                cudaMemcpyDeviceToDevice,
+                stream));
+
+            if (hist16.count < hist16.capacity)
+                ++hist16.count;
+            else
+                hist16.oldest = (hist16.oldest + 1) % hist16.capacity;
+        };
+
+        auto demote_fp64_slot_to_fp32 = [&](int src_slot)
+        {
+            if (hist32.capacity == 0)
+                return;
+
+            const int dst_slot = (hist32.count < hist32.capacity) ? hist32.count : hist32.oldest;
+            if (hist32.count == hist32.capacity)
+                demote_fp32_slot_to_fp16(dst_slot);
+
+            float *dstP = hist32.d_P + static_cast<size_t>(dst_slot) * nk;
+            float *dstW = hist32.d_W + static_cast<size_t>(dst_slot) * nk;
+            float *dstGinv = hist32.d_Ginv + static_cast<size_t>(dst_slot) * static_cast<size_t>(k) * static_cast<size_t>(k);
+
+            k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(
+                hist64.d_P + static_cast<size_t>(src_slot) * nk, dstP, static_cast<int>(nk), ComputePrecision::FP32);
+            k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(
+                hist64.d_W + static_cast<size_t>(src_slot) * nk, dstW, static_cast<int>(nk), ComputePrecision::FP32);
+            k_cast_d2any<<<blocks_kk, threads, 0, stream>>>(
+                hist64.d_Ginv + static_cast<size_t>(src_slot) * static_cast<size_t>(k) * static_cast<size_t>(k),
+                dstGinv,
+                k * k,
+                ComputePrecision::FP32);
+
+            if (hist32.count < hist32.capacity)
+                ++hist32.count;
+            else
+                hist32.oldest = (hist32.oldest + 1) % hist32.capacity;
+        };
+
+        auto store_current_in_fp32 = [&]()
+        {
+            if (hist32.capacity == 0)
+                return false;
+
+            const int dst_slot = (hist32.count < hist32.capacity) ? hist32.count : hist32.oldest;
+            if (hist32.count == hist32.capacity)
+                demote_fp32_slot_to_fp16(dst_slot);
+
+            float *dstP = hist32.d_P + static_cast<size_t>(dst_slot) * nk;
+            float *dstW = hist32.d_W + static_cast<size_t>(dst_slot) * nk;
+            float *dstGinv = hist32.d_Ginv + static_cast<size_t>(dst_slot) * static_cast<size_t>(k) * static_cast<size_t>(k);
+
+            k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(
+                d_Pnew, dstP, static_cast<int>(nk), ComputePrecision::FP32);
+            k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(
+                d_Wnew, dstW, static_cast<int>(nk), ComputePrecision::FP32);
+            solve_kk(d_Gnew, k, d_eye, d_hist_C64);
+            k_cast_d2any<<<blocks_kk, threads, 0, stream>>>(
+                d_hist_C64, dstGinv, k * k, ComputePrecision::FP32);
+
+            if (hist32.count < hist32.capacity)
+                ++hist32.count;
+            else
+                hist32.oldest = (hist32.oldest + 1) % hist32.capacity;
+
+            return true;
+        };
+
+        auto store_current_in_fp16 = [&]()
+        {
+            if (hist16.capacity == 0)
+                return false;
+
+            const int dst_slot = (hist16.count < hist16.capacity) ? hist16.count : hist16.oldest;
+
+            __half *dstP = hist16.d_P + static_cast<size_t>(dst_slot) * nk;
+            __half *dstW = hist16.d_W + static_cast<size_t>(dst_slot) * nk;
+            float *dstGinv = hist16.d_Ginv + static_cast<size_t>(dst_slot) * static_cast<size_t>(k) * static_cast<size_t>(k);
+
+            k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(
+                d_Pnew, dstP, static_cast<int>(nk), ComputePrecision::FP16);
+            k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(
+                d_Wnew, dstW, static_cast<int>(nk), ComputePrecision::FP16);
+            solve_kk(d_Gnew, k, d_eye, d_hist_C64);
+            k_cast_d2any<<<blocks_kk, threads, 0, stream>>>(
+                d_hist_C64, dstGinv, k * k, ComputePrecision::FP32);
+
+            if (hist16.count < hist16.capacity)
+                ++hist16.count;
+            else
+                hist16.oldest = (hist16.oldest + 1) % hist16.capacity;
+
+            return true;
+        };
+
+        constexpr int warmup_spmm_iters = 2;
+        constexpr int warmup_gemm_iters = 2;
+        const auto warmup_wall_start = Clock::now();
+        if (k > 0)
+        {
+            build_znew_columns_device(
+                preconds,
+                d_r,
+                d_r_precond,
+                d_Znew,
+                d_Znew_precond,
+                n,
+                precond_map,
+                threads,
+                stream,
+                main_stream_ready,
+                precond_streams,
+                precond_events,
+                false,
+                false);
+
+            CUDA_CHECK(cudaMemcpyAsync(d_Pnew, d_Znew, nk * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+            sync_block_to_storage(d_Pnew, d_Pnew_store, Pnew_store_map, static_cast<int>(nk), threads, stream);
+
+            for (int warm_iter = 0; warm_iter < warmup_spmm_iters; ++warm_iter)
+                run_spmm(d_Pnew, d_Pnew_store, Pnew_store_map, d_Wnew, d_Wnew_store, Wnew_store_map);
+
+            for (int warm_iter = 0; warm_iter < warmup_gemm_iters; ++warm_iter)
+            {
+                if (g_map.output_type == CUDA_R_64F)
+                {
+                    CUBLAS_CHECK(cublasGemmEx(
+                        cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                        k, k, n,
+                        dev_scalars.one(g_map.compute_type),
+                        d_Pnew, CUDA_R_64F, n,
+                        d_Wnew, CUDA_R_64F, n,
+                        dev_scalars.zero(g_map.compute_type),
+                        d_Gnew, CUDA_R_64F, k,
+                        g_map.compute_type, CUBLAS_GEMM_DEFAULT));
+                }
+                else
+                {
+                    k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Pnew, d_Pnew_low, static_cast<int>(nk), g_map.io_prec);
+                    k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Wnew, d_Wnew_low, static_cast<int>(nk), g_map.io_prec);
+
+                    CUBLAS_CHECK(cublasGemmEx(
+                        cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                        k, k, n,
+                        dev_scalars.one(g_map.compute_type),
+                        d_Pnew_low, g_map.data_type, n,
+                        d_Wnew_low, g_map.data_type, n,
+                        dev_scalars.zero(g_map.compute_type),
+                        d_C_gemm, CUDA_R_32F, k,
+                        g_map.compute_type, CUBLAS_GEMM_DEFAULT));
+
+                    k_cast_f2d_mat<<<blocks_kk, threads, 0, stream>>>(d_C_gemm, d_Gnew, k * k);
+                }
+            }
+        }
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        warmup_wall_ms = std::chrono::duration<double, std::milli>(Clock::now() - warmup_wall_start).count();
+
+        PCGResult result{};
+        result.relResiduals.reserve(static_cast<size_t>(params.maxits) + 1);
+        result.relResiduals.push_back(current_res_norm / bnorm);
+        bool converged = false;
+
+        const auto iter_wall_start = Clock::now();
+
+        for (int iter = 0; iter < params.maxits; ++iter)
+        {
+            if (current_res_norm <= params.tol * bnorm)
+            {
+                result.iterations = iter;
+                result.finalRes = current_res_norm;
+                converged = true;
+                break;
+            }
+
+            phase_begin(phase_precond);
+            build_znew_columns_device(
+                preconds,
+                d_r,
+                d_r_precond,
+                d_Znew,
+                d_Znew_precond,
+                n,
+                precond_map,
+                threads,
+                stream,
+                main_stream_ready,
+                precond_streams,
+                precond_events,
+                false,
+                false);
+
+            sync_block_to_storage(d_Znew, d_Znew_store, Znew_store_map, static_cast<int>(nk), threads, stream);
+            CUDA_CHECK(cudaMemcpyAsync(d_Pnew, d_Znew, nk * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+            phase_end(phase_precond);
+
+            auto project_against_history = [&]()
+            {
+                const int hist64_count = hist64.count;
+                const int hist32_count = hist32.count;
+                const int hist16_count = hist16.count;
+
+                if (hist64_count == 0 && hist32_count == 0 && hist16_count == 0)
+                    return;
+
+                CUDA_CHECK(cudaEventRecord(proj_input_ready, stream));
+
+                if (hist64_count > 0)
+                {
+                    CUDA_CHECK(cudaStreamWaitEvent(proj64_stream, proj_input_ready, 0));
+                    CUDA_CHECK(cudaMemsetAsync(d_corr64, 0, nk * sizeof(double), proj64_stream));
+
+                    CUBLAS_CHECK(cublasDgemmStridedBatched(
+                        cublas_proj64, CUBLAS_OP_T, CUBLAS_OP_N,
+                        k, k, n,
+                        dev_scalars.one64(),
+                        hist64.d_W, n, static_cast<long long>(nk),
+                        d_Pnew, n, 0LL,
+                        dev_scalars.zero64(),
+                        d_hist_C64, k, static_cast<long long>(k * k),
+                        hist64_count));
+
+                    CUBLAS_CHECK(cublasDgemmStridedBatched(
+                        cublas_proj64, CUBLAS_OP_N, CUBLAS_OP_N,
+                        k, k, k,
+                        dev_scalars.one64(),
+                        hist64.d_Ginv, k, static_cast<long long>(k * k),
+                        d_hist_C64, k, static_cast<long long>(k * k),
+                        dev_scalars.zero64(),
+                        d_hist_Y64, k, static_cast<long long>(k * k),
+                        hist64_count));
+
+                    for (int slot = 0; slot < hist64_count; ++slot)
+                    {
+                        double *d_Pj = hist64.d_P + static_cast<size_t>(slot) * nk;
+                        double *d_Yj = d_hist_Y64 + static_cast<size_t>(slot) * static_cast<size_t>(k) * static_cast<size_t>(k);
+                        CUBLAS_CHECK(cublasDgemm(
+                            cublas_proj64, CUBLAS_OP_N, CUBLAS_OP_N,
+                            n, k, k,
+                            dev_scalars.one64(),
+                            d_Pj, n,
+                            d_Yj, k,
+                            dev_scalars.one64(),
+                            d_corr64, n));
+                    }
+
+                    CUDA_CHECK(cudaEventRecord(proj64_done, proj64_stream));
+                }
+
+                if (hist32_count > 0)
+                {
+                    CUDA_CHECK(cudaStreamWaitEvent(proj32_stream, proj_input_ready, 0));
+                    k_cast_d2any<<<blocks_nk, threads, 0, proj32_stream>>>(
+                        d_Pnew, d_Pnew_proj32, static_cast<int>(nk), ComputePrecision::FP32);
+
+                    if (hist32_acc_prec == ComputePrecision::FP64)
+                        CUDA_CHECK(cudaMemsetAsync(d_corr32_fp64, 0, nk * sizeof(double), proj32_stream));
+                    else
+                        CUDA_CHECK(cudaMemsetAsync(d_corr32, 0, nk * sizeof(float), proj32_stream));
+
+                    for (int slot = 0; slot < hist32_count; ++slot)
+                    {
+                        float *d_Pj = hist32.d_P + static_cast<size_t>(slot) * nk;
+                        float *d_Wj = hist32.d_W + static_cast<size_t>(slot) * nk;
+                        float *d_Ginvj = hist32.d_Ginv + static_cast<size_t>(slot) * static_cast<size_t>(k) * static_cast<size_t>(k);
+
+                        CUBLAS_CHECK(cublasGemmEx(
+                            cublas_proj32, CUBLAS_OP_T, CUBLAS_OP_N,
+                            k, k, n,
+                            dev_scalars.one(CUBLAS_COMPUTE_32F),
+                            d_Wj, CUDA_R_32F, n,
+                            d_Pnew_proj32, CUDA_R_32F, n,
+                            dev_scalars.zero(CUBLAS_COMPUTE_32F),
+                            d_hist_C32, CUDA_R_32F, k,
+                            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+
+                        CUBLAS_CHECK(cublasGemmEx(
+                            cublas_proj32, CUBLAS_OP_N, CUBLAS_OP_N,
+                            k, k, k,
+                            dev_scalars.one(CUBLAS_COMPUTE_32F),
+                            d_Ginvj, CUDA_R_32F, k,
+                            d_hist_C32, CUDA_R_32F, k,
+                            dev_scalars.zero(CUBLAS_COMPUTE_32F),
+                            d_hist_Y32, CUDA_R_32F, k,
+                            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+
+                        CUBLAS_CHECK(cublasGemmEx(
+                            cublas_proj32, CUBLAS_OP_N, CUBLAS_OP_N,
+                            n, k, k,
+                            dev_scalars.one(CUBLAS_COMPUTE_32F),
+                            d_Pj, CUDA_R_32F, n,
+                            d_hist_Y32, CUDA_R_32F, k,
+                            dev_scalars.zero(CUBLAS_COMPUTE_32F),
+                            d_delta32, CUDA_R_32F, n,
+                            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+
+                        if (hist32_acc_prec == ComputePrecision::FP64)
+                        {
+                            k_cast_any2d_vec<<<blocks_nk, threads, 0, proj32_stream>>>(
+                                d_delta32, d_delta32_fp64, static_cast<int>(nk), ComputePrecision::FP32);
+                            CUBLAS_CHECK(cublasDaxpy(
+                                cublas_proj32, static_cast<int>(nk),
+                                dev_scalars.one64(),
+                                d_delta32_fp64, 1,
+                                d_corr32_fp64, 1));
+                        }
+                        else
+                        {
+                            CUBLAS_CHECK(cublasSaxpy(
+                                cublas_proj32, static_cast<int>(nk),
+                                dev_scalars.d_s32 + 0,
+                                d_delta32, 1,
+                                d_corr32, 1));
+                        }
+                    }
+
+                    if (hist32_acc_prec != ComputePrecision::FP64)
+                    {
+                        k_cast_any2d_vec<<<blocks_nk, threads, 0, proj32_stream>>>(
+                            d_corr32, d_corr32_fp64, static_cast<int>(nk), ComputePrecision::FP32);
+                    }
+
+                    CUDA_CHECK(cudaEventRecord(proj32_done, proj32_stream));
+                }
+
+                if (hist16_count > 0)
+                {
+                    CUDA_CHECK(cudaStreamWaitEvent(proj16_stream, proj_input_ready, 0));
+                    k_cast_d2any<<<blocks_nk, threads, 0, proj16_stream>>>(
+                        d_Pnew, d_Pnew_proj16_f32, static_cast<int>(nk), ComputePrecision::FP32);
+
+                    if (hist16_acc_prec == ComputePrecision::FP64)
+                        CUDA_CHECK(cudaMemsetAsync(d_corr16_fp64, 0, nk * sizeof(double), proj16_stream));
+                    else
+                        CUDA_CHECK(cudaMemsetAsync(d_corr16_fp32, 0, nk * sizeof(float), proj16_stream));
+
+                    for (int slot = 0; slot < hist16_count; ++slot)
+                    {
+                        __half *d_Pj_h = hist16.d_P + static_cast<size_t>(slot) * nk;
+                        __half *d_Wj_h = hist16.d_W + static_cast<size_t>(slot) * nk;
+                        float *d_Ginvj = hist16.d_Ginv + static_cast<size_t>(slot) * static_cast<size_t>(k) * static_cast<size_t>(k);
+
+                        k_cast_any2f_vec<<<blocks_nk, threads, 0, proj16_stream>>>(
+                            d_Wj_h, d_W16_tmp32, static_cast<int>(nk), ComputePrecision::FP16);
+                        k_cast_any2f_vec<<<blocks_nk, threads, 0, proj16_stream>>>(
+                            d_Pj_h, d_P16_tmp32, static_cast<int>(nk), ComputePrecision::FP16);
+
+                        CUBLAS_CHECK(cublasGemmEx(
+                            cublas_proj16, CUBLAS_OP_T, CUBLAS_OP_N,
+                            k, k, n,
+                            dev_scalars.one(CUBLAS_COMPUTE_32F),
+                            d_W16_tmp32, CUDA_R_32F, n,
+                            d_Pnew_proj16_f32, CUDA_R_32F, n,
+                            dev_scalars.zero(CUBLAS_COMPUTE_32F),
+                            d_hist_C16_f32, CUDA_R_32F, k,
+                            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+
+                        CUBLAS_CHECK(cublasGemmEx(
+                            cublas_proj16, CUBLAS_OP_N, CUBLAS_OP_N,
+                            k, k, k,
+                            dev_scalars.one(CUBLAS_COMPUTE_32F),
+                            d_Ginvj, CUDA_R_32F, k,
+                            d_hist_C16_f32, CUDA_R_32F, k,
+                            dev_scalars.zero(CUBLAS_COMPUTE_32F),
+                            d_hist_Y16_f32, CUDA_R_32F, k,
+                            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+
+                        CUBLAS_CHECK(cublasGemmEx(
+                            cublas_proj16, CUBLAS_OP_N, CUBLAS_OP_N,
+                            n, k, k,
+                            dev_scalars.one(CUBLAS_COMPUTE_32F),
+                            d_P16_tmp32, CUDA_R_32F, n,
+                            d_hist_Y16_f32, CUDA_R_32F, k,
+                            dev_scalars.zero(CUBLAS_COMPUTE_32F),
+                            d_delta16_fp32, CUDA_R_32F, n,
+                            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+
+                        if (hist16_acc_prec == ComputePrecision::FP64)
+                        {
+                            k_cast_any2d_vec<<<blocks_nk, threads, 0, proj16_stream>>>(
+                                d_delta16_fp32, d_delta16_fp64, static_cast<int>(nk), ComputePrecision::FP32);
+                            CUBLAS_CHECK(cublasDaxpy(
+                                cublas_proj16, static_cast<int>(nk),
+                                dev_scalars.one64(),
+                                d_delta16_fp64, 1,
+                                d_corr16_fp64, 1));
+                        }
+                        else
+                        {
+                            CUBLAS_CHECK(cublasSaxpy(
+                                cublas_proj16, static_cast<int>(nk),
+                                dev_scalars.d_s32 + 0,
+                                d_delta16_fp32, 1,
+                                d_corr16_fp32, 1));
+                        }
+                    }
+
+                    if (hist16_acc_prec != ComputePrecision::FP64)
+                    {
+                        k_cast_any2d_vec<<<blocks_nk, threads, 0, proj16_stream>>>(
+                            d_corr16_fp32, d_corr16_fp64, static_cast<int>(nk), ComputePrecision::FP32);
+                    }
+
+                    CUDA_CHECK(cudaEventRecord(proj16_done, proj16_stream));
+                }
+
+                if (hist64_count > 0)
+                    CUDA_CHECK(cudaStreamWaitEvent(stream, proj64_done, 0));
+                if (hist32_count > 0)
+                    CUDA_CHECK(cudaStreamWaitEvent(stream, proj32_done, 0));
+                if (hist16_count > 0)
+                    CUDA_CHECK(cudaStreamWaitEvent(stream, proj16_done, 0));
+
+                CUDA_CHECK(cudaMemcpyAsync(d_Pnew, d_Znew, nk * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+                if (hist64_count > 0)
+                    CUBLAS_CHECK(cublasDaxpy(cublas, static_cast<int>(nk), dev_scalars.m_one64(), d_corr64, 1, d_Pnew, 1));
+                if (hist32_count > 0)
+                    CUBLAS_CHECK(cublasDaxpy(cublas, static_cast<int>(nk), dev_scalars.m_one64(), d_corr32_fp64, 1, d_Pnew, 1));
+                if (hist16_count > 0)
+                    CUBLAS_CHECK(cublasDaxpy(cublas, static_cast<int>(nk), dev_scalars.m_one64(), d_corr16_fp64, 1, d_Pnew, 1));
+            };
+
+            phase_begin(phase_ortho);
+            project_against_history();
+
+            if (enable_anorm_reprojection && (hist32.count > 0 || hist16.count > 0))
+            {
+                run_spmm(d_Znew, d_Znew_store, Znew_store_map, d_Wz, nullptr, fp64_storage);
+                run_spmm(d_Pnew, d_Pnew_store, Pnew_store_map, d_Wnew, d_Wnew_store, Wnew_store_map);
+
+                column_dots_kernel<<<k, threads, threads * sizeof(double), stream>>>(d_Znew, d_Wz, n, n, n, k, d_z_anorm_cols);
+                column_dots_kernel<<<k, threads, threads * sizeof(double), stream>>>(d_Pnew, d_Wnew, n, n, n, k, d_p_anorm_cols);
+                k_should_reproject<<<1, 1, 0, stream>>>(d_z_anorm_cols, d_p_anorm_cols, k, anorm_drop_tol_sq, d_reproject_flag);
+
+                int reproject_flag = 0;
+                CUDA_CHECK(cudaMemcpyAsync(&reproject_flag, d_reproject_flag, sizeof(int), cudaMemcpyDeviceToHost, stream));
+                CUDA_CHECK(cudaStreamSynchronize(stream));
+                if (reproject_flag != 0)
+                    project_against_history();
+            }
+
+            column_norms_kernel<<<k, threads, threads * sizeof(double), stream>>>(d_Pnew, n, n, k, d_col_norms);
+            k_scale_columns_from_norms<<<blocks_nk, threads, 0, stream>>>(d_Pnew, n, k, d_col_norms, 1e-30);
+            sync_block_to_storage(d_Pnew, d_Pnew_store, Pnew_store_map, static_cast<int>(nk), threads, stream);
+            phase_end(phase_ortho);
+
+            phase_begin(phase_spmm);
+            run_spmm(d_Pnew, d_Pnew_store, Pnew_store_map, d_Wnew, d_Wnew_store, Wnew_store_map);
+            phase_end(phase_spmm);
+
+            phase_begin(phase_dense);
+            if (g_map.output_type == CUDA_R_64F)
+            {
+                CUBLAS_CHECK(cublasGemmEx(
+                    cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                    k, k, n,
+                    dev_scalars.one(g_map.compute_type),
+                    d_Pnew, CUDA_R_64F, n,
+                    d_Wnew, CUDA_R_64F, n,
+                    dev_scalars.zero(g_map.compute_type),
+                    d_Gnew, CUDA_R_64F, k,
+                    g_map.compute_type, CUBLAS_GEMM_DEFAULT));
+            }
+            else
+            {
+                k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Pnew, d_Pnew_low, static_cast<int>(nk), g_map.io_prec);
+                k_cast_d2any<<<blocks_nk, threads, 0, stream>>>(d_Wnew, d_Wnew_low, static_cast<int>(nk), g_map.io_prec);
+
+                CUBLAS_CHECK(cublasGemmEx(
+                    cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                    k, k, n,
+                    dev_scalars.one(g_map.compute_type),
+                    d_Pnew_low, g_map.data_type, n,
+                    d_Wnew_low, g_map.data_type, n,
+                    dev_scalars.zero(g_map.compute_type),
+                    d_C_gemm, CUDA_R_32F, k,
+                    g_map.compute_type, CUBLAS_GEMM_DEFAULT));
+
+                k_cast_f2d_mat<<<blocks_kk, threads, 0, stream>>>(d_C_gemm, d_Gnew, k * k);
+            }
+
+            const int blocks_k = (k + threads - 1) / threads;
+            k_build_col_scale_from_gdiag<<<blocks_k, threads, 0, stream>>>(d_Gnew, d_col_scale, k, 1e-30);
+            k_fuse_scale_P_W<<<blocks_nk, threads, 0, stream>>>(d_Pnew, d_Wnew, d_col_scale, n, k);
+            k_congruence_scale_gram<<<blocks_kk, threads, 0, stream>>>(d_Gnew, d_col_scale, k);
+            sync_block_to_storage(d_Pnew, d_Pnew_store, Pnew_store_map, static_cast<int>(nk), threads, stream);
+            sync_block_to_storage(d_Wnew, d_Wnew_store, Wnew_store_map, static_cast<int>(nk), threads, stream);
+
+            CUBLAS_CHECK(cublasDgemv(
+                cublas, CUBLAS_OP_T,
+                n, k,
+                dev_scalars.one64(),
+                d_Pnew, n,
+                d_r, 1,
+                dev_scalars.zero64(),
+                d_rhs, 1));
+
+            solve_kk(d_Gnew, 1, d_rhs, d_alpha);
+
+            CUBLAS_CHECK(cublasDgemv(
+                cublas, CUBLAS_OP_N,
+                n, k,
+                dev_scalars.one64(),
+                d_Pnew, n,
+                d_alpha, 1,
+                dev_scalars.one64(),
+                d_x, 1));
+
+            CUBLAS_CHECK(cublasDgemv(
+                cublas, CUBLAS_OP_N,
+                n, k,
+                dev_scalars.m_one64(),
+                d_Wnew, n,
+                d_alpha, 1,
+                dev_scalars.one64(),
+                d_r, 1));
+
+            if ((iter + 1) % reset_iter == 0)
+            {
+                phase_begin(phase_reset);
+                CUSPARSE_CHECK(cusparseSpMV(
+                    cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                    &scalars.s64_one, matA, vecX,
+                    &scalars.s64_zero, vecTmp,
+                    CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, d_spmvBuf));
+                CUDA_CHECK(cudaMemcpyAsync(d_r, d_b, static_cast<size_t>(n) * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+                CUBLAS_CHECK(cublasDaxpy(cublas, n, dev_scalars.m_one64(), d_tmp, 1, d_r, 1));
+                phase_end(phase_reset);
+            }
+
+            if (hist64.capacity > 0)
+            {
+                const int slot64 = (hist64.count < hist64.capacity) ? hist64.count : hist64.oldest;
+                if (hist64.count == hist64.capacity)
+                    demote_fp64_slot_to_fp32(slot64);
+
+                double *Pdst64 = hist64.d_P + static_cast<size_t>(slot64) * nk;
+                double *Wdst64 = hist64.d_W + static_cast<size_t>(slot64) * nk;
+                double *GinvDst64 = hist64.d_Ginv + static_cast<size_t>(slot64) * static_cast<size_t>(k) * static_cast<size_t>(k);
+
+                CUDA_CHECK(cudaMemcpyAsync(Pdst64, d_Pnew, nk * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+                CUDA_CHECK(cudaMemcpyAsync(Wdst64, d_Wnew, nk * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+                solve_kk(d_Gnew, k, d_eye, GinvDst64);
+
+                if (hist64.count < hist64.capacity)
+                    ++hist64.count;
+                else
+                    hist64.oldest = (hist64.oldest + 1) % hist64.capacity;
+            }
+            else if (!store_current_in_fp32() && !store_current_in_fp16())
+            {
+                throw std::runtime_error("mpcg_low_storage_impl: at least one history tier must have positive capacity");
+            }
+
+            CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, d_scalar_tmp + 1));
+            CUDA_CHECK(cudaMemcpyAsync(&current_res_norm, d_scalar_tmp + 1, sizeof(double), cudaMemcpyDeviceToHost, stream));
+            phase_end(phase_dense);
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+
+            phase_accumulate(phase_precond);
+            phase_accumulate(phase_ortho);
+            phase_accumulate(phase_spmm);
+            phase_accumulate(phase_dense);
+            if ((iter + 1) % reset_iter == 0)
+                phase_accumulate(phase_reset);
+
+            result.iterations = iter + 1;
+            result.relResiduals.push_back(current_res_norm / bnorm);
+        }
+
+        const auto iter_wall_end = Clock::now();
+        if (!converged)
+            result.finalRes = current_res_norm;
+
+        const auto finalize_wall_start = Clock::now();
+        if (h_x_out != nullptr)
+            CUDA_CHECK(cudaMemcpyAsync(h_x_out->data(), d_x, static_cast<size_t>(n) * sizeof(double), cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        const auto finalize_wall_end = Clock::now();
+
+        const double total_wall_ms = std::max(0.0, std::chrono::duration<double, std::milli>(finalize_wall_end - total_wall_start).count() - warmup_wall_ms);
+        const double setup_wall_ms = std::max(0.0, std::chrono::duration<double, std::milli>(iter_wall_start - total_wall_start).count() - warmup_wall_ms);
+        const double iter_wall_ms = std::chrono::duration<double, std::milli>(iter_wall_end - iter_wall_start).count();
+        const double finalize_wall_ms = std::chrono::duration<double, std::milli>(finalize_wall_end - finalize_wall_start).count();
+        const double dense_exclusive_ms = std::max(0.0, phase_dense.total_ms - phase_reset.total_ms);
+        const double accounted_iter_ms =
+            phase_precond.total_ms + phase_ortho.total_ms + phase_spmm.total_ms +
+            dense_exclusive_ms + phase_reset.total_ms;
+        const double other_iter_ms = std::max(0.0, iter_wall_ms - accounted_iter_ms);
+
+        result.timing.total_ms = total_wall_ms;
+        result.timing.setup_ms = setup_wall_ms;
+        result.timing.iter_ms = iter_wall_ms;
+        result.timing.finalize_ms = finalize_wall_ms;
+        result.timing.preconditioner_apply_ms = phase_precond.total_ms;
+        result.timing.orthogonalization_ms = phase_ortho.total_ms;
+        result.timing.spmm_ms = phase_spmm.total_ms;
+        result.timing.dense_ms = dense_exclusive_ms;
+        result.timing.residual_reset_ms = phase_reset.total_ms;
+        result.timing.other_iter_ms = other_iter_ms;
+
+        if (profile_enabled)
+        {
+            std::fprintf(stderr,
+                         "[%s profile] n=%d k=%d iters=%d total=%.3fms setup=%.3fms iter=%.3fms finalize=%.3fms warmup=%.3fms(excluded)\n",
+                         solver_label, n, k, result.iterations, total_wall_ms, setup_wall_ms, iter_wall_ms, finalize_wall_ms, warmup_wall_ms);
+            std::fprintf(stderr,
+                         "[%s profile] precond=%.3fms ortho=%.3fms spmm=%.3fms dense=%.3fms reset=%.3fms other_iter=%.3fms\n",
+                         solver_label, phase_precond.total_ms, phase_ortho.total_ms, phase_spmm.total_ms,
+                         dense_exclusive_ms, phase_reset.total_ms, other_iter_ms);
+        }
+
+        if (dnB)
+            CUSPARSE_CHECK(cusparseDestroyDnMat(dnB));
+        if (dnC)
+            CUSPARSE_CHECK(cusparseDestroyDnMat(dnC));
+        if (vecX)
+            CUSPARSE_CHECK(cusparseDestroyDnVec(vecX));
+        if (vecTmp)
+            CUSPARSE_CHECK(cusparseDestroyDnVec(vecTmp));
+        if (matA_spmm)
+            CUSPARSE_CHECK(cusparseDestroySpMat(matA_spmm));
+        if (matA)
+            CUSPARSE_CHECK(cusparseDestroySpMat(matA));
+
+        if (d_spmvBuf)
+            CUDA_CHECK(cudaFree(d_spmvBuf));
+        if (d_spmmBuf)
+            CUDA_CHECK(cudaFree(d_spmmBuf));
+
+        if (d_valA_spmm)
+            CUDA_CHECK(cudaFree(d_valA_spmm));
+        CUDA_CHECK(cudaFree(d_r));
+        CUDA_CHECK(cudaFree(d_tmp));
+
+        CUDA_CHECK(cudaFree(d_Znew));
+        CUDA_CHECK(cudaFree(d_Pnew));
+        CUDA_CHECK(cudaFree(d_Wnew));
+        if (d_Wz)
+            CUDA_CHECK(cudaFree(d_Wz));
+        if (d_r_precond)
+            CUDA_CHECK(cudaFree(d_r_precond));
+        if (d_Znew_precond)
+            CUDA_CHECK(cudaFree(d_Znew_precond));
+        if (d_Znew_store)
+            CUDA_CHECK(cudaFree(d_Znew_store));
+        if (d_Pnew_store)
+            CUDA_CHECK(cudaFree(d_Pnew_store));
+        if (d_Wnew_store)
+            CUDA_CHECK(cudaFree(d_Wnew_store));
+        if (d_spmm_in_tmp)
+            CUDA_CHECK(cudaFree(d_spmm_in_tmp));
+        if (d_spmm_out_tmp)
+            CUDA_CHECK(cudaFree(d_spmm_out_tmp));
+
+        if (d_Pnew_low)
+            CUDA_CHECK(cudaFree(d_Pnew_low));
+        if (d_Wnew_low)
+            CUDA_CHECK(cudaFree(d_Wnew_low));
+        if (d_Wj_low)
+            CUDA_CHECK(cudaFree(d_Wj_low));
+        if (d_C_gemm)
+            CUDA_CHECK(cudaFree(d_C_gemm));
+
+        if (hist64.d_P)
+            CUDA_CHECK(cudaFree(hist64.d_P));
+        if (hist64.d_W)
+            CUDA_CHECK(cudaFree(hist64.d_W));
+        if (hist64.d_Ginv)
+            CUDA_CHECK(cudaFree(hist64.d_Ginv));
+        if (hist32.d_P)
+            CUDA_CHECK(cudaFree(hist32.d_P));
+        if (hist32.d_W)
+            CUDA_CHECK(cudaFree(hist32.d_W));
+        if (hist32.d_Ginv)
+            CUDA_CHECK(cudaFree(hist32.d_Ginv));
+        if (hist16.d_P)
+            CUDA_CHECK(cudaFree(hist16.d_P));
+        if (hist16.d_W)
+            CUDA_CHECK(cudaFree(hist16.d_W));
+        if (hist16.d_Ginv)
+            CUDA_CHECK(cudaFree(hist16.d_Ginv));
+
+        CUDA_CHECK(cudaFree(d_hist_C64));
+        CUDA_CHECK(cudaFree(d_hist_Y64));
+        CUDA_CHECK(cudaFree(d_corr64));
+
+        if (d_Pnew_proj32)
+            CUDA_CHECK(cudaFree(d_Pnew_proj32));
+        if (d_hist_C32)
+            CUDA_CHECK(cudaFree(d_hist_C32));
+        if (d_hist_Y32)
+            CUDA_CHECK(cudaFree(d_hist_Y32));
+        if (d_delta32)
+            CUDA_CHECK(cudaFree(d_delta32));
+        if (d_corr32)
+            CUDA_CHECK(cudaFree(d_corr32));
+        if (d_corr32_fp64)
+            CUDA_CHECK(cudaFree(d_corr32_fp64));
+        if (d_delta32_fp64)
+            CUDA_CHECK(cudaFree(d_delta32_fp64));
+
+        if (d_Pnew_proj16_f32)
+            CUDA_CHECK(cudaFree(d_Pnew_proj16_f32));
+        if (d_W16_tmp32)
+            CUDA_CHECK(cudaFree(d_W16_tmp32));
+        if (d_P16_tmp32)
+            CUDA_CHECK(cudaFree(d_P16_tmp32));
+        if (d_hist_C16_f32)
+            CUDA_CHECK(cudaFree(d_hist_C16_f32));
+        if (d_hist_Y16_f32)
+            CUDA_CHECK(cudaFree(d_hist_Y16_f32));
+        if (d_delta16_fp32)
+            CUDA_CHECK(cudaFree(d_delta16_fp32));
+        if (d_corr16_fp32)
+            CUDA_CHECK(cudaFree(d_corr16_fp32));
+        if (d_corr16_fp64)
+            CUDA_CHECK(cudaFree(d_corr16_fp64));
+        if (d_delta16_fp64)
+            CUDA_CHECK(cudaFree(d_delta16_fp64));
+
+        CUDA_CHECK(cudaFree(d_Gnew));
+        CUDA_CHECK(cudaFree(d_rhs));
+        CUDA_CHECK(cudaFree(d_alpha));
+        CUDA_CHECK(cudaFree(d_col_scale));
+        CUDA_CHECK(cudaFree(d_scalar_tmp));
+        CUDA_CHECK(cudaFree(d_col_norms));
+        CUDA_CHECK(cudaFree(d_z_anorm_cols));
+        CUDA_CHECK(cudaFree(d_p_anorm_cols));
+        CUDA_CHECK(cudaFree(d_reproject_flag));
+        CUDA_CHECK(cudaFree(d_eye));
+
+        if (pinv_ws.d_G_copy)
+            CUDA_CHECK(cudaFree(pinv_ws.d_G_copy));
+        if (pinv_ws.d_S)
+            CUDA_CHECK(cudaFree(pinv_ws.d_S));
+        if (pinv_ws.d_U)
+            CUDA_CHECK(cudaFree(pinv_ws.d_U));
+        if (pinv_ws.d_VT)
+            CUDA_CHECK(cudaFree(pinv_ws.d_VT));
+        if (pinv_ws.d_work)
+            CUDA_CHECK(cudaFree(pinv_ws.d_work));
+        if (pinv_ws.d_S_inv)
+            CUDA_CHECK(cudaFree(pinv_ws.d_S_inv));
+        if (pinv_ws.d_T1)
+            CUDA_CHECK(cudaFree(pinv_ws.d_T1));
+        if (pinv_ws.d_info)
+            CUDA_CHECK(cudaFree(pinv_ws.d_info));
+
+        if (chol_ws.d_G_copy)
+            CUDA_CHECK(cudaFree(chol_ws.d_G_copy));
+        if (chol_ws.d_work)
+            CUDA_CHECK(cudaFree(chol_ws.d_work));
+        if (chol_ws.d_info)
+            CUDA_CHECK(cudaFree(chol_ws.d_info));
+
+        CUDA_CHECK(cudaFree(dev_scalars.d_s32));
+        CUDA_CHECK(cudaFree(dev_scalars.d_s64));
+
+        for (int t = 0; t < k; ++t)
+        {
+            CUDA_CHECK(cudaEventDestroy(precond_events[t]));
+            CUDA_CHECK(cudaStreamDestroy(precond_streams[t]));
+        }
+        CUDA_CHECK(cudaEventDestroy(main_stream_ready));
+
+        destroy_phase(phase_precond);
+        destroy_phase(phase_ortho);
+        destroy_phase(phase_spmm);
+        destroy_phase(phase_dense);
+        destroy_phase(phase_reset);
+
+        CUDA_CHECK(cudaEventDestroy(proj_input_ready));
+        CUDA_CHECK(cudaEventDestroy(proj64_done));
+        CUDA_CHECK(cudaEventDestroy(proj32_done));
+        CUDA_CHECK(cudaEventDestroy(proj16_done));
+
+        CUBLAS_CHECK(cublasDestroy(cublas_proj64));
+        CUBLAS_CHECK(cublasDestroy(cublas_proj32));
+        CUBLAS_CHECK(cublasDestroy(cublas_proj16));
+        CUDA_CHECK(cudaStreamDestroy(proj64_stream));
+        CUDA_CHECK(cudaStreamDestroy(proj32_stream));
+        CUDA_CHECK(cudaStreamDestroy(proj16_stream));
+
+        CUDA_CHECK(cudaStreamDestroy(stream));
+        CUSPARSE_CHECK(cusparseDestroy(cusparse));
+        CUBLAS_CHECK(cublasDestroy(cublas));
+        CUSOLVER_CHECK(cusolverDnDestroy(cusolver));
+
+        return result;
+    }
+
     template <typename T_L>
     PCGResult mpcg_mixed(
         const std::vector<int> &h_csrRowPtrA,
@@ -3841,6 +5204,99 @@ namespace ichol::solver
         return result;
     }
 
+    template <typename T_L>
+    PCGResult mpcg_low_storage_device(
+        int n,
+        int64_t nnzA,
+        int *d_csrRowPtrA,
+        int *d_csrColIndA,
+        double *d_valA,
+        const std::vector<ichol::precond::PrecondApply> &preconds,
+        const double *d_b,
+        double *d_x,
+        const PCGParams &params)
+    {
+        return mpcg_low_storage_core<T_L>(
+            n,
+            nnzA,
+            d_csrRowPtrA,
+            d_csrColIndA,
+            d_valA,
+            preconds,
+            d_b,
+            d_x,
+            params,
+            nullptr);
+    }
+
+    template <typename T_L>
+    PCGResult mpcg_low_storage(
+        const std::vector<int> &h_csrRowPtrA,
+        const std::vector<int> &h_csrColIndA,
+        const std::vector<double> &h_valA,
+        const std::vector<ichol::precond::PrecondApply> &preconds,
+        const std::vector<double> &h_b,
+        std::vector<double> &h_x,
+        const PCGParams &params)
+    {
+        const int n = static_cast<int>(h_b.size());
+        const int64_t nnzA = static_cast<int64_t>(h_valA.size());
+
+        int *d_rowPtrA = nullptr;
+        int *d_colIndA = nullptr;
+        double *d_valA = nullptr;
+        double *d_b = nullptr;
+        double *d_x = nullptr;
+
+        CUDA_CHECK(cudaMalloc(&d_rowPtrA, static_cast<size_t>(n + 1) * sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&d_colIndA, static_cast<size_t>(nnzA) * sizeof(int)));
+        CUDA_CHECK(cudaMalloc(&d_valA, static_cast<size_t>(nnzA) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_b, static_cast<size_t>(n) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_x, static_cast<size_t>(n) * sizeof(double)));
+
+        CUDA_CHECK(cudaMemcpy(d_rowPtrA, h_csrRowPtrA.data(), static_cast<size_t>(n + 1) * sizeof(int), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_colIndA, h_csrColIndA.data(), static_cast<size_t>(nnzA) * sizeof(int), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_valA, h_valA.data(), static_cast<size_t>(nnzA) * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_b, h_b.data(), static_cast<size_t>(n) * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_x, h_x.data(), static_cast<size_t>(n) * sizeof(double), cudaMemcpyHostToDevice));
+
+        try
+        {
+            PCGResult result = mpcg_low_storage_core<T_L>(
+                n,
+                nnzA,
+                d_rowPtrA,
+                d_colIndA,
+                d_valA,
+                preconds,
+                d_b,
+                d_x,
+                params,
+                &h_x);
+
+            CUDA_CHECK(cudaFree(d_rowPtrA));
+            CUDA_CHECK(cudaFree(d_colIndA));
+            CUDA_CHECK(cudaFree(d_valA));
+            CUDA_CHECK(cudaFree(d_b));
+            CUDA_CHECK(cudaFree(d_x));
+            return result;
+        }
+        catch (...)
+        {
+            if (d_rowPtrA)
+                cudaFree(d_rowPtrA);
+            if (d_colIndA)
+                cudaFree(d_colIndA);
+            if (d_valA)
+                cudaFree(d_valA);
+            if (d_b)
+                cudaFree(d_b);
+            if (d_x)
+                cudaFree(d_x);
+            throw;
+        }
+    }
+
     namespace debug
     {
         std::vector<double> build_mpcg_znew_columns(
@@ -3955,5 +5411,25 @@ namespace ichol::solver
         const std::vector<ichol::precond::PrecondApply> &,
         const std::vector<double> &,
         std::vector<double> &,
+        const PCGParams &);
+
+    template PCGResult mpcg_low_storage<double>(
+        const std::vector<int> &,
+        const std::vector<int> &,
+        const std::vector<double> &,
+        const std::vector<ichol::precond::PrecondApply> &,
+        const std::vector<double> &,
+        std::vector<double> &,
+        const PCGParams &);
+
+    template PCGResult mpcg_low_storage_device<double>(
+        int,
+        int64_t,
+        int *,
+        int *,
+        double *,
+        const std::vector<ichol::precond::PrecondApply> &,
+        const double *,
+        double *,
         const PCGParams &);
 } // namespace ichol::solver
