@@ -79,6 +79,13 @@ namespace ichol::solver
         Timing timing;
     };
 
+    struct IterativeRefinementParams
+    {
+        int maxits = 500;
+        double tol = 1e-10;
+        PCGParams inner_params;
+    };
+
     /**
      * @brief Solves a linear system with PCG on GPU.
      *
@@ -161,6 +168,16 @@ namespace ichol::solver
 
 #ifndef ICHOL_USE_MKL_MPCG
     template <typename T_L>
+    PCGResult ir(
+        const std::vector<int> &h_csrRowPtrA,
+        const std::vector<int> &h_csrColIndA,
+        const std::vector<double> &h_valA,
+        const std::vector<ichol::precond::PrecondApply> &preconds,
+        const std::vector<double> &h_b,
+        std::vector<double> &h_x,
+        const IterativeRefinementParams &params);
+
+    template <typename T_L>
     PCGResult mpcg_vis(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
@@ -183,6 +200,16 @@ namespace ichol::solver
 
     template <typename T_L>
     PCGResult mpcg_mixed(
+        const std::vector<int> &h_csrRowPtrA,
+        const std::vector<int> &h_csrColIndA,
+        const std::vector<double> &h_valA,
+        const std::vector<ichol::precond::PrecondApply> &preconds,
+        const std::vector<double> &h_b,
+        std::vector<double> &h_x,
+        const PCGParams &params);
+
+    template <typename T_L>
+    PCGResult mpcg_low_storage(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
         const std::vector<double> &h_valA,

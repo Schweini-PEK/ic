@@ -9,6 +9,7 @@ list(FILTER ICHOL_SRC EXCLUDE REGEX ".*/apps/.*")
 option(ICHOL_USE_MKL_MPCG "Use the CPU oneMKL MPCG backend instead of the CUDA MPCG backend" OFF)
 if (ICHOL_USE_MKL_MPCG)
     list(FILTER ICHOL_SRC EXCLUDE REGEX ".*/backends/CUDA/mpcg\\.cu$")
+    list(FILTER ICHOL_SRC EXCLUDE REGEX ".*/backends/CUDA/ir\\.cu$")
 else()
     list(FILTER ICHOL_SRC EXCLUDE REGEX ".*/solver/mpcg_mkl\\.cpp$")
 endif()
@@ -98,6 +99,13 @@ if (ICHOL_USE_OPENMP)
 endif()
 
 if (ICHOL_USE_BLAS)
+    if (MKL_INCLUDE_DIR AND MKL_RT_LIB)
+        if (ICHOL_USE_OPENMP)
+            set(BLA_VENDOR Intel10_64lp)
+        else()
+            set(BLA_VENDOR Intel10_64lp_seq)
+        endif()
+    endif()
     find_package(BLAS)
     find_package(LAPACK)
     if (BLAS_FOUND AND LAPACK_FOUND)
@@ -167,6 +175,18 @@ if (NOT ICHOL_USE_MKL_MPCG)
     )
 
     target_link_libraries(mpcg_mixed_store PRIVATE ichol)
+
+    add_executable(mpcg_low
+        apps/mpcg_low.cpp
+    )
+
+    target_link_libraries(mpcg_low PRIVATE ichol)
+
+    add_executable(ir
+        apps/ir.cpp
+    )
+
+    target_link_libraries(ir PRIVATE ichol)
 endif()
 
 find_path(CUDSS_INCLUDE_DIR cudss.h
