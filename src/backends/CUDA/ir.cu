@@ -93,7 +93,6 @@ namespace ichol::solver
         double *d_r = nullptr;
         double *d_ax = nullptr;
         double *d_dx = nullptr;
-        double *d_scalar = nullptr;
 
         cusparseSpMatDescr_t matA = nullptr;
         cusparseDnVecDescr_t vecX = nullptr;
@@ -111,7 +110,6 @@ namespace ichol::solver
             CUDA_CHECK(cudaMalloc(&d_r, static_cast<size_t>(n) * sizeof(double)));
             CUDA_CHECK(cudaMalloc(&d_ax, static_cast<size_t>(n) * sizeof(double)));
             CUDA_CHECK(cudaMalloc(&d_dx, static_cast<size_t>(n) * sizeof(double)));
-            CUDA_CHECK(cudaMalloc(&d_scalar, 2 * sizeof(double)));
 
             CUDA_CHECK(cudaMemcpyAsync(d_rowPtrA, h_csrRowPtrA.data(), static_cast<size_t>(n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream));
             CUDA_CHECK(cudaMemcpyAsync(d_colIndA, h_csrColIndA.data(), static_cast<size_t>(nnzA) * sizeof(int), cudaMemcpyHostToDevice, stream));
@@ -162,15 +160,11 @@ namespace ichol::solver
                     d_spmvBuf));
                 CUDA_CHECK(cudaMemcpyAsync(d_r, d_b, static_cast<size_t>(n) * sizeof(double), cudaMemcpyDeviceToDevice, stream));
                 CUBLAS_CHECK(cublasDaxpy(cublas, n, &minus_one, d_ax, 1, d_r, 1));
-                CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, d_scalar + 1));
-                CUDA_CHECK(cudaMemcpyAsync(&res_norm, d_scalar + 1, sizeof(double), cudaMemcpyDeviceToHost, stream));
-                CUDA_CHECK(cudaStreamSynchronize(stream));
+                CUBLAS_CHECK(cublasDnrm2(cublas, n, d_r, 1, &res_norm));
             };
 
             double bnorm = 0.0;
-            CUBLAS_CHECK(cublasDnrm2(cublas, n, d_b, 1, d_scalar + 0));
-            CUDA_CHECK(cudaMemcpyAsync(&bnorm, d_scalar + 0, sizeof(double), cudaMemcpyDeviceToHost, stream));
-            CUDA_CHECK(cudaStreamSynchronize(stream));
+            CUBLAS_CHECK(cublasDnrm2(cublas, n, d_b, 1, &bnorm));
             if (bnorm == 0.0)
                 bnorm = 1.0;
 
@@ -248,8 +242,6 @@ namespace ichol::solver
                 cusparseDestroyDnVec(vecX);
             if (matA)
                 cusparseDestroySpMat(matA);
-            if (d_scalar)
-                cudaFree(d_scalar);
             if (d_dx)
                 cudaFree(d_dx);
             if (d_ax)
@@ -283,8 +275,6 @@ namespace ichol::solver
             CUSPARSE_CHECK(cusparseDestroyDnVec(vecX));
         if (matA)
             CUSPARSE_CHECK(cusparseDestroySpMat(matA));
-        if (d_scalar)
-            CUDA_CHECK(cudaFree(d_scalar));
         if (d_dx)
             CUDA_CHECK(cudaFree(d_dx));
         if (d_ax)
