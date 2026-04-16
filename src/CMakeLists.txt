@@ -68,6 +68,7 @@ target_link_libraries(ichol PUBLIC
     CUDA::cudart
     CUDA::cusparse
     CUDA::cublas
+    CUDA::cublasLt
     CUDA::cusolver
 )
 
@@ -169,12 +170,6 @@ if (NOT ICHOL_USE_MKL_MPCG)
     )
 
     target_link_libraries(heatmap_vis PRIVATE ichol)
-
-    add_executable(mpcg_mixed_store
-        apps/mpcg_mixed_store.cpp
-    )
-
-    target_link_libraries(mpcg_mixed_store PRIVATE ichol)
 
     add_executable(mpcg_low
         apps/mpcg_low.cpp

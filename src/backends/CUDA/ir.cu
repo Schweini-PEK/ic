@@ -82,7 +82,7 @@ namespace ichol::solver
     }
 
     template <typename T_L>
-    PCGResult mpcg_low_storage_device(
+    PCGResult mpcg_mixed_device(
         int n,
         int64_t nnzA,
         int *d_csrRowPtrA,
@@ -232,7 +232,7 @@ namespace ichol::solver
                 CUDA_CHECK(cudaMemsetAsync(d_dx, 0, static_cast<size_t>(n) * sizeof(double), stream));
                 CUDA_CHECK(cudaStreamSynchronize(stream));
 
-                const PCGResult inner = mpcg_low_storage_device<T_L>(
+                const PCGResult inner = mpcg_mixed_device<T_L>(
                     n,
                     nnzA,
                     d_rowPtrA,

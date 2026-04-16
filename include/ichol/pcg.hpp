@@ -21,7 +21,6 @@ namespace ichol::solver
         ComputePrecision prec_spmm = ComputePrecision::FP64;
         ComputePrecision prec_precond = ComputePrecision::FP64;
         ComputePrecision prec_acc = ComputePrecision::FP64;
-        // Mixed-history projection accumulation policy for mpcg_mixed.
         // Allowed values: FP16, FP32, FP64.
         ComputePrecision acc_prec = ComputePrecision::FP64;
 
@@ -200,16 +199,6 @@ namespace ichol::solver
 
     template <typename T_L>
     PCGResult mpcg_mixed(
-        const std::vector<int> &h_csrRowPtrA,
-        const std::vector<int> &h_csrColIndA,
-        const std::vector<double> &h_valA,
-        const std::vector<ichol::precond::PrecondApply> &preconds,
-        const std::vector<double> &h_b,
-        std::vector<double> &h_x,
-        const PCGParams &params);
-
-    template <typename T_L>
-    PCGResult mpcg_low_storage(
         const std::vector<int> &h_csrRowPtrA,
         const std::vector<int> &h_csrColIndA,
         const std::vector<double> &h_valA,

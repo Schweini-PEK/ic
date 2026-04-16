@@ -460,7 +460,7 @@ SolverRun run_mpcg_mixed_with_params(const ichol::matrix::CsrMatrix<double> &A,
 
     std::vector<double> x(A.num_rows, 0.0);
     auto t0 = std::chrono::high_resolution_clock::now();
-    run.result = ichol::solver::mpcg_low_storage<double>(
+    run.result = ichol::solver::mpcg_mixed<double>(
         A.row_ptr, A.col_ind, A.values,
         bundle.preconds,
         b,
