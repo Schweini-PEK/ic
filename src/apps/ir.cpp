@@ -252,7 +252,9 @@ void print_usage(const char *argv0)
         << "  --fsai-level-k INT            level-k symbolic IC pattern used by FSAI subdomains\n"
         << "  --spai-radius INT             radius hint for SPAI subdomains\n"
         << "  --seed INT                    RHS RNG seed\n"
-        << "  --tol FLOAT                   iterative refinement tolerance\n"
+        << "  --out-tol FLOAT               outer iterative refinement tolerance\n"
+        << "  --inl-tol FLOAT               inner MPCG tolerance\n"
+        << "  --tol FLOAT                   alias for --out-tol\n"
         << "  --mpcg-maxits INT             outer IR and inner MPCG max iterations\n"
         << "  --mixed-m64 INT               FP64 mixed-history length\n"
         << "  --mixed-m32 INT               FP32 mixed-history length\n"
@@ -269,7 +271,7 @@ void print_usage(const char *argv0)
         << "  --store-w-hist PREC           fp64|fp32|tf32|fp16|bf16\n"
         << "  --use-svd                     use SVD (pinv) for alpha solve; default is Cholesky\n"
         << "  Runs iterative refinement with MPCG low-storage as the inner solver; warmup first, then timed run.\n"
-        << "  Default tolerances: IR=1e-10, inner MPCG=1e-5.\n"
+        << "  Default tolerances: outer IR=1e-10, inner MPCG=1e-5.\n"
         << "  --help                        show this message\n";
 }
 
@@ -321,9 +323,13 @@ AppOptions parse_args(int argc, char **argv)
         {
             opts.seed = parse_uint(require_value(i, "--seed"), "--seed");
         }
-        else if (arg == "--tol")
+        else if (arg == "--out-tol" || arg == "--tol")
         {
-            opts.ir_tol = parse_double(require_value(i, "--tol"), "--tol");
+            opts.ir_tol = parse_double(require_value(i, arg.c_str()), arg.c_str());
+        }
+        else if (arg == "--inl-tol")
+        {
+            opts.params.tol = parse_double(require_value(i, "--inl-tol"), "--inl-tol");
         }
         else if (arg == "--mpcg-maxits")
         {
@@ -406,7 +412,9 @@ AppOptions parse_args(int argc, char **argv)
     if (opts.params.m_64 == 0 && opts.params.m_32 == 0 && opts.params.m_16 == 0)
         throw std::runtime_error("At least one of --mixed-m64/--mixed-m32/--mixed-m16 must be positive");
     if (opts.ir_tol <= 0.0)
-        throw std::runtime_error("--tol must be positive");
+        throw std::runtime_error("--out-tol must be positive");
+    if (opts.params.tol <= 0.0)
+        throw std::runtime_error("--inl-tol must be positive");
     if (opts.ic_level_k < 0)
         throw std::runtime_error("--ic-level-k must be non-negative");
     if (opts.fsai_level_k < 0)

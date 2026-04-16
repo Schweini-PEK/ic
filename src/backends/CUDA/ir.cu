@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -38,6 +39,48 @@
 
 namespace ichol::solver
 {
+    static std::string ir_inner_label(const PCGParams &params, int outer_iter)
+    {
+        return "[IR-OUTER-" +
+               std::to_string(outer_iter) +
+               " MPCG-MIXED-" +
+               std::to_string(params.m_64) + "-" +
+               std::to_string(params.m_32) + "-" +
+               std::to_string(params.m_16) + "]";
+    }
+
+    static void print_inner_run(const std::string &label, const PCGResult &result)
+    {
+        std::printf("%s iters=%d finalRes=%g solver_total_ms=%g solver_setup_ms=%g solver_iter_ms=%g solver_finalize_ms=%g precond_apply_ms=%g ortho_ms=%g spmm_ms=%g dense_ms=%g reset_ms=%g other_iter_ms=%g\n",
+                    label.c_str(),
+                    result.iterations,
+                    result.finalRes,
+                    result.timing.total_ms,
+                    result.timing.setup_ms,
+                    result.timing.iter_ms,
+                    result.timing.finalize_ms,
+                    result.timing.preconditioner_apply_ms,
+                    result.timing.orthogonalization_ms,
+                    result.timing.spmm_ms,
+                    result.timing.dense_ms,
+                    result.timing.residual_reset_ms,
+                    result.timing.other_iter_ms);
+    }
+
+    static void print_inner_rel_residuals(const std::string &label, const PCGResult &result)
+    {
+        std::printf("%s relres:", label.c_str());
+        if (result.relResiduals.empty())
+        {
+            std::printf(" <empty>\n");
+            return;
+        }
+
+        for (std::size_t i = 0; i < result.relResiduals.size(); ++i)
+            std::printf(" (%zu,%g)", i, result.relResiduals[i]);
+        std::printf("\n");
+    }
+
     template <typename T_L>
     PCGResult mpcg_low_storage_device(
         int n,
@@ -199,6 +242,9 @@ namespace ichol::solver
                     d_r,
                     d_dx,
                     params.inner_params);
+                const std::string inner_label = ir_inner_label(params.inner_params, iter + 1);
+                print_inner_run(inner_label, inner);
+                print_inner_rel_residuals(inner_label, inner);
 
                 result.timing.preconditioner_apply_ms += inner.timing.preconditioner_apply_ms;
                 result.timing.orthogonalization_ms += inner.timing.orthogonalization_ms;
