@@ -16,6 +16,13 @@
 #include "ichol/pcg.hpp"
 #include "solve/sptrsv/cuda/sptrsv_level.cuh"
 
+
+
+
+
+
+
+
 // ---------------------- mixed-precision helpers ----------------------
 template <typename To, typename From>
 __global__ void cast_vec(int n, const From *__restrict__ in, To *__restrict__ out)
@@ -206,6 +213,18 @@ struct DeviceBuffer
     operator T *() const { return ptr; }
 };
 
+
+
+
+
+
+
+
+
+
+
+
+
 /**
  * Given a CSR matrix in lower-triangular + diagonal form, build its transpose
  *
@@ -288,7 +307,7 @@ static ichol::symbolic::LevelSets build_level_sets_csr_diag_last(
 
     for (int ii = 0; ii < n; ++ii)
     {
-        int i = reverse ? (n - 1 - ii) : ii;
+        int i = reverse ? (n - 1 - ii) : ii;    //对L正向扫（从上往下建层），对L^T反向扫（从下往上建层）
         int best = -1;
         for (int p = row_ptr[i]; p < row_ptr[i + 1] - 1; ++p) // skip last (diag)
         {
@@ -334,6 +353,20 @@ static bool csr_has_upper_triangle_entries(
     return false;
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 namespace ichol::solver
 {
     template <typename T_L>
@@ -349,6 +382,7 @@ namespace ichol::solver
         const std::vector<double> &h_D,
         const PCGParams &params)
     {
+        // ---------1.准备矩阵A，初始化句柄
         CusparseHandle cusparseHandle;
         CublasHandle cublasHandle;
 
@@ -362,6 +396,7 @@ namespace ichol::solver
         constexpr bool L_is_fp64 = std::is_same<T_L, double>::value;
         constexpr bool L_is_fp32 = std::is_same<T_L, float>::value;
         using SolveT = std::conditional_t<L_is_fp64, double, std::conditional_t<L_is_fp32, float, __half>>;
+        const bool sptrsv_debug = true;//←新增
 
         cudaStream_t stream = 0;
         PCGResult result{};
@@ -402,7 +437,11 @@ namespace ichol::solver
         CusparseSpMat spMatA;
         spMatA.create(n, n, nnzA, d_csrRowPtrA.get(), d_csrColIndA.get(), d_valA.get());
 
-        // --- Preconditioner Buffers (Factorized or Full) ---
+
+
+
+
+        // ---------2.准备预条件子L（Preconditioner Buffers (Factorized or Full) ）
         SpTRSVLevelsetsPlan sptrsv_plan_L, sptrsv_plan_Lt;
         DeviceBuffer<int> d_csrRowPtrL, d_csrColIndL, d_csrRowPtrLt, d_csrColIndLt;
         DeviceBuffer<SolveT> d_valL, d_valLt;
@@ -426,12 +465,11 @@ namespace ichol::solver
                 // Assume precond_full is an approximate inverse; apply via SpMV
                 spMatM.create(n, n, nnzL, d_csrRowPtrL.get(), d_csrColIndL.get(), (double *)d_valL.get());
             }
-            else
-            {
+            else{   //我的路线（普通因子化预条件器）
                 // Factorized L*L^T Setup
                 std::vector<SolveT> h_valL_solve(nnzL);
                 for (int i = 0; i < nnzL; ++i)
-                    h_valL_solve[i] = static_cast<SolveT>(h_valL[i]);
+                    h_valL_solve[i] = static_cast<SolveT>(h_valL[i]);   //实现低精度：对矩阵逐个元素做类型转换，利用C++编译器实现
 
                 std::vector<int> h_csrRowPtrLt, h_csrColIndLt;
                 std::vector<SolveT> h_valLt_solve;
@@ -440,16 +478,20 @@ namespace ichol::solver
                 const auto levelsets_L = build_level_sets_csr_diag_last(n, h_csrRowPtrL, h_csrColIndL, false);
                 const auto levelsets_Lt = build_level_sets_csr_diag_last(n, h_csrRowPtrLt, h_csrColIndLt, true);
 
+                //把level-sets拷贝到GPU上
                 sptrsv_plan_L.init(levelsets_L, stream);
                 sptrsv_plan_Lt.init(levelsets_Lt, stream);
 
+                // 在GPU上申请显存
                 d_csrRowPtrL.alloc(n + 1);
                 d_csrColIndL.alloc(nnzL);
                 d_valL.alloc(nnzL);
+                // 将host侧的数组拷贝到GPU显存中
                 CUDA_CHECK(cudaMemcpy(d_csrRowPtrL.get(), h_csrRowPtrL.data(), (n + 1) * sizeof(int), cudaMemcpyHostToDevice));
                 CUDA_CHECK(cudaMemcpy(d_csrColIndL.get(), h_csrColIndL.data(), nnzL * sizeof(int), cudaMemcpyHostToDevice));
                 CUDA_CHECK(cudaMemcpy(d_valL.get(), h_valL_solve.data(), nnzL * sizeof(SolveT), cudaMemcpyHostToDevice));
 
+                //Lt的部分：
                 d_csrRowPtrLt.alloc(n + 1);
                 d_csrColIndLt.alloc(nnzL);
                 d_valLt.alloc(nnzL);
@@ -459,7 +501,11 @@ namespace ichol::solver
             }
         }
 
-        // --- Vector Setup ---
+
+
+
+
+        // ---------3.初始化PCG外层向量（Vector Setup）
         DeviceBuffer<double> d_x(n), d_b(n), d_p(n), d_q(n), d_r(n), d_z(n);
         if (static_cast<int>(h_x.size()) == n)
             CUDA_CHECK(cudaMemcpy(d_x.get(), h_x.data(), n * sizeof(double), cudaMemcpyHostToDevice));
@@ -485,7 +531,7 @@ namespace ichol::solver
                 d_spmvBuf.alloc(spmvBufSize);
         }
 
-        SolveT *d_r_work = nullptr, *d_w_work = nullptr, *d_z_work = nullptr;
+        SolveT *d_r_work = nullptr, *d_w_work = nullptr, *d_z_work = nullptr;   //SpTRSV计算用的中间变量，用于配合L的低精度
         DeviceBuffer<SolveT> d_r_work_buf, d_w_work_buf, d_z_work_buf;
         if (!use_custom_precond && !params.precond_full)
         {
@@ -497,6 +543,7 @@ namespace ichol::solver
             d_z_work = d_z_work_buf.get();
         }
 
+        //初始化残差和计时器
         CUDA_CHECK(cudaMemcpy(d_r.get(), d_b.get(), n * sizeof(double), cudaMemcpyDeviceToDevice));
         double rho = 0.0, bnorm = 0.0;
         CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_b.get(), 1, &bnorm));
@@ -509,7 +556,12 @@ namespace ichol::solver
         double last_res_norm = bnorm;
         int last_completed_iter = 0;
 
-        // --- Main Loop ---
+
+
+
+
+
+        // ---------4.PCG主循环（Main Loop）
         for (int k = 1; k <= params.maxits; k++)
         {
             // (1) z = M^-1 r
@@ -522,13 +574,18 @@ namespace ichol::solver
                 double a1 = 1.0, b0 = 0.0;
                 CUSPARSE_CHECK(cusparseSpMV(cusparseHandle, CUSPARSE_OPERATION_NON_TRANSPOSE, &a1, spMatM, vecR_dev, &b0, vecZ_dev, CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, d_spmvBuf.get()));
             }
-            else
-            {
+            else{   //我的路线
                 cast_vec<SolveT, double><<<(n + 255) / 256, 256, 0, stream>>>(n, d_r.get(), d_r_work);
-                CUDA_CHECK(cudaEventRecord(sptrsv_start, stream));
-                sptrsv_plan_L.solve<int, SolveT>(n, d_csrRowPtrL.get(), d_csrColIndL.get(), d_valL.get(), d_r_work, d_w_work, false, stream);
-                sptrsv_plan_Lt.solve<int, SolveT>(n, d_csrRowPtrLt.get(), d_csrColIndLt.get(), d_valLt.get(), d_w_work, d_z_work, false, stream);
-                CUDA_CHECK(cudaEventRecord(sptrsv_stop, stream));
+                CUDA_CHECK(cudaEventRecord(sptrsv_start, stream));  //计时
+
+                sptrsv_plan_L.solve<int, SolveT>(
+                    n, d_csrRowPtrL.get(), d_csrColIndL.get(), d_valL.get(),
+                    d_r_work, d_w_work, false, stream, sptrsv_debug);//←新增：sptrsv_debug
+                sptrsv_plan_Lt.solve<int, SolveT>(
+                    n, d_csrRowPtrLt.get(), d_csrColIndLt.get(), d_valLt.get(),
+                    d_w_work, d_z_work, false, stream, sptrsv_debug);//←新增：sptrsv_debug
+
+                CUDA_CHECK(cudaEventRecord(sptrsv_stop, stream));   //计时
                 cast_vec<double, SolveT><<<(n + 255) / 256, 256, 0, stream>>>(n, d_z_work, d_z.get());
 
                 float iter_ms = 0.0f;
@@ -579,7 +636,7 @@ namespace ichol::solver
             double negAlpha = -alpha;
             CUBLAS_CHECK(cublasDaxpy(cublasHandle, n, &negAlpha, d_q.get(), 1, d_r.get(), 1));
 
-            // (8) Convergence
+            // (8) 收敛判定
             double res_norm = 0.0;
             CUBLAS_CHECK(cublasDnrm2(cublasHandle, n, d_r.get(), 1, &res_norm));
             last_res_norm = res_norm;
@@ -592,11 +649,44 @@ namespace ichol::solver
             }
         }
 
+
+
+
+
+
+        // ---------5.统计并输出观测指标结果
         if (result.iterations == 0 && !std::isinf(result.finalRes))
         {
             result.iterations = last_completed_iter;
             result.finalRes = last_res_norm;
         }
+
+
+        if (sptrsv_debug)
+        {
+
+            //新增：
+            if (sptrsv_debug)
+            {
+                std::cout << "[debug] L: num_levels=" << sptrsv_plan_L.ls.num_levels
+                          << ", max_level_size=" << sptrsv_plan_L.ls.max_level_size << "\n";
+                std::cout << "[debug] Lt: num_levels=" << sptrsv_plan_Lt.ls.num_levels
+                          << ", max_level_size=" << sptrsv_plan_Lt.ls.max_level_size << "\n";
+            }
+            //结束
+
+            std::cout << "[debug] iterations=" << result.iterations
+                      << ", finalRes=" << result.finalRes << "\n";
+
+            std::cout << "[debug] sptrsv_total_ms=" << sptrsv_total_ms
+                      << ", sptrsv_timed_iters=" << sptrsv_timed_iters;
+
+            if (sptrsv_timed_iters > 0)
+                std::cout << ", avg_sptrsv_ms=" << (sptrsv_total_ms / sptrsv_timed_iters);
+
+            std::cout << "\n";
+        }
+
 
         CUDA_CHECK(cudaStreamSynchronize(stream));
         h_x.resize(n);

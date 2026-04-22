@@ -5,13 +5,13 @@
 
 namespace ichol::symbolic
 {
-    struct Permutation
+    struct Permutation  //重排序信息
     {
         std::vector<int> perm;     // size n
         std::vector<int> inv_perm; // size n
     };
 
-    struct ETree
+    struct ETree    //消去树
     {
         std::vector<int> parent;   // size n
         std::vector<int> colcount; // size n, CHOLMOD-style simplicial column counts
@@ -24,17 +24,19 @@ namespace ichol::symbolic
         std::vector<int> upper_ind; // size nnz_strict_upper
     };
 
-    struct LevelSets
+    struct FactorPattern    //IC因子非零结构
+    {
+        std::vector<int> row_ptr_L; // size n + 1
+        std::vector<int> col_ind_L; // size nnz_L
+    };
+
+    struct LevelSets    //层级关系
     {
         std::vector<int> level_ptr; // size num_levels + 1
         std::vector<int> levels;    // size n
     };
 
-    struct FactorPattern
-    {
-        std::vector<int> row_ptr_L; // size n + 1
-        std::vector<int> col_ind_L; // size nnz_L
-    };
+
 
     struct SymbolicPlan
     {

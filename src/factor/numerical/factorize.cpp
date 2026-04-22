@@ -83,17 +83,23 @@ namespace ichol::numeric
                                                                    ichol::numeric::NumericPlan &num_plan,
                                                                    ichol::IncompleteCholeskyOptions &options)
     {
+        // ---------1.构造预缩放向量，并对A预缩放
         num_plan.prescaling.D = compute_prescaling_vector(A, options);
-
         ichol::numeric::apply_prescaling(A, num_plan.prescaling.D);
 
+
+        // ---------2.对缩放后的A转换到IC分解阶段时的目标精度
         ichol::matrix::CsrMatrix<T> A_work = ichol::matrix::convert_csr_precision<double, T>(A);
         ichol::matrix::CsrMatrix<T> L;
-        T shift = get_shift<T>(options);
 
+
+        // ---------3.给A加一次对角shift
+        T shift = get_shift<T>(options);
         ichol::numeric::add_diagonal_shift<T>(A_work, shift);
         num_plan.ic_info.shift_used = static_cast<double>(shift);
 
+
+        // ---------4.反复尝试IC分解
         for (int attempt = 0; attempt < options.max_restarts; ++attempt)
         {
             L = compute_ic_factor<T>(A_work, sym_plan, num_plan, options);
@@ -125,6 +131,14 @@ namespace ichol::numeric
         // Max restarts reached; abort
         throw std::runtime_error("Incomplete Cholesky factorization failed: maximum restarts reached.");
     }
+
+
+
+
+
+
+
+
 
     template ichol::matrix::CsrMatrix<double> incomplete_cholesky_preconditioner<double>(ichol::matrix::CsrMatrix<double> &A,
                                                                                          const ichol::symbolic::SymbolicPlan &sym_plan,

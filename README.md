@@ -1,8 +1,8 @@
-# ic / SpTRSV 实验说明
+# IC_PCG(sptrsv) 实验说明
 
 ## 项目说明
-本项目内容是 level scheduling版 SpTRSV 的实验，实验目的是观察在不同的矩阵里，fp64和fp32精度下的level scheduling sptrsv 会有什么样不同的表现。
-
+本项目是面向高性能计算场景，探索融合并行调度与精度优化的算子加速方法。
+目前已经设计并展开了实验，研究不同矩阵在“低精度+重排序+预缩放”共同作用的效果。
 ## 数据集获取方式
 当前实验中使用到的矩阵包括：
 - `nos5`
@@ -35,3 +35,27 @@ matrix_path=./data/matrices/nos5/nos5.mtx
 ordering=[Identity,AMD,RCM]
 precision_fact=double
 precision_pcg=[double,float]
+
+### 运行指令：
+cmake --build build --target ict_pcg -j
+
+./build/src/ict_pcg config/ict_pcg_options_nos5.txt
+
+./build/src/ict_pcg config/ict_pcg_options_bcsstk14.txt
+
+./build/src/ict_pcg config/ict_pcg_options_nos5.txt | tee data/results/sptrsv_precision/results_nos5.txt 
+
+./build/src/ict_pcg config/ict_pcg_options_nos7.txt | tee data/results/sptrsv_precision/results_nos7.txt
+
+./build/src/ict_pcg config/ict_pcg_options_bcsstk14.txt | tee data/results/sptrsv_precision/results_bcsstk14.txt
+
+./build/src/ict_pcg config/ict_pcg_options_bcsstk19.txt | tee data/results/sptrsv_precision/results_bcsstk19.txt
+
+./build/src/ict_pcg config/ict_pcg_options_bcsstk21.txt | tee data/results/sptrsv_precision/results_bcsstk21.txt
+
+./build/src/ict_pcg config/ict_pcg_options_bcsstk18.txt | tee data/results/sptrsv_precision/results_bcsstk18.txt
+
+./build/src/ict_pcg config/ict_pcg_options_nasa4704.txt | tee data/results/sptrsv_precision/results_nasa4704.txt
+
+./build/src/ict_pcg config/ict_pcg_options_bcsstk24.txt | tee data/results/sptrsv_precision/results_bcsstk24.txt
+

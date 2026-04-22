@@ -51,6 +51,8 @@ namespace ichol
         double overlap_threshold = 0.8;
     };
 
+    using SuperNodeOptions = SymbolicOptions;//←新增
+
     struct IncompleteCholeskyOptions
     {
         Scaling scaling = Scaling::UnitSqrtDiag;

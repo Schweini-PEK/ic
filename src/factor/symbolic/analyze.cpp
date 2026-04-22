@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <vector>
 #include <type_traits>
+#include <iostream>
 
 extern "C"
 {
@@ -62,10 +63,10 @@ namespace ichol::symbolic
     SymbolicPlan ic_analyze(ichol::matrix::CsrMatrix<T> &A,
                             const SymbolicOptions &options)
     {
-        SymbolicPlan plan;
+        SymbolicPlan plan;  //封装符号分析阶段用到的矩阵结构信息（重排序需要的置换向量、消去树、L的非零结构、层级关系）
 
-        plan.perm = get_permutation_csr(A, options.ordering);
-        apply_permutation_csr<T>(A, plan.perm); // in-place permutation.
+        plan.perm = get_permutation_csr(A, options.ordering);   //构造重排序的置换向量
+        apply_permutation_csr<T>(A, plan.perm); //对原矩阵A进行重排序，并更新存储
 
         if (options.level_k == -1) // Complete Cholesky
         {
@@ -74,10 +75,10 @@ namespace ichol::symbolic
         }
         else // IC(k)
         {
-            plan.factor_pattern = compute_ic_factor_pattern<T>(A, options.level_k);
+            plan.factor_pattern = compute_ic_factor_pattern<T>(A, options.level_k); //计算IC分解会用到的结构信息（填充量、非零位置、etc）
         }
 
-        plan.level_sets = build_level_sets(plan.factor_pattern, options);
+        plan.level_sets = build_level_sets(plan.factor_pattern, options);   //构建层级关系
         return plan;
     }
 

@@ -1,4 +1,5 @@
-// src/apps/ict_pcg_main.cpp
+// src/apps/ict_pcg_main.cpp：读配置 → 生成实验组合 → 做 IC 分解 → 把 L 转成传给 PCG/SpTRSV 的类型 → 调 pcg.cu
+// 核心函数：run_ic_pcg<FactT, PcgT>()
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -171,7 +172,7 @@ namespace
             out = ichol::Ordering::Identity;
         else if (v == "amd")
             out = ichol::Ordering::AMD;
-        else if (v == "nesteddissection")
+        else if (v == "nd")
             out = ichol::Ordering::NestedDissection;
         else if (v == "rcm")
             out = ichol::Ordering::RCM;
@@ -271,12 +272,17 @@ namespace
     template <typename FactT, typename PcgT>
     int run_ic_pcg(const AppOptions &opts)
     {
-        auto A = load_matrix(opts);
+        // ---------1.读入矩阵
+        auto A = load_matrix(opts); //转成CSR格式进行存储
         const int n = A.num_rows;
 
-        auto sym_plan = ichol::symbolic::ic_analyze<double>(A, opts.sym);
-        ichol::numeric::NumericPlan num_plan;
 
+        // ---------2.符号分析(spsv求解阶段前的总称，一般包括：重排序、缩放、IC分解、构建层级关系）
+        auto sym_plan = ichol::symbolic::ic_analyze<double>(A, opts.sym);   //符号分析的结果（矩阵的结构信息）
+        ichol::numeric::NumericPlan num_plan;   //ic分解的“数值参数”
+
+
+        // ---------3.缩放 + IC分解
         auto fact_start = std::chrono::high_resolution_clock::now();
         auto ic_opts = opts.ic;
         auto L = ichol::numeric::incomplete_cholesky_preconditioner<FactT>(A, sym_plan, num_plan, ic_opts);
@@ -284,21 +290,25 @@ namespace
         std::chrono::duration<double> fact_duration = fact_end - fact_start;
         std::cout << "IC factorization time: " << fact_duration.count() << " seconds.\n";
 
+
+        // ---------4.处理RHS（右端项b）
         const auto &D = num_plan.prescaling.D;
 
-        std::vector<double> b(n, 1.0);
-        std::vector<double> b_perm = (opts.sym.ordering == ichol::Ordering::Identity)
-                                         ? b
-                                         : ichol::symbolic::apply_permutation_vec(b, sym_plan.perm);
-        std::vector<double> b_tilde(n);
+        std::vector<double> b(n, 1.0);  //初始spsv右端项：全为1的向量
+        std::vector<double> b_perm = (opts.sym.ordering == ichol::Ordering::Identity)? b: ichol::symbolic::apply_permutation_vec(b, sym_plan.perm); //对b重排序
+        std::vector<double> b_tilde(n); //再对b做缩放
         for (int i = 0; i < n; ++i)
             b_tilde[i] = b_perm[i] / D[i];
 
+
+        // ---------5.精度转换
         std::vector<PcgT> L_values_pcg;
         L_values_pcg.reserve(L.values.size());
         for (const auto &v : L.values)
             L_values_pcg.push_back(ichol::util::cast_fp_type<PcgT>(v));
 
+
+        // ---------6.PCG
         std::vector<double> y;
         ichol::solver::PCGParams params;
         params.maxits = 1000;
@@ -320,6 +330,8 @@ namespace
         std::chrono::duration<double> pcg_duration = pcg_end - pcg_start;
         std::cout << "PCG time: " << pcg_duration.count() << " seconds.\n";
 
+
+        // ---------7.输出观测指标（后处理）
         auto vec_norm = [](const std::vector<double> &v)
         {
             double s = 0.0;
@@ -356,7 +368,7 @@ namespace
         double relresB = (bTildenorm == 0.0) ? rBnorm : rBnorm / bTildenorm;
 
         std::cout << "nnz of L : " << L.values.size() << "\n";
-        std::cout << "Scaled-system relative residual (B y = b_tilde): " << relresB << "\n";
+        std::cout << "the relative residual of the scaled linear system (B y = b_tilde): " << relresB << "\n";
         std::cout << "Iterations taken by PCG: " << pcg_result.iterations << "\n";
 
         return 0;
@@ -451,58 +463,6 @@ namespace
         std::vector<GridField> fields;
         fields.reserve(32);
 
-        // matrix_path
-        {
-            auto toks = get_tokens(kv, "matrix_path", def.matrix_path);
-            std::vector<std::string> vals = toks;
-            fields.push_back(GridField{
-                "matrix_path",
-                vals.size(),
-                [vals](AppOptions &o, std::size_t i)
-                { o.matrix_path = vals[i]; },
-                [](const AppOptions &o, std::ostream &os)
-                { os << "matrix_path=" << o.matrix_path; }});
-        }
-
-        // laplacian_dim
-        {
-            auto toks = get_tokens(kv, "laplacian_dim", std::to_string(def.laplacian_dim));
-            auto vals = parse_int_list(toks, "laplacian_dim");
-            fields.push_back(GridField{
-                "laplacian_dim",
-                vals.size(),
-                [vals](AppOptions &o, std::size_t i)
-                { o.laplacian_dim = vals[i]; },
-                [](const AppOptions &o, std::ostream &os)
-                { os << "laplacian_dim=" << o.laplacian_dim; }});
-        }
-
-        // precision_fact
-        {
-            auto toks = get_tokens(kv, "precision_fact", def.precision_fact);
-            std::vector<std::string> vals = toks;
-            fields.push_back(GridField{
-                "precision_fact",
-                vals.size(),
-                [vals](AppOptions &o, std::size_t i)
-                { o.precision_fact = vals[i]; },
-                [](const AppOptions &o, std::ostream &os)
-                { os << "precision_fact=" << o.precision_fact; }});
-        }
-
-        // precision_pcg
-        {
-            auto toks = get_tokens(kv, "precision_pcg", def.precision_pcg);
-            std::vector<std::string> vals = toks;
-            fields.push_back(GridField{
-                "precision_pcg",
-                vals.size(),
-                [vals](AppOptions &o, std::size_t i)
-                { o.precision_pcg = vals[i]; },
-                [](const AppOptions &o, std::ostream &os)
-                { os << "precision_pcg=" << o.precision_pcg; }});
-        }
-
         // ordering
         {
             auto toks = get_tokens(kv, "ordering", "Identity");
@@ -524,7 +484,7 @@ namespace
                         os << "AMD";
                         break;
                     case ichol::Ordering::NestedDissection:
-                        os << "NestedDissection";
+                        os << "ND";
                         break;
                     case ichol::Ordering::RCM:
                         os << "RCM";
@@ -534,19 +494,6 @@ namespace
                         break;
                     }
                 }});
-        }
-
-        // level_k
-        {
-            auto toks = get_tokens(kv, "level_k", std::to_string(def.sym.level_k));
-            auto vals = parse_int_list(toks, "level_k");
-            fields.push_back(GridField{
-                "level_k",
-                vals.size(),
-                [vals](AppOptions &o, std::size_t i)
-                { o.sym.level_k = vals[i]; },
-                [](const AppOptions &o, std::ostream &os)
-                { os << "level_k=" << o.sym.level_k; }});
         }
 
         // scaling
@@ -578,6 +525,73 @@ namespace
                     }
                 }});
         }
+
+        // precision_fact
+        {
+            auto toks = get_tokens(kv, "precision_fact", def.precision_fact);
+            std::vector<std::string> vals = toks;
+            fields.push_back(GridField{
+                "precision_fact",
+                vals.size(),
+                [vals](AppOptions &o, std::size_t i)
+                { o.precision_fact = vals[i]; },
+                [](const AppOptions &o, std::ostream &os)
+                { os << "precision_fact=" << o.precision_fact; }});
+        }
+
+        // precision_pcg
+        {
+            auto toks = get_tokens(kv, "precision_pcg", def.precision_pcg);
+            std::vector<std::string> vals = toks;
+            fields.push_back(GridField{
+                "precision_pcg",
+                vals.size(),
+                [vals](AppOptions &o, std::size_t i)
+                { o.precision_pcg = vals[i]; },
+                [](const AppOptions &o, std::ostream &os)
+                { os << "precision_pcg=" << o.precision_pcg; }});
+        }
+
+        // matrix_path
+        {
+            auto toks = get_tokens(kv, "matrix_path", def.matrix_path);
+            std::vector<std::string> vals = toks;
+            fields.push_back(GridField{
+                "matrix_path",
+                vals.size(),
+                [vals](AppOptions &o, std::size_t i)
+                { o.matrix_path = vals[i]; },
+                [](const AppOptions &o, std::ostream &os)
+                { os << "matrix_path=" << o.matrix_path; }});
+        }
+
+        // laplacian_dim
+        {
+            auto toks = get_tokens(kv, "laplacian_dim", std::to_string(def.laplacian_dim));
+            auto vals = parse_int_list(toks, "laplacian_dim");
+            fields.push_back(GridField{
+                "laplacian_dim",
+                vals.size(),
+                [vals](AppOptions &o, std::size_t i)
+                { o.laplacian_dim = vals[i]; },
+                [](const AppOptions &o, std::ostream &os)
+                { os << "laplacian_dim=" << o.laplacian_dim; }});
+        }
+
+
+        // level_k
+        {
+            auto toks = get_tokens(kv, "level_k", std::to_string(def.sym.level_k));
+            auto vals = parse_int_list(toks, "level_k");
+            fields.push_back(GridField{
+                "level_k",
+                vals.size(),
+                [vals](AppOptions &o, std::size_t i)
+                { o.sym.level_k = vals[i]; },
+                [](const AppOptions &o, std::ostream &os)
+                { os << "level_k=" << o.sym.level_k; }});
+        }
+
 
         // pivot_shift_strategy
         {
@@ -659,7 +673,9 @@ namespace
         for (std::size_t i = 0; i < fields.size(); ++i)
         {
             fields[i].print_one(opts, std::cout);
-            if (i + 1 < fields.size())
+            if (i==3 || i==4)
+                std::cout << "\n";
+            else if (i + 1 < fields.size())
                 std::cout << "  ";
         }
         std::cout << "\n";
@@ -707,14 +723,48 @@ int main(int argc, char **argv)
     std::vector<std::size_t> choice(fields.size(), 0);
 
     std::uint64_t run_id = 0;
+    std::uint64_t success_count = 0;    //新增
+    std::uint64_t fail_count = 0;    //新增
     enumerate_grid(fields, base, 0, work, choice,
                    [&](const AppOptions &opts, const std::vector<std::size_t> &)
                    {
                        ++run_id;
                        std::cout << "-------------------- run " << run_id << " / " << total << "\n";
                        print_run_config_line(fields, opts);
-                       (void)dispatch_run(opts);
+
+
+                       //(void)dispatch_run(opts);
+                       try
+                       {
+                           int rc = dispatch_run(opts);
+                           if (rc == 0)
+                           {
+                               ++success_count;
+                           }
+                           else
+                           {
+                               ++fail_count;
+                               std::cerr << "Failed with return code: " << rc << "\n";
+                           }
+                       }
+                       catch (const std::exception &e)
+                       {
+                           ++fail_count;
+                           std::cout << "Exception: " << e.what() << "\n";
+                       }
+                       catch (...)
+                       {
+                           ++fail_count;
+                           std::cout << "Exception: unknown exception\n";
+                       }
+
+                       std::cout << "\n";
                    });
+
+    std::cout << "==================== summary ====================\n";
+    std::cout << "total runs   : " << total << "\n";
+    std::cout << "success runs : " << success_count << "\n";
+    std::cout << "failed runs  : " << fail_count << "\n";
 
     ierr = PetscFinalize();
     if (ierr)

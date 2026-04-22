@@ -1,5 +1,6 @@
-// sptrsv_levelsets.cuh
-//
+// sptrsv_levelsets.cuh：如何把一个三角求解在 GPU 上按 level scheduling 跑起来
+// 核心函数：solve()
+
 // CUDA 12 level-scheduled sparse triangular solve (SpTRSV) using precomputed level sets.
 // Persistent-plan version: level rows live on device; status buffer is allocated once and reused.
 //
@@ -28,6 +29,7 @@
 #include <type_traits>
 #include <vector>
 #include <algorithm>
+#include <iostream>
 
 #include "factor/symbolic/symbolic.hpp"
 #include "backends/CUDA/util/gmath.cuh"
@@ -532,6 +534,12 @@ struct SpTRSVLevelsetsPlan
         return 0;
     }
 
+
+
+
+
+
+
     template <typename IndexT, typename ValueT>
     int solve(
         int n_,
@@ -541,8 +549,11 @@ struct SpTRSVLevelsetsPlan
         const ValueT *d_b,
         ValueT *d_x,
         bool unit_diag,
-        cudaStream_t stream)
+        cudaStream_t stream,
+        bool debug = false)//←新增
     {
+        (void)debug;//←新增
+
         if (n_ < 0)
             return -1;
         if (n_ == 0)
@@ -563,6 +574,9 @@ struct SpTRSVLevelsetsPlan
         if (ls.level_ptr.back() != n)
             return -1;
 
+
+
+        // 每次solve前需重置状态位d_status为0（1表示sptrsv求解存在异常）
         cudaError_t e = cudaMemsetAsync(d_status, 0, sizeof(int), stream);
         if (e != cudaSuccess)
             return -3;
@@ -572,6 +586,7 @@ struct SpTRSVLevelsetsPlan
         e = cudaDeviceGetAttribute(&coop, cudaDevAttrCooperativeLaunch, 0);
         if (e != cudaSuccess)
             return -3;
+        //std::cout << "cudaDevAttrCooperativeLaunch = " << coop << "\n";
 
         // Kernel config (tuned to reduce barrier participants)
         constexpr int THREADS = 256;
@@ -627,7 +642,9 @@ struct SpTRSVLevelsetsPlan
             return (*h_status != 0) ? -2 : 0;
         }
 
-        // Cooperative path: size blocks to reduce grid.sync overhead
+
+
+        // 我的路线：Cooperative path:（size blocks to reduce grid.sync overhead）
         int numSM = 0;
         e = cudaDeviceGetAttribute(&numSM, cudaDevAttrMultiProcessorCount, 0);
         if (e != cudaSuccess)
@@ -635,14 +652,14 @@ struct SpTRSVLevelsetsPlan
 
         int maxBlocksPerSM = 0;
         if constexpr (std::is_same_v<ValueT, __half>)
-        {
+        {// half 版 SpTRSV kernel
             e = cudaOccupancyMaxActiveBlocksPerMultiprocessor(
                 &maxBlocksPerSM,
                 sptrsv_trsv_level_persistent_kernel_half2<IndexT>,
                 THREADS, 0);
         }
         else
-        {
+        {// cooperative启动：把SpTRSV kernel放到GPU上执行
             e = cudaOccupancyMaxActiveBlocksPerMultiprocessor(
                 &maxBlocksPerSM,
                 sptrsv_trsv_level_persistent_kernel<IndexT, ValueT>,
@@ -665,6 +682,8 @@ struct SpTRSVLevelsetsPlan
         blocks = std::min(blocks, 2 * numSM);
         blocks = std::max(blocks, 1);
 
+
+        // 启动cooperative persistent kernel
         void *args[] = {
             &ls.num_levels,
             &ls.d_level_ptr,
@@ -677,18 +696,19 @@ struct SpTRSVLevelsetsPlan
             &unit_diag,
             &d_status};
 
-        if constexpr (std::is_same_v<ValueT, __half>)
+        if constexpr (std::is_same_v<ValueT, __half>)   //half下的专门优化版本
         {
             e = cudaLaunchCooperativeKernel(
                 (void *)sptrsv_trsv_level_persistent_kernel_half2<IndexT>,
                 blocks, THREADS, args, 0, stream);
         }
-        else
-        {
+        else{   //float、double下的普通版本
             e = cudaLaunchCooperativeKernel(
                 (void *)sptrsv_trsv_level_persistent_kernel<IndexT, ValueT>,
                 blocks, THREADS, args, 0, stream);
         }
+
+        //返回SpTRSV执行结果（-3表示cuda运行失败；-2表示kernel数值失败；0表示成功）
         if (e != cudaSuccess)
             return -3;
 
