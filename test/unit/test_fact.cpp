@@ -15,7 +15,7 @@ TEST(FactTest, IC_Factorize_Runs)
     /**
      * load check
      */
-    std::string path = "test/data/Kuu.mtx";
+    std::string path = "test/data/kuu.mtx";
     ichol::matrix::CsrMatrix<double> A = ichol::io::mtx_to_csr<double>(path, false);
 
     const int n = A.row_ptr.size(); // number of rows + 1

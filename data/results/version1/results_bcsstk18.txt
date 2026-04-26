@@ -1,0 +1,248 @@
+Grid search total runs: 36
+-------------------- run 1 / 36
+ordering=Identity  scaling=None  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 2 / 36
+ordering=Identity  scaling=None  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 3 / 36
+ordering=Identity  scaling=None  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 4 / 36
+ordering=Identity  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 5 / 36
+ordering=Identity  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 6 / 36
+ordering=Identity  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 7 / 36
+ordering=Identity  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 1.66278 seconds.
+[debug] L: num_levels=43, max_level_size=10623
+[debug] Lt: num_levels=43, max_level_size=10564
+[debug] iterations=1000, finalRes=5.35987e-05
+[debug] sptrsv_total_ms=417.076, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.417076
+PCG time: 0.839696 seconds.
+nnz of L : 15723
+the relative residual of the scaled linear system (B y = b_tilde): 1.985e-06
+Iterations taken by PCG: 1000
+
+-------------------- run 8 / 36
+ordering=Identity  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 1.45337 seconds.
+[debug] L: num_levels=43, max_level_size=10623
+[debug] Lt: num_levels=43, max_level_size=10564
+[debug] iterations=1000, finalRes=0.000105731
+[debug] sptrsv_total_ms=365.415, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.365415
+PCG time: 0.723134 seconds.
+nnz of L : 15723
+the relative residual of the scaled linear system (B y = b_tilde): 3.91568e-06
+Iterations taken by PCG: 1000
+
+-------------------- run 9 / 36
+ordering=Identity  scaling=UnitColNorm  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 1.521 seconds.
+[debug] L: num_levels=43, max_level_size=10623
+[debug] Lt: num_levels=43, max_level_size=10564
+[debug] iterations=1000, finalRes=0.000314725
+[debug] sptrsv_total_ms=413.276, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.413276
+PCG time: 0.759199 seconds.
+nnz of L : 15723
+the relative residual of the scaled linear system (B y = b_tilde): 1.16557e-05
+Iterations taken by PCG: 1000
+
+-------------------- run 10 / 36
+ordering=AMD  scaling=None  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 11 / 36
+ordering=AMD  scaling=None  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 12 / 36
+ordering=AMD  scaling=None  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 13 / 36
+ordering=AMD  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 14 / 36
+ordering=AMD  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 15 / 36
+ordering=AMD  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 16 / 36
+ordering=AMD  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 17 / 36
+ordering=AMD  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 18 / 36
+ordering=AMD  scaling=UnitColNorm  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 19 / 36
+ordering=RCM  scaling=None  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 20 / 36
+ordering=RCM  scaling=None  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 21 / 36
+ordering=RCM  scaling=None  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 22 / 36
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 23 / 36
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 24 / 36
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 25 / 36
+ordering=RCM  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 26 / 36
+ordering=RCM  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 27 / 36
+ordering=RCM  scaling=UnitColNorm  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 28 / 36
+ordering=ND  scaling=None  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 29 / 36
+ordering=ND  scaling=None  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 30 / 36
+ordering=ND  scaling=None  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 31 / 36
+ordering=ND  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 32 / 36
+ordering=ND  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 33 / 36
+ordering=ND  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 34 / 36
+ordering=ND  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 35 / 36
+ordering=ND  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 36 / 36
+ordering=ND  scaling=UnitColNorm  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk18/bcsstk18.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+==================== summary ====================
+total runs   : 36
+success runs : 3
+failed runs  : 33

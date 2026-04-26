@@ -30,6 +30,8 @@ namespace
         int laplacian_dim = 100;
         std::string precision_fact = "float";
         std::string precision_pcg = "float";
+        ichol::solver::FactorizedPrecondSolvePolicy factorized_precond_policy =
+            ichol::solver::FactorizedPrecondSolvePolicy::LevelScheduling;
 
         ichol::SymbolicOptions sym;
         ichol::IncompleteCholeskyOptions ic;
@@ -253,6 +255,34 @@ namespace
         return out;
     }
 
+    bool parse_factorized_precond_policy_token(const std::string &s, ichol::solver::FactorizedPrecondSolvePolicy &out)
+    {
+        auto v = to_lower_copy(s);
+        if (v == "level" || v == "levels" || v == "level-scheduling" || v == "level_scheduling")
+            out = ichol::solver::FactorizedPrecondSolvePolicy::LevelScheduling;
+        else if (v == "supernode" || v == "supernodal")
+            out = ichol::solver::FactorizedPrecondSolvePolicy::Supernode;
+        else
+            return false;
+        return true;
+    }
+
+    std::vector<ichol::solver::FactorizedPrecondSolvePolicy> parse_factorized_precond_policy_list(
+        const std::vector<std::string> &tokens,
+        const std::string &key)
+    {
+        std::vector<ichol::solver::FactorizedPrecondSolvePolicy> out;
+        out.reserve(tokens.size());
+        for (const auto &t : tokens)
+        {
+            ichol::solver::FactorizedPrecondSolvePolicy v;
+            if (!parse_factorized_precond_policy_token(t, v))
+                throw std::runtime_error("Failed to parse factorized_precond_policy token '" + t + "' for key '" + key + "'");
+            out.push_back(v);
+        }
+        return out;
+    }
+
     // -------------------- matrix loader
 
     ichol::matrix::CsrMatrix<double> load_matrix(const AppOptions &opts)
@@ -313,6 +343,7 @@ namespace
         ichol::solver::PCGParams params;
         params.maxits = 1000;
         params.tol = 1e-10;
+        params.factorized_precond_policy = opts.factorized_precond_policy;
 
         auto pcg_start = std::chrono::high_resolution_clock::now();
         ichol::solver::PCGResult pcg_result = ichol::solver::pcg<PcgT>(
@@ -328,6 +359,7 @@ namespace
             params);
         auto pcg_end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> pcg_duration = pcg_end - pcg_start;
+
         std::cout << "PCG time: " << pcg_duration.count() << " seconds.\n";
 
 
@@ -550,6 +582,33 @@ namespace
                 { o.precision_pcg = vals[i]; },
                 [](const AppOptions &o, std::ostream &os)
                 { os << "precision_pcg=" << o.precision_pcg; }});
+        }
+
+        // factorized_precond_policy
+        {
+            auto toks = get_tokens(kv, "factorized_precond_policy", "level-scheduling");
+            auto vals = parse_factorized_precond_policy_list(toks, "factorized_precond_policy");
+            fields.push_back(GridField{
+                "factorized_precond_policy",
+                vals.size(),
+                [vals](AppOptions &o, std::size_t i)
+                { o.factorized_precond_policy = vals[i]; },
+                [](const AppOptions &o, std::ostream &os)
+                {
+                    os << "factorized_precond_policy=";
+                    switch (o.factorized_precond_policy)
+                    {
+                    case ichol::solver::FactorizedPrecondSolvePolicy::LevelScheduling:
+                        os << "level-scheduling";
+                        break;
+                    case ichol::solver::FactorizedPrecondSolvePolicy::Supernode:
+                        os << "supernode";
+                        break;
+                    default:
+                        os << "unknown";
+                        break;
+                    }
+                }});
         }
 
         // matrix_path

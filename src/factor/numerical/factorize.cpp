@@ -112,6 +112,7 @@ namespace ichol::numeric
 
                 if (options.verbose)
                 {
+                    std::cout << "[debug--IC factorization]:\n";
                     std::cout << "Incomplete Cholesky factorization succeeded after "
                               << attempt << " restarts, shift used: "
                               << num_plan.ic_info.shift_used << "\n";

@@ -37,25 +37,31 @@ precision_fact=double
 precision_pcg=[double,float]
 
 ### 运行指令：
+cmake -S . -B build
+
 cmake --build build --target ict_pcg -j
 
-./build/src/ict_pcg config/ict_pcg_options_nos5.txt
+./build/src/ict_pcg config/ict_pcg_options_Dubcova2.txt
 
-./build/src/ict_pcg config/ict_pcg_options_bcsstk14.txt
+./build/src/ict_pcg config/ict_pcg_options_Dubcova2.txt | tee data/results/version2/level/results_Dubcova2.txt
 
-./build/src/ict_pcg config/ict_pcg_options_nos5.txt | tee data/results/sptrsv_precision/results_nos5.txt 
+./build/src/ict_pcg config/ict_pcg_options_Dubcova1.txt | tee data/results/version2/level/results_Dubcova1.txt
 
-./build/src/ict_pcg config/ict_pcg_options_nos7.txt | tee data/results/sptrsv_precision/results_nos7.txt
+./build/src/ict_pcg config/ict_pcg_options_kuu.txt | tee data/results/version2/level/results_kuu.txt
 
-./build/src/ict_pcg config/ict_pcg_options_bcsstk14.txt | tee data/results/sptrsv_precision/results_bcsstk14.txt
+./build/src/ict_pcg config/ict_pcg_options_Pres_Poisson.txt | tee data/results/version2/level/results_Pres_Poisson.txt
 
-./build/src/ict_pcg config/ict_pcg_options_bcsstk19.txt | tee data/results/sptrsv_precision/results_bcsstk19.txt
+./build/src/ict_pcg config/ict_pcg_options_bcsstk21.txt | tee data/results/version2/level/results_bcsstk21.txt
 
-./build/src/ict_pcg config/ict_pcg_options_bcsstk21.txt | tee data/results/sptrsv_precision/results_bcsstk21.txt
+./build/src/ict_pcg config/ict_pcg_options_nasa2146.txt | tee data/results/version2/level/results_nasa2146.txt
 
-./build/src/ict_pcg config/ict_pcg_options_bcsstk18.txt | tee data/results/sptrsv_precision/results_bcsstk18.txt
+./build/src/ict_pcg config/ict_pcg_options_fv1.txt | tee data/results/version2/level/results_fv1.txt
 
-./build/src/ict_pcg config/ict_pcg_options_nasa4704.txt | tee data/results/sptrsv_precision/results_nasa4704.txt
 
-./build/src/ict_pcg config/ict_pcg_options_bcsstk24.txt | tee data/results/sptrsv_precision/results_bcsstk24.txt
+
+
+x
+./build/src/ict_pcg config/ict_pcg_options_Pres_Poisson.txt
+
+ICHOL_RUN_SUPERNODE_AMALGAMATION_EXPERIMENT=1 ICHOL_SUPERNODE_EXPERIMENT_MATRIX=./data/matrices/ted_B/ted_B.mtx ./build/test/test_supernode_amalgamation_experiment --gtest_color=no
 

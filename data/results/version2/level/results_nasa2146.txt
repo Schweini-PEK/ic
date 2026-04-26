@@ -1,0 +1,233 @@
+Grid search total runs: 12
+-------------------- run 1 / 12
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/nasa2146/nasa2146.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 3.72409 seconds.
+[debug--level]:
+L: num_levels=705, max_level_size=7
+Lt: num_levels=705, max_level_size=9
+[debug--PCG]:
+PCG iterations=20, finalRes=1.15557e-12
+[debug--SpTRSV]:
+sptrsv_total_ms=682.654, sptrsv_timed_iters=20, avg_sptrsv_ms=34.1327
+PCG time: 0.876322 seconds.
+nnz of L : 40990
+the relative residual of the scaled linear system (B y = b_tilde): 3.59761e-11
+Iterations taken by PCG: 20
+
+-------------------- run 2 / 12
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/nasa2146/nasa2146.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 3.15617 seconds.
+[debug--level]:
+L: num_levels=705, max_level_size=7
+Lt: num_levels=705, max_level_size=9
+[debug--PCG]:
+PCG iterations=20, finalRes=1.98476e-12
+[debug--SpTRSV]:
+sptrsv_total_ms=369.063, sptrsv_timed_iters=20, avg_sptrsv_ms=18.4532
+PCG time: 0.490304 seconds.
+nnz of L : 40990
+the relative residual of the scaled linear system (B y = b_tilde): 6.17911e-11
+Iterations taken by PCG: 20
+
+-------------------- run 3 / 12
+ordering=RCM  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/nasa2146/nasa2146.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 3.18815 seconds.
+[debug--level]:
+L: num_levels=27, max_level_size=1889
+Lt: num_levels=27, max_level_size=1877
+[debug--PCG]:
+PCG iterations=529, finalRes=1.52091e-15
+[debug--SpTRSV]:
+sptrsv_total_ms=875.844, sptrsv_timed_iters=529, avg_sptrsv_ms=1.65566
+PCG time: 3.85341 seconds.
+nnz of L : 2415
+the relative residual of the scaled linear system (B y = b_tilde): 9.84762e-11
+Iterations taken by PCG: 529
+
+-------------------- run 4 / 12
+ordering=RCM  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/nasa2146/nasa2146.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 2.58769 seconds.
+[debug--level]:
+L: num_levels=27, max_level_size=1889
+Lt: num_levels=27, max_level_size=1877
+[debug--PCG]:
+PCG iterations=537, finalRes=1.53995e-15
+[debug--SpTRSV]:
+sptrsv_total_ms=873.855, sptrsv_timed_iters=537, avg_sptrsv_ms=1.62729
+PCG time: 3.83171 seconds.
+nnz of L : 2415
+the relative residual of the scaled linear system (B y = b_tilde): 9.97128e-11
+Iterations taken by PCG: 537
+
+-------------------- run 5 / 12
+ordering=AMD  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/nasa2146/nasa2146.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.857 seconds.
+[debug--level]:
+L: num_levels=125, max_level_size=126
+Lt: num_levels=125, max_level_size=46
+[debug--PCG]:
+PCG iterations=52, finalRes=2.23874e-12
+[debug--SpTRSV]:
+sptrsv_total_ms=320.305, sptrsv_timed_iters=52, avg_sptrsv_ms=6.15971
+PCG time: 0.632264 seconds.
+nnz of L : 30297
+the relative residual of the scaled linear system (B y = b_tilde): 6.96988e-11
+Iterations taken by PCG: 52
+
+-------------------- run 6 / 12
+ordering=AMD  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/nasa2146/nasa2146.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.944333 seconds.
+[debug--level]:
+L: num_levels=125, max_level_size=126
+Lt: num_levels=125, max_level_size=46
+[debug--PCG]:
+PCG iterations=59, finalRes=2.7812e-12
+[debug--SpTRSV]:
+sptrsv_total_ms=312.266, sptrsv_timed_iters=59, avg_sptrsv_ms=5.29265
+PCG time: 0.652513 seconds.
+nnz of L : 30297
+the relative residual of the scaled linear system (B y = b_tilde): 8.65869e-11
+Iterations taken by PCG: 59
+
+-------------------- run 7 / 12
+ordering=AMD  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/nasa2146/nasa2146.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.722503 seconds.
+[debug--level]:
+L: num_levels=12, max_level_size=1964
+Lt: num_levels=12, max_level_size=1962
+[debug--PCG]:
+PCG iterations=530, finalRes=1.4089e-15
+[debug--SpTRSV]:
+sptrsv_total_ms=851.951, sptrsv_timed_iters=530, avg_sptrsv_ms=1.60746
+PCG time: 3.88023 seconds.
+nnz of L : 2416
+the relative residual of the scaled linear system (B y = b_tilde): 9.12227e-11
+Iterations taken by PCG: 530
+
+-------------------- run 8 / 12
+ordering=AMD  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/nasa2146/nasa2146.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.717586 seconds.
+[debug--level]:
+L: num_levels=12, max_level_size=1964
+Lt: num_levels=12, max_level_size=1962
+[debug--PCG]:
+PCG iterations=538, finalRes=1.53969e-15
+[debug--SpTRSV]:
+sptrsv_total_ms=828.848, sptrsv_timed_iters=538, avg_sptrsv_ms=1.54061
+PCG time: 3.62824 seconds.
+nnz of L : 2416
+the relative residual of the scaled linear system (B y = b_tilde): 9.96912e-11
+Iterations taken by PCG: 538
+
+-------------------- run 9 / 12
+ordering=ND  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/nasa2146/nasa2146.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.668606 seconds.
+[debug--level]:
+L: num_levels=77, max_level_size=111
+Lt: num_levels=77, max_level_size=54
+[debug--PCG]:
+PCG iterations=53, finalRes=2.18414e-12
+[debug--SpTRSV]:
+sptrsv_total_ms=284.559, sptrsv_timed_iters=53, avg_sptrsv_ms=5.36903
+PCG time: 0.597162 seconds.
+nnz of L : 30376
+the relative residual of the scaled linear system (B y = b_tilde): 6.79983e-11
+Iterations taken by PCG: 53
+
+-------------------- run 10 / 12
+ordering=ND  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/nasa2146/nasa2146.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.757482 seconds.
+[debug--level]:
+L: num_levels=77, max_level_size=111
+Lt: num_levels=77, max_level_size=54
+[debug--PCG]:
+PCG iterations=56, finalRes=2.44485e-12
+[debug--SpTRSV]:
+sptrsv_total_ms=143.253, sptrsv_timed_iters=56, avg_sptrsv_ms=2.55808
+PCG time: 0.496291 seconds.
+nnz of L : 30376
+the relative residual of the scaled linear system (B y = b_tilde): 7.61155e-11
+Iterations taken by PCG: 56
+
+-------------------- run 11 / 12
+ordering=ND  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/nasa2146/nasa2146.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.552054 seconds.
+[debug--level]:
+L: num_levels=16, max_level_size=1964
+Lt: num_levels=16, max_level_size=1962
+[debug--PCG]:
+PCG iterations=527, finalRes=1.52608e-15
+[debug--SpTRSV]:
+sptrsv_total_ms=783.154, sptrsv_timed_iters=527, avg_sptrsv_ms=1.48606
+PCG time: 3.56233 seconds.
+nnz of L : 2417
+the relative residual of the scaled linear system (B y = b_tilde): 9.8816e-11
+Iterations taken by PCG: 527
+
+-------------------- run 12 / 12
+ordering=ND  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/nasa2146/nasa2146.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.579387 seconds.
+[debug--level]:
+L: num_levels=16, max_level_size=1964
+Lt: num_levels=16, max_level_size=1962
+[debug--PCG]:
+PCG iterations=539, finalRes=1.41909e-15
+[debug--SpTRSV]:
+sptrsv_total_ms=868.576, sptrsv_timed_iters=539, avg_sptrsv_ms=1.61146
+PCG time: 3.66017 seconds.
+nnz of L : 2417
+the relative residual of the scaled linear system (B y = b_tilde): 9.18872e-11
+Iterations taken by PCG: 539
+
+==================== summary ====================
+total runs   : 12
+success runs : 12
+failed runs  : 0

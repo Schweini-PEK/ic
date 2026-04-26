@@ -1,0 +1,129 @@
+Grid search total runs: 12
+-------------------- run 1 / 12
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Pres_Poisson/Pres_Poisson.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 14.8862 seconds.
+[debug--level]:
+L: num_levels=2733, max_level_size=14
+Lt: num_levels=2733, max_level_size=12
+[debug--PCG]:
+PCG iterations=107, finalRes=3.66144e-08
+[debug--SpTRSV]:
+sptrsv_total_ms=11974.4, sptrsv_timed_iters=107, avg_sptrsv_ms=111.91
+PCG time: 12.506 seconds.
+nnz of L : 293328
+the relative residual of the scaled linear system (B y = b_tilde): 9.17558e-11
+Iterations taken by PCG: 107
+
+-------------------- run 2 / 12
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Pres_Poisson/Pres_Poisson.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 21.2389 seconds.
+[debug--level]:
+L: num_levels=2733, max_level_size=14
+Lt: num_levels=2733, max_level_size=12
+[debug--PCG]:
+PCG iterations=136, finalRes=2.66231e-08
+[debug--SpTRSV]:
+sptrsv_total_ms=10152.2, sptrsv_timed_iters=136, avg_sptrsv_ms=74.6485
+PCG time: 10.7238 seconds.
+nnz of L : 293328
+the relative residual of the scaled linear system (B y = b_tilde): 6.7317e-11
+Iterations taken by PCG: 136
+
+-------------------- run 3 / 12
+ordering=RCM  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Pres_Poisson/Pres_Poisson.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 12.6345 seconds.
+[debug--level]:
+L: num_levels=2735, max_level_size=14
+Lt: num_levels=2735, max_level_size=12
+[debug--PCG]:
+PCG iterations=106, finalRes=1.6069e-07
+[debug--SpTRSV]:
+sptrsv_total_ms=4093.22, sptrsv_timed_iters=106, avg_sptrsv_ms=38.6153
+PCG time: 4.21319 seconds.
+nnz of L : 293044
+the relative residual of the scaled linear system (B y = b_tilde): 9.81173e-11
+Iterations taken by PCG: 106
+
+-------------------- run 4 / 12
+ordering=RCM  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Pres_Poisson/Pres_Poisson.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 4.03628 seconds.
+[debug--level]:
+L: num_levels=2735, max_level_size=14
+Lt: num_levels=2735, max_level_size=12
+[debug--PCG]:
+PCG iterations=136, finalRes=1.27657e-07
+[debug--SpTRSV]:
+sptrsv_total_ms=2882.16, sptrsv_timed_iters=136, avg_sptrsv_ms=21.1923
+PCG time: 2.97244 seconds.
+nnz of L : 293044
+the relative residual of the scaled linear system (B y = b_tilde): 7.80146e-11
+Iterations taken by PCG: 136
+
+-------------------- run 5 / 12
+ordering=AMD  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Pres_Poisson/Pres_Poisson.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 6 / 12
+ordering=AMD  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Pres_Poisson/Pres_Poisson.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 7 / 12
+ordering=AMD  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Pres_Poisson/Pres_Poisson.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 8 / 12
+ordering=AMD  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Pres_Poisson/Pres_Poisson.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 9 / 12
+ordering=ND  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Pres_Poisson/Pres_Poisson.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 10 / 12
+ordering=ND  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Pres_Poisson/Pres_Poisson.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 11 / 12
+ordering=ND  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Pres_Poisson/Pres_Poisson.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 12 / 12
+ordering=ND  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Pres_Poisson/Pres_Poisson.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+==================== summary ====================
+total runs   : 12
+success runs : 4
+failed runs  : 8

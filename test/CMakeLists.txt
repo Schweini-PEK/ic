@@ -8,8 +8,8 @@ function(add_unit_test name)
         add_executable(${name} "${CMAKE_CURRENT_LIST_DIR}/unit/${name}.cpp")
     endif()
 
-    # test_supernodal provides its own main() to parse extra CLI flags.
-    if(${name} STREQUAL "test_supernodal")
+    # These tests provide their own main() to parse extra CLI flags or initialize PETSc.
+    if(${name} STREQUAL "test_supernodal" OR ${name} STREQUAL "test_supernode_amalgamation_experiment")
         target_link_libraries(${name}
             PRIVATE
                 ichol
@@ -42,5 +42,9 @@ add_unit_test(test_cg)
 add_unit_test(test_ic)
 add_unit_test(test_symbolic)
 add_unit_test(test_supernodal)
+add_unit_test(test_supernode_storage)
+add_unit_test(test_supernode_solve)
+add_unit_test(test_supernode_solve_gpu)
+add_unit_test(test_supernode_amalgamation_experiment)
 add_unit_test(test_sptrsv)
 add_unit_test(test_mpcg)

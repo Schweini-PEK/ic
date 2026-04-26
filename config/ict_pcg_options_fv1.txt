@@ -1,0 +1,6 @@
+matrix_path=./data/matrices/fv1/fv1.mtx
+ordering=[RCM,AMD,ND]
+scaling=[UnitSqrtDiag,UnitColNorm]
+precision_fact=double
+precision_pcg=[double,float]
+factorized_precond_policy=[level]

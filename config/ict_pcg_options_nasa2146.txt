@@ -1,0 +1,7 @@
+matrix_path=./data/matrices/nasa2146/nasa2146.mtx
+ordering=[RCM,AMD,ND]
+scaling=[UnitSqrtDiag,UnitColNorm]
+precision_fact=double
+precision_pcg=[double,float]
+factorized_precond_policy=[level]
+

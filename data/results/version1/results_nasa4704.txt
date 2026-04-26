@@ -1,0 +1,302 @@
+Grid search total runs: 36
+-------------------- run 1 / 36
+ordering=Identity  scaling=None  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 2 / 36
+ordering=Identity  scaling=None  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 3 / 36
+ordering=Identity  scaling=None  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 4 / 36
+ordering=Identity  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 5 / 36
+ordering=Identity  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 6 / 36
+ordering=Identity  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 7 / 36
+ordering=Identity  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.696461 seconds.
+[debug] L: num_levels=358, max_level_size=931
+[debug] Lt: num_levels=358, max_level_size=871
+[debug] iterations=1000, finalRes=0.000171548
+[debug] sptrsv_total_ms=2879.06, sptrsv_timed_iters=1000, avg_sptrsv_ms=2.87906
+PCG time: 3.32227 seconds.
+nnz of L : 34432
+the relative residual of the scaled linear system (B y = b_tilde): 0.0182921
+Iterations taken by PCG: 1000
+
+-------------------- run 8 / 36
+ordering=Identity  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.695148 seconds.
+[debug] L: num_levels=358, max_level_size=931
+[debug] Lt: num_levels=358, max_level_size=871
+[debug] iterations=1000, finalRes=0.000162625
+[debug] sptrsv_total_ms=2192.77, sptrsv_timed_iters=1000, avg_sptrsv_ms=2.19277
+PCG time: 2.62192 seconds.
+nnz of L : 34432
+the relative residual of the scaled linear system (B y = b_tilde): 0.0173406
+Iterations taken by PCG: 1000
+
+-------------------- run 9 / 36
+ordering=Identity  scaling=UnitColNorm  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.682585 seconds.
+[debug] L: num_levels=358, max_level_size=931
+[debug] Lt: num_levels=358, max_level_size=871
+[debug] iterations=1000, finalRes=0.000201112
+[debug] sptrsv_total_ms=2525.65, sptrsv_timed_iters=1000, avg_sptrsv_ms=2.52565
+PCG time: 2.94675 seconds.
+nnz of L : 34432
+the relative residual of the scaled linear system (B y = b_tilde): 0.0214446
+Iterations taken by PCG: 1000
+
+-------------------- run 10 / 36
+ordering=AMD  scaling=None  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 11 / 36
+ordering=AMD  scaling=None  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 12 / 36
+ordering=AMD  scaling=None  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 13 / 36
+ordering=AMD  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 14 / 36
+ordering=AMD  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 15 / 36
+ordering=AMD  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 16 / 36
+ordering=AMD  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.117455 seconds.
+[debug] L: num_levels=85, max_level_size=1595
+[debug] Lt: num_levels=85, max_level_size=1222
+[debug] iterations=1000, finalRes=0.000233377
+[debug] sptrsv_total_ms=932.967, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.932967
+PCG time: 1.29256 seconds.
+nnz of L : 30369
+the relative residual of the scaled linear system (B y = b_tilde): 0.0248849
+Iterations taken by PCG: 1000
+
+-------------------- run 17 / 36
+ordering=AMD  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.108433 seconds.
+[debug] L: num_levels=85, max_level_size=1595
+[debug] Lt: num_levels=85, max_level_size=1222
+[debug] iterations=1000, finalRes=0.000205547
+[debug] sptrsv_total_ms=653.049, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.653049
+PCG time: 1.03203 seconds.
+nnz of L : 30369
+the relative residual of the scaled linear system (B y = b_tilde): 0.0219174
+Iterations taken by PCG: 1000
+
+-------------------- run 18 / 36
+ordering=AMD  scaling=UnitColNorm  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.127845 seconds.
+[debug] L: num_levels=85, max_level_size=1595
+[debug] Lt: num_levels=85, max_level_size=1222
+[debug] iterations=1000, finalRes=0.00021129
+[debug] sptrsv_total_ms=867.077, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.867077
+PCG time: 1.22709 seconds.
+nnz of L : 30369
+the relative residual of the scaled linear system (B y = b_tilde): 0.0225298
+Iterations taken by PCG: 1000
+
+-------------------- run 19 / 36
+ordering=RCM  scaling=None  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 20 / 36
+ordering=RCM  scaling=None  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 21 / 36
+ordering=RCM  scaling=None  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 22 / 36
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 23 / 36
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 24 / 36
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 25 / 36
+ordering=RCM  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.664002 seconds.
+[debug] L: num_levels=447, max_level_size=937
+[debug] Lt: num_levels=447, max_level_size=874
+[debug] iterations=1000, finalRes=0.000133168
+[debug] sptrsv_total_ms=3467.97, sptrsv_timed_iters=1000, avg_sptrsv_ms=3.46797
+PCG time: 3.92841 seconds.
+nnz of L : 34816
+the relative residual of the scaled linear system (B y = b_tilde): 0.0141996
+Iterations taken by PCG: 1000
+
+-------------------- run 26 / 36
+ordering=RCM  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.688231 seconds.
+[debug] L: num_levels=447, max_level_size=937
+[debug] Lt: num_levels=447, max_level_size=874
+[debug] iterations=1000, finalRes=0.000157042
+[debug] sptrsv_total_ms=2576.74, sptrsv_timed_iters=1000, avg_sptrsv_ms=2.57674
+PCG time: 2.98407 seconds.
+nnz of L : 34816
+the relative residual of the scaled linear system (B y = b_tilde): 0.0167453
+Iterations taken by PCG: 1000
+
+-------------------- run 27 / 36
+ordering=RCM  scaling=UnitColNorm  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.625606 seconds.
+[debug] L: num_levels=447, max_level_size=937
+[debug] Lt: num_levels=447, max_level_size=874
+[debug] iterations=1000, finalRes=0.000184565
+[debug] sptrsv_total_ms=3099.87, sptrsv_timed_iters=1000, avg_sptrsv_ms=3.09987
+PCG time: 3.58082 seconds.
+nnz of L : 34816
+the relative residual of the scaled linear system (B y = b_tilde): 0.0196801
+Iterations taken by PCG: 1000
+
+-------------------- run 28 / 36
+ordering=ND  scaling=None  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 29 / 36
+ordering=ND  scaling=None  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 30 / 36
+ordering=ND  scaling=None  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 31 / 36
+ordering=ND  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 32 / 36
+ordering=ND  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 33 / 36
+ordering=ND  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 34 / 36
+ordering=ND  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 35 / 36
+ordering=ND  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 36 / 36
+ordering=ND  scaling=UnitColNorm  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/nasa4704/nasa4704.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+==================== summary ====================
+total runs   : 36
+success runs : 9
+failed runs  : 27

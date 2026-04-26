@@ -1,0 +1,491 @@
+Grid search total runs: 36
+-------------------- run 1 / 36
+ordering=Identity  scaling=None  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.852064 seconds.
+[debug] L: num_levels=736, max_level_size=45
+[debug] Lt: num_levels=736, max_level_size=41
+[debug] iterations=29, finalRes=1.89336e-09
+[debug] sptrsv_total_ms=282.105, sptrsv_timed_iters=29, avg_sptrsv_ms=9.72777
+PCG time: 0.34795 seconds.
+nnz of L : 34486
+the relative residual of the scaled linear system (B y = b_tilde): 4.45201e-11
+Iterations taken by PCG: 29
+
+-------------------- run 2 / 36
+ordering=Identity  scaling=None  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.631404 seconds.
+[debug] L: num_levels=736, max_level_size=45
+[debug] Lt: num_levels=736, max_level_size=41
+[debug] iterations=33, finalRes=3.29863e-09
+[debug] sptrsv_total_ms=195.054, sptrsv_timed_iters=33, avg_sptrsv_ms=5.91072
+PCG time: 0.237766 seconds.
+nnz of L : 34486
+the relative residual of the scaled linear system (B y = b_tilde): 7.76068e-11
+Iterations taken by PCG: 33
+
+-------------------- run 3 / 36
+ordering=Identity  scaling=None  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.659754 seconds.
+[debug] L: num_levels=736, max_level_size=45
+[debug] Lt: num_levels=736, max_level_size=41
+[debug] iterations=214, finalRes=inf
+[debug] sptrsv_total_ms=1536.48, sptrsv_timed_iters=215, avg_sptrsv_ms=7.14644
+PCG time: 1.7645 seconds.
+nnz of L : 34486
+the relative residual of the scaled linear system (B y = b_tilde): 133.421
+Iterations taken by PCG: 214
+
+-------------------- run 4 / 36
+ordering=Identity  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.607291 seconds.
+[debug] L: num_levels=713, max_level_size=47
+[debug] Lt: num_levels=713, max_level_size=41
+[debug] iterations=23, finalRes=5.20738e-10
+[debug] sptrsv_total_ms=186.827, sptrsv_timed_iters=23, avg_sptrsv_ms=8.12291
+PCG time: 0.216332 seconds.
+nnz of L : 33807
+the relative residual of the scaled linear system (B y = b_tilde): 8.23352e-11
+Iterations taken by PCG: 23
+
+-------------------- run 5 / 36
+ordering=Identity  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.600199 seconds.
+[debug] L: num_levels=713, max_level_size=47
+[debug] Lt: num_levels=713, max_level_size=41
+[debug] iterations=24, finalRes=3.06563e-10
+[debug] sptrsv_total_ms=130.619, sptrsv_timed_iters=24, avg_sptrsv_ms=5.44244
+PCG time: 0.15878 seconds.
+nnz of L : 33807
+the relative residual of the scaled linear system (B y = b_tilde): 4.84715e-11
+Iterations taken by PCG: 24
+
+-------------------- run 6 / 36
+ordering=Identity  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.554863 seconds.
+[debug] L: num_levels=713, max_level_size=47
+[debug] Lt: num_levels=713, max_level_size=41
+[debug] iterations=1000, finalRes=8.59624e-07
+[debug] sptrsv_total_ms=7471.89, sptrsv_timed_iters=1000, avg_sptrsv_ms=7.47189
+PCG time: 8.60119 seconds.
+nnz of L : 33807
+the relative residual of the scaled linear system (B y = b_tilde): 1.35917e-07
+Iterations taken by PCG: 1000
+
+-------------------- run 7 / 36
+ordering=Identity  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.71893 seconds.
+[debug] L: num_levels=2, max_level_size=1748
+[debug] Lt: num_levels=2, max_level_size=1748
+[debug] iterations=1000, finalRes=6.21188e-08
+[debug] sptrsv_total_ms=585.532, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.585532
+PCG time: 2.55718 seconds.
+nnz of L : 1864
+the relative residual of the scaled linear system (B y = b_tilde): 9.82184e-09
+Iterations taken by PCG: 1000
+
+-------------------- run 8 / 36
+ordering=Identity  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 1.13413 seconds.
+[debug] L: num_levels=2, max_level_size=1748
+[debug] Lt: num_levels=2, max_level_size=1748
+[debug] iterations=1000, finalRes=6.02494e-05
+[debug] sptrsv_total_ms=598.903, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.598903
+PCG time: 2.55016 seconds.
+nnz of L : 1864
+the relative residual of the scaled linear system (B y = b_tilde): 9.52626e-06
+Iterations taken by PCG: 1000
+
+-------------------- run 9 / 36
+ordering=Identity  scaling=UnitColNorm  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.99006 seconds.
+[debug] L: num_levels=2, max_level_size=1748
+[debug] Lt: num_levels=2, max_level_size=1748
+[debug] iterations=1000, finalRes=4.25714e-06
+[debug] sptrsv_total_ms=678.886, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.678886
+PCG time: 3.15214 seconds.
+nnz of L : 1864
+the relative residual of the scaled linear system (B y = b_tilde): 6.73113e-07
+Iterations taken by PCG: 1000
+
+-------------------- run 10 / 36
+ordering=AMD  scaling=None  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.468864 seconds.
+[debug] L: num_levels=184, max_level_size=178
+[debug] Lt: num_levels=184, max_level_size=56
+[debug] iterations=47, finalRes=3.08772e-09
+[debug] sptrsv_total_ms=337.971, sptrsv_timed_iters=47, avg_sptrsv_ms=7.19087
+PCG time: 0.530829 seconds.
+nnz of L : 25725
+the relative residual of the scaled linear system (B y = b_tilde): 7.26448e-11
+Iterations taken by PCG: 47
+
+-------------------- run 11 / 36
+ordering=AMD  scaling=None  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.497625 seconds.
+[debug] L: num_levels=184, max_level_size=178
+[debug] Lt: num_levels=184, max_level_size=56
+[debug] iterations=56, finalRes=2.04449e-09
+[debug] sptrsv_total_ms=199.386, sptrsv_timed_iters=56, avg_sptrsv_ms=3.56046
+PCG time: 0.357143 seconds.
+nnz of L : 25725
+the relative residual of the scaled linear system (B y = b_tilde): 4.80996e-11
+Iterations taken by PCG: 56
+
+-------------------- run 12 / 36
+ordering=AMD  scaling=None  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.457001 seconds.
+[debug] L: num_levels=184, max_level_size=178
+[debug] Lt: num_levels=184, max_level_size=56
+[debug] iterations=1000, finalRes=5630.09
+[debug] sptrsv_total_ms=3047.76, sptrsv_timed_iters=1000, avg_sptrsv_ms=3.04776
+PCG time: 4.83439 seconds.
+nnz of L : 25725
+the relative residual of the scaled linear system (B y = b_tilde): 132.482
+Iterations taken by PCG: 1000
+
+-------------------- run 13 / 36
+ordering=AMD  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.291713 seconds.
+[debug] L: num_levels=184, max_level_size=190
+[debug] Lt: num_levels=184, max_level_size=57
+[debug] iterations=37, finalRes=4.62285e-10
+[debug] sptrsv_total_ms=139.275, sptrsv_timed_iters=37, avg_sptrsv_ms=3.76418
+PCG time: 0.218406 seconds.
+nnz of L : 25337
+the relative residual of the scaled linear system (B y = b_tilde): 7.3093e-11
+Iterations taken by PCG: 37
+
+-------------------- run 14 / 36
+ordering=AMD  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.289475 seconds.
+[debug] L: num_levels=184, max_level_size=190
+[debug] Lt: num_levels=184, max_level_size=57
+[debug] iterations=39, finalRes=3.29498e-10
+[debug] sptrsv_total_ms=106.942, sptrsv_timed_iters=39, avg_sptrsv_ms=2.74211
+PCG time: 0.184993 seconds.
+nnz of L : 25337
+the relative residual of the scaled linear system (B y = b_tilde): 5.20978e-11
+Iterations taken by PCG: 39
+
+-------------------- run 15 / 36
+ordering=AMD  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.289583 seconds.
+[debug] L: num_levels=184, max_level_size=190
+[debug] Lt: num_levels=184, max_level_size=57
+[debug] iterations=1000, finalRes=1.28445e-06
+[debug] sptrsv_total_ms=2919.76, sptrsv_timed_iters=1000, avg_sptrsv_ms=2.91976
+PCG time: 4.84414 seconds.
+nnz of L : 25337
+the relative residual of the scaled linear system (B y = b_tilde): 2.03087e-07
+Iterations taken by PCG: 1000
+
+-------------------- run 16 / 36
+ordering=AMD  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.221403 seconds.
+[debug] L: num_levels=2, max_level_size=1750
+[debug] Lt: num_levels=2, max_level_size=1750
+[debug] iterations=1000, finalRes=1.81608e-08
+[debug] sptrsv_total_ms=608.658, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.608658
+PCG time: 2.45971 seconds.
+nnz of L : 1862
+the relative residual of the scaled linear system (B y = b_tilde): 2.87147e-09
+Iterations taken by PCG: 1000
+
+-------------------- run 17 / 36
+ordering=AMD  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.223545 seconds.
+[debug] L: num_levels=2, max_level_size=1750
+[debug] Lt: num_levels=2, max_level_size=1750
+[debug] iterations=1000, finalRes=2.63515e-07
+[debug] sptrsv_total_ms=369.496, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.369496
+PCG time: 1.46143 seconds.
+nnz of L : 1862
+the relative residual of the scaled linear system (B y = b_tilde): 4.16654e-08
+Iterations taken by PCG: 1000
+
+-------------------- run 18 / 36
+ordering=AMD  scaling=UnitColNorm  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.198478 seconds.
+[debug] L: num_levels=2, max_level_size=1750
+[debug] Lt: num_levels=2, max_level_size=1750
+[debug] iterations=1000, finalRes=6.79155e-05
+[debug] sptrsv_total_ms=512.846, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.512846
+PCG time: 2.03608 seconds.
+nnz of L : 1862
+the relative residual of the scaled linear system (B y = b_tilde): 1.07384e-05
+Iterations taken by PCG: 1000
+
+-------------------- run 19 / 36
+ordering=RCM  scaling=None  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 1.03261 seconds.
+[debug] L: num_levels=800, max_level_size=53
+[debug] Lt: num_levels=800, max_level_size=41
+[debug] iterations=26, finalRes=2.29766e-09
+[debug] sptrsv_total_ms=428.654, sptrsv_timed_iters=26, avg_sptrsv_ms=16.4867
+PCG time: 0.486314 seconds.
+nnz of L : 33704
+the relative residual of the scaled linear system (B y = b_tilde): 5.4161e-11
+Iterations taken by PCG: 26
+
+-------------------- run 20 / 36
+ordering=RCM  scaling=None  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 1.03819 seconds.
+[debug] L: num_levels=800, max_level_size=53
+[debug] Lt: num_levels=800, max_level_size=41
+[debug] iterations=29, finalRes=1.12105e-09
+[debug] sptrsv_total_ms=309.312, sptrsv_timed_iters=29, avg_sptrsv_ms=10.6659
+PCG time: 0.372547 seconds.
+nnz of L : 33704
+the relative residual of the scaled linear system (B y = b_tilde): 2.63962e-11
+Iterations taken by PCG: 29
+
+-------------------- run 21 / 36
+ordering=RCM  scaling=None  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 1.03367 seconds.
+[debug] L: num_levels=800, max_level_size=53
+[debug] Lt: num_levels=800, max_level_size=41
+[debug] iterations=1000, finalRes=5635.63
+[debug] sptrsv_total_ms=10841.4, sptrsv_timed_iters=1000, avg_sptrsv_ms=10.8414
+PCG time: 12.4753 seconds.
+nnz of L : 33704
+the relative residual of the scaled linear system (B y = b_tilde): 132.612
+Iterations taken by PCG: 1000
+
+-------------------- run 22 / 36
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.322768 seconds.
+[debug] L: num_levels=784, max_level_size=54
+[debug] Lt: num_levels=784, max_level_size=41
+[debug] iterations=21, finalRes=2.17725e-10
+[debug] sptrsv_total_ms=115.832, sptrsv_timed_iters=21, avg_sptrsv_ms=5.51583
+PCG time: 0.131651 seconds.
+nnz of L : 32916
+the relative residual of the scaled linear system (B y = b_tilde): 3.4425e-11
+Iterations taken by PCG: 21
+
+-------------------- run 23 / 36
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.311687 seconds.
+[debug] L: num_levels=784, max_level_size=54
+[debug] Lt: num_levels=784, max_level_size=41
+[debug] iterations=21, finalRes=2.17854e-10
+[debug] sptrsv_total_ms=86.7265, sptrsv_timed_iters=21, avg_sptrsv_ms=4.12983
+PCG time: 0.102428 seconds.
+nnz of L : 32916
+the relative residual of the scaled linear system (B y = b_tilde): 3.44454e-11
+Iterations taken by PCG: 21
+
+-------------------- run 24 / 36
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.31859 seconds.
+[debug] L: num_levels=784, max_level_size=54
+[debug] Lt: num_levels=784, max_level_size=41
+[debug] iterations=1000, finalRes=1.14667e-06
+[debug] sptrsv_total_ms=5050.5, sptrsv_timed_iters=1000, avg_sptrsv_ms=5.0505
+PCG time: 5.62219 seconds.
+nnz of L : 32916
+the relative residual of the scaled linear system (B y = b_tilde): 1.81304e-07
+Iterations taken by PCG: 1000
+
+-------------------- run 25 / 36
+ordering=RCM  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.21253 seconds.
+[debug] L: num_levels=2, max_level_size=1748
+[debug] Lt: num_levels=2, max_level_size=1748
+[debug] iterations=1000, finalRes=1.68004e-06
+[debug] sptrsv_total_ms=141.224, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.141224
+PCG time: 0.492546 seconds.
+nnz of L : 1864
+the relative residual of the scaled linear system (B y = b_tilde): 2.65638e-07
+Iterations taken by PCG: 1000
+
+-------------------- run 26 / 36
+ordering=RCM  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.2072 seconds.
+[debug] L: num_levels=2, max_level_size=1748
+[debug] Lt: num_levels=2, max_level_size=1748
+[debug] iterations=1000, finalRes=5.53249e-07
+[debug] sptrsv_total_ms=172.472, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.172472
+PCG time: 0.586659 seconds.
+nnz of L : 1864
+the relative residual of the scaled linear system (B y = b_tilde): 8.74763e-08
+Iterations taken by PCG: 1000
+
+-------------------- run 27 / 36
+ordering=RCM  scaling=UnitColNorm  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.457511 seconds.
+[debug] L: num_levels=2, max_level_size=1748
+[debug] Lt: num_levels=2, max_level_size=1748
+[debug] iterations=1000, finalRes=2.62307e-05
+[debug] sptrsv_total_ms=332.299, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.332299
+PCG time: 1.3372 seconds.
+nnz of L : 1864
+the relative residual of the scaled linear system (B y = b_tilde): 4.14744e-06
+Iterations taken by PCG: 1000
+
+-------------------- run 28 / 36
+ordering=ND  scaling=None  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 29 / 36
+ordering=ND  scaling=None  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 30 / 36
+ordering=ND  scaling=None  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 31 / 36
+ordering=ND  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 32 / 36
+ordering=ND  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 33 / 36
+ordering=ND  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: Incomplete Cholesky factorization failed: maximum restarts reached.
+
+-------------------- run 34 / 36
+ordering=ND  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.163294 seconds.
+[debug] L: num_levels=2, max_level_size=1748
+[debug] Lt: num_levels=2, max_level_size=1748
+[debug] iterations=1000, finalRes=1.64165e-08
+[debug] sptrsv_total_ms=418.734, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.418734
+PCG time: 1.68321 seconds.
+nnz of L : 1864
+the relative residual of the scaled linear system (B y = b_tilde): 2.59567e-09
+Iterations taken by PCG: 1000
+
+-------------------- run 35 / 36
+ordering=ND  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.102844 seconds.
+[debug] L: num_levels=2, max_level_size=1748
+[debug] Lt: num_levels=2, max_level_size=1748
+[debug] iterations=1000, finalRes=7.26192e-06
+[debug] sptrsv_total_ms=280.347, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.280347
+PCG time: 1.07278 seconds.
+nnz of L : 1864
+the relative residual of the scaled linear system (B y = b_tilde): 1.14821e-06
+Iterations taken by PCG: 1000
+
+-------------------- run 36 / 36
+ordering=ND  scaling=UnitColNorm  precision_fact=double  precision_pcg=half
+matrix_path=./data/matrices/bcsstk14/bcsstk14.mtx
+laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 0.0990321 seconds.
+[debug] L: num_levels=2, max_level_size=1748
+[debug] Lt: num_levels=2, max_level_size=1748
+[debug] iterations=1000, finalRes=3.90607e-06
+[debug] sptrsv_total_ms=280.758, sptrsv_timed_iters=1000, avg_sptrsv_ms=0.280758
+PCG time: 1.06322 seconds.
+nnz of L : 1864
+the relative residual of the scaled linear system (B y = b_tilde): 6.17603e-07
+Iterations taken by PCG: 1000
+
+==================== summary ====================
+total runs   : 36
+success runs : 30
+failed runs  : 6

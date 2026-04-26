@@ -1,0 +1,83 @@
+Grid search total runs: 4
+-------------------- run 1 / 4
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/fv1/fv1.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 1.69933 seconds.
+[debug--level]:
+L: num_levels=1486, max_level_size=15
+Lt: num_levels=1486, max_level_size=14
+[debug--PCG]:
+PCG iterations=4, finalRes=9.08403e-12
+[debug--SpTRSV]:
+sptrsv_total_ms=52.8332, sptrsv_timed_iters=4, avg_sptrsv_ms=13.2083
+PCG time: 0.0828702 seconds.
+nnz of L : 135644
+the relative residual of the scaled linear system (B y = b_tilde): 1.7367e-13
+Iterations taken by PCG: 4
+
+-------------------- run 2 / 4
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+factorized_precond_policy=supernode
+matrix_path=./data/matrices/fv1/fv1.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 1.40436 seconds.
+[debug--supernode]:
+ amalgamation=relaxed_0.3, max_width=4, num_supernodes=2580, avg_supernode_width=3.72248, supernode_block_density=0.720595, level_compression_rate=0.78533, scalar_levels=1486, supernode_levels=319, solve_dependency_levels=553, max_solve_bucket_size=14, packed_dense_slots=188239
+[debug--supernode-runtime]:
+PCG iterations=4, finalRes=9.08403e-12
+num_supernodes=2580, packed_dense_slots=188239, solve_dependency_levels=553, max_solve_bucket_size=14
+supernode_solve_total_ms=23.1173, supernode_solve_timed_iters=4, avg_supernode_solve_ms=5.77933
+[debug--SpTRSV]:
+sptrsv_total_ms=23.1173, sptrsv_timed_iters=4, avg_sptrsv_ms=5.77933
+PCG time: 0.0538262 seconds.
+nnz of L : 135644
+the relative residual of the scaled linear system (B y = b_tilde): 1.73679e-13
+Iterations taken by PCG: 4
+
+-------------------- run 3 / 4
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/fv1/fv1.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 1.3815 seconds.
+[debug--level]:
+L: num_levels=1486, max_level_size=15
+Lt: num_levels=1486, max_level_size=14
+[debug--PCG]:
+PCG iterations=4, finalRes=9.08465e-12
+[debug--SpTRSV]:
+sptrsv_total_ms=35.0052, sptrsv_timed_iters=4, avg_sptrsv_ms=8.75131
+PCG time: 0.0432372 seconds.
+nnz of L : 135644
+the relative residual of the scaled linear system (B y = b_tilde): 1.7373e-13
+Iterations taken by PCG: 4
+
+-------------------- run 4 / 4
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+factorized_precond_policy=supernode
+matrix_path=./data/matrices/fv1/fv1.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 1.39151 seconds.
+[debug--supernode]:
+ amalgamation=relaxed_0.3, max_width=4, num_supernodes=2580, avg_supernode_width=3.72248, supernode_block_density=0.720595, level_compression_rate=0.78533, scalar_levels=1486, supernode_levels=319, solve_dependency_levels=553, max_solve_bucket_size=14, packed_dense_slots=188239
+[debug--supernode-runtime]:
+PCG iterations=4, finalRes=9.08338e-12
+num_supernodes=2580, packed_dense_slots=188239, solve_dependency_levels=553, max_solve_bucket_size=14
+supernode_solve_total_ms=16.744, supernode_solve_timed_iters=4, avg_supernode_solve_ms=4.186
+[debug--SpTRSV]:
+sptrsv_total_ms=16.744, sptrsv_timed_iters=4, avg_sptrsv_ms=4.186
+PCG time: 0.0345303 seconds.
+nnz of L : 135644
+the relative residual of the scaled linear system (B y = b_tilde): 1.73703e-13
+Iterations taken by PCG: 4
+
+==================== summary ====================
+total runs   : 4
+success runs : 4
+failed runs  : 0

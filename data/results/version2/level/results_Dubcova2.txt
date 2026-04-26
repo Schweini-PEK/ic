@@ -1,0 +1,129 @@
+Grid search total runs: 12
+-------------------- run 1 / 12
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Dubcova2/Dubcova2.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 74.5108 seconds.
+[debug--level]:
+L: num_levels=4792, max_level_size=28
+Lt: num_levels=4792, max_level_size=31
+[debug--PCG]:
+PCG iterations=64, finalRes=2.10272e-08
+[debug--SpTRSV]:
+sptrsv_total_ms=7562.96, sptrsv_timed_iters=64, avg_sptrsv_ms=118.171
+PCG time: 7.78858 seconds.
+nnz of L : 802084
+the relative residual of the scaled linear system (B y = b_tilde): 9.88119e-11
+Iterations taken by PCG: 64
+
+-------------------- run 2 / 12
+ordering=RCM  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Dubcova2/Dubcova2.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 18.3583 seconds.
+[debug--level]:
+L: num_levels=4792, max_level_size=28
+Lt: num_levels=4792, max_level_size=31
+[debug--PCG]:
+PCG iterations=71, finalRes=1.39027e-08
+[debug--SpTRSV]:
+sptrsv_total_ms=2684.6, sptrsv_timed_iters=71, avg_sptrsv_ms=37.8112
+PCG time: 2.74531 seconds.
+nnz of L : 802084
+the relative residual of the scaled linear system (B y = b_tilde): 6.53328e-11
+Iterations taken by PCG: 71
+
+-------------------- run 3 / 12
+ordering=RCM  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Dubcova2/Dubcova2.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 16.1434 seconds.
+[debug--level]:
+L: num_levels=4791, max_level_size=28
+Lt: num_levels=4791, max_level_size=31
+[debug--PCG]:
+PCG iterations=64, finalRes=1.32437e-08
+[debug--SpTRSV]:
+sptrsv_total_ms=3306.1, sptrsv_timed_iters=64, avg_sptrsv_ms=51.6579
+PCG time: 3.36797 seconds.
+nnz of L : 802052
+the relative residual of the scaled linear system (B y = b_tilde): 8.77132e-11
+Iterations taken by PCG: 64
+
+-------------------- run 4 / 12
+ordering=RCM  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Dubcova2/Dubcova2.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+[debug--IC factorization]:
+Incomplete Cholesky factorization succeeded after 0 restarts, shift used: 1e-06
+IC factorization time: 16.0726 seconds.
+[debug--level]:
+L: num_levels=4791, max_level_size=28
+Lt: num_levels=4791, max_level_size=31
+[debug--PCG]:
+PCG iterations=64, finalRes=1.45971e-08
+[debug--SpTRSV]:
+sptrsv_total_ms=2419.77, sptrsv_timed_iters=64, avg_sptrsv_ms=37.8089
+PCG time: 2.47495 seconds.
+nnz of L : 802052
+the relative residual of the scaled linear system (B y = b_tilde): 9.66782e-11
+Iterations taken by PCG: 64
+
+-------------------- run 5 / 12
+ordering=AMD  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Dubcova2/Dubcova2.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 6 / 12
+ordering=AMD  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Dubcova2/Dubcova2.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 7 / 12
+ordering=AMD  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Dubcova2/Dubcova2.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 8 / 12
+ordering=AMD  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Dubcova2/Dubcova2.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 9 / 12
+ordering=ND  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Dubcova2/Dubcova2.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 10 / 12
+ordering=ND  scaling=UnitSqrtDiag  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Dubcova2/Dubcova2.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 11 / 12
+ordering=ND  scaling=UnitColNorm  precision_fact=double  precision_pcg=double
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Dubcova2/Dubcova2.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+-------------------- run 12 / 12
+ordering=ND  scaling=UnitColNorm  precision_fact=double  precision_pcg=float
+factorized_precond_policy=level-scheduling
+matrix_path=./data/matrices/Dubcova2/Dubcova2.mtx  laplacian_dim=100  level_k=-1  pivot_shift_strategy=Static  static_shift=1e-06  lfil=20  drop_tol=0.0001
+Exception: ictp_par: required dynamic shared memory exceeds device limit
+
+==================== summary ====================
+total runs   : 12
+success runs : 4
+failed runs  : 8

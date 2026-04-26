@@ -1,0 +1,6 @@
+matrix_path=./data/matrices/Dubcova1/Dubcova1.mtx
+ordering=[RCM,AMD,ND]
+scaling=[UnitSqrtDiag,UnitColNorm]
+precision_fact=double
+precision_pcg=[double,float]
+factorized_precond_policy=[level]

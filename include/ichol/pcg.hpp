@@ -18,6 +18,12 @@ namespace ichol::solver
         FP8_E5M2  // Hopper FP8 (Max dynamic range)
     };
 
+    enum class FactorizedPrecondSolvePolicy
+    {
+        LevelScheduling,
+        Supernode
+    };
+
     struct PCGParams
     {
         int maxits = 500;
@@ -44,6 +50,7 @@ namespace ichol::solver
 
         bool verbose = false;
         bool precond_full = false;
+        FactorizedPrecondSolvePolicy factorized_precond_policy = FactorizedPrecondSolvePolicy::LevelScheduling;
     };
 
     struct PCGResult
