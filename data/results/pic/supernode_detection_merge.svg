@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="620" viewBox="0 0 1100 620">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333333"/>
+    </marker>
+    <style>
+      .label { font-family: "Times New Roman", "SimSun", serif; font-size: 25px; fill: #222222; }
+      .small { font-family: "Times New Roman", "SimSun", serif; font-size: 20px; fill: #222222; }
+      .tiny { font-family: "Times New Roman", "SimSun", serif; font-size: 16px; fill: #222222; }
+      .mono { font-family: "Courier New", monospace; font-size: 17px; fill: #222222; }
+      .arrow { stroke: #333333; stroke-width: 2.8; fill: none; marker-end: url(#arrow); }
+      .brace { stroke: #333333; stroke-width: 2.2; fill: none; }
+      .cell { stroke: #555555; stroke-width: 1.1; }
+      .zero { fill: #FFFFFF; stroke: #C9C9C9; stroke-width: 1.1; }
+    </style>
+  </defs>
+
+  <rect width="100%" height="100%" fill="#ffffff"/>
+
+  <!-- strict node A: width 1 -->
+  <g transform="translate(85,125)">
+    <text x="26" y="-18" text-anchor="middle" class="small">S0</text>
+    <rect x="0" y="0" width="52" height="42" fill="#B3C6E5" class="cell"/><text x="26" y="27" text-anchor="middle" class="tiny">L00</text>
+    <rect x="0" y="42" width="52" height="42" fill="#B3C6E5" class="cell"/><text x="26" y="69" text-anchor="middle" class="tiny">L20</text>
+    <rect x="0" y="84" width="52" height="42" fill="#B3C6E5" class="cell"/><text x="26" y="111" text-anchor="middle" class="tiny">L40</text>
+    <rect x="0" y="0" width="52" height="126" fill="none" stroke="#B3C6E5" stroke-width="4"/>
+    <text x="26" y="154" text-anchor="middle" class="tiny">c0</text>
+  </g>
+
+  <!-- strict node B: width 1 -->
+  <g transform="translate(172,125)">
+    <text x="26" y="-18" text-anchor="middle" class="small">S1</text>
+    <rect x="0" y="0" width="52" height="42" fill="#F6C8AA" class="cell"/><text x="26" y="27" text-anchor="middle" class="tiny">L11</text>
+    <rect x="0" y="42" width="52" height="42" fill="#F6C8AA" class="cell"/><text x="26" y="69" text-anchor="middle" class="tiny">L31</text>
+    <rect x="0" y="84" width="52" height="42" fill="#F6C8AA" class="cell"/><text x="26" y="111" text-anchor="middle" class="tiny">L41</text>
+    <rect x="0" y="0" width="52" height="126" fill="none" stroke="#F6C8AA" stroke-width="4"/>
+    <text x="26" y="154" text-anchor="middle" class="tiny">c1</text>
+  </g>
+
+  <!-- strict node C: width 1 -->
+  <g transform="translate(259,125)">
+    <text x="26" y="-18" text-anchor="middle" class="small">S2</text>
+    <rect x="0" y="0" width="52" height="42" fill="#B8DDB2" class="cell"/><text x="26" y="27" text-anchor="middle" class="tiny">L22</text>
+    <rect x="0" y="42" width="52" height="42" fill="#B8DDB2" class="cell"/><text x="26" y="69" text-anchor="middle" class="tiny">L32</text>
+    <rect x="0" y="84" width="52" height="42" fill="#B8DDB2" class="cell"/><text x="26" y="111" text-anchor="middle" class="tiny">L52</text>
+    <rect x="0" y="0" width="52" height="126" fill="none" stroke="#B8DDB2" stroke-width="4"/>
+    <text x="26" y="154" text-anchor="middle" class="tiny">c2</text>
+  </g>
+
+  <!-- strict node D: width 1 -->
+  <g transform="translate(346,125)">
+    <text x="26" y="-18" text-anchor="middle" class="small">S3</text>
+    <rect x="0" y="0" width="52" height="42" fill="#E2ECFA" class="cell"/><text x="26" y="27" text-anchor="middle" class="tiny">L33</text>
+    <rect x="0" y="42" width="52" height="42" fill="#E2ECFA" class="cell"/><text x="26" y="69" text-anchor="middle" class="tiny">L43</text>
+    <rect x="0" y="84" width="52" height="42" fill="#E2ECFA" class="cell"/><text x="26" y="111" text-anchor="middle" class="tiny">L53</text>
+    <rect x="0" y="0" width="52" height="126" fill="none" stroke="#B3C6E5" stroke-width="4"/>
+    <text x="26" y="154" text-anchor="middle" class="tiny">c3</text>
+  </g>
+
+  <path d="M 110 332 L 398 332" class="brace"/>
+  <path d="M 110 332 L 110 315 M 398 332 L 398 315" class="brace"/>
+  <text x="254" y="365" text-anchor="middle" class="small">严格小超节点</text>
+
+  <!-- Merge arrow and condition -->
+  <path d="M 455 205 C 510 205 545 205 602 205" class="arrow"/>
+
+  <!-- Right side: relaxed merged supernode -->
+  <g transform="translate(650,105)">
+    <text x="104" y="-16" text-anchor="middle" class="small">S0'</text>
+    <!-- column labels -->
+    <text x="26" y="230" text-anchor="middle" class="tiny">c0</text>
+    <text x="78" y="230" text-anchor="middle" class="tiny">c1</text>
+    <text x="130" y="230" text-anchor="middle" class="tiny">c2</text>
+    <text x="182" y="230" text-anchor="middle" class="tiny">c3</text>
+    <!-- row labels -->
+    <text x="-16" y="27" text-anchor="end" class="tiny">r0</text>
+    <text x="-16" y="69" text-anchor="end" class="tiny">r1</text>
+    <text x="-16" y="111" text-anchor="end" class="tiny">r2</text>
+    <text x="-16" y="153" text-anchor="end" class="tiny">r3</text>
+    <text x="-16" y="195" text-anchor="end" class="tiny">r4/r5</text>
+
+    <!-- panel cells, 5 rows x 4 cols -->
+    <rect x="0" y="0" width="52" height="42" fill="#B3C6E5" class="cell"/><text x="26" y="27" text-anchor="middle" class="tiny">L00</text>
+    <rect x="52" y="0" width="52" height="42" class="zero"/><text x="78" y="27" text-anchor="middle" class="tiny">0</text>
+    <rect x="104" y="0" width="52" height="42" class="zero"/><text x="130" y="27" text-anchor="middle" class="tiny">0</text>
+    <rect x="156" y="0" width="52" height="42" class="zero"/><text x="182" y="27" text-anchor="middle" class="tiny">0</text>
+
+    <rect x="0" y="42" width="52" height="42" class="zero"/><text x="26" y="69" text-anchor="middle" class="tiny">0</text>
+    <rect x="52" y="42" width="52" height="42" fill="#F6C8AA" class="cell"/><text x="78" y="69" text-anchor="middle" class="tiny">L11</text>
+    <rect x="104" y="42" width="52" height="42" class="zero"/><text x="130" y="69" text-anchor="middle" class="tiny">0</text>
+    <rect x="156" y="42" width="52" height="42" class="zero"/><text x="182" y="69" text-anchor="middle" class="tiny">0</text>
+
+    <rect x="0" y="84" width="52" height="42" fill="#B3C6E5" class="cell"/><text x="26" y="111" text-anchor="middle" class="tiny">L20</text>
+    <rect x="52" y="84" width="52" height="42" class="zero"/><text x="78" y="111" text-anchor="middle" class="tiny">0</text>
+    <rect x="104" y="84" width="52" height="42" fill="#B8DDB2" class="cell"/><text x="130" y="111" text-anchor="middle" class="tiny">L22</text>
+    <rect x="156" y="84" width="52" height="42" class="zero"/><text x="182" y="111" text-anchor="middle" class="tiny">0</text>
+
+    <rect x="0" y="126" width="52" height="42" class="zero"/><text x="26" y="153" text-anchor="middle" class="tiny">0</text>
+    <rect x="52" y="126" width="52" height="42" fill="#F6C8AA" class="cell"/><text x="78" y="153" text-anchor="middle" class="tiny">L31</text>
+    <rect x="104" y="126" width="52" height="42" fill="#B8DDB2" class="cell"/><text x="130" y="153" text-anchor="middle" class="tiny">L32</text>
+    <rect x="156" y="126" width="52" height="42" fill="#E2ECFA" class="cell"/><text x="182" y="153" text-anchor="middle" class="tiny">L33</text>
+
+    <rect x="0" y="168" width="52" height="42" fill="#B3C6E5" class="cell"/><text x="26" y="195" text-anchor="middle" class="tiny">L40</text>
+    <rect x="52" y="168" width="52" height="42" fill="#F6C8AA" class="cell"/><text x="78" y="195" text-anchor="middle" class="tiny">L41</text>
+    <rect x="104" y="168" width="52" height="42" fill="#B8DDB2" class="cell"/><text x="130" y="195" text-anchor="middle" class="tiny">L52</text>
+    <rect x="156" y="168" width="52" height="42" fill="#E2ECFA" class="cell"/><text x="182" y="195" text-anchor="middle" class="tiny">L53</text>
+
+    <rect x="0" y="0" width="208" height="210" fill="none" stroke="#B3C6E5" stroke-width="4"/>
+  </g>
+  <text x="754" y="365" text-anchor="middle" class="small">宽松合并后超节点</text>
+
+</svg>

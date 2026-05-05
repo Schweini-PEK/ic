@@ -1,0 +1,250 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333333"/>
+    </marker>
+    <style>
+      .title { font-family: "Times New Roman", "SimSun", serif; font-size: 30px; font-weight: 700; fill: #222222; }
+      .label { font-family: "Times New Roman", "SimSun", serif; font-size: 22px; fill: #222222; }
+      .small { font-family: "Times New Roman", "SimSun", serif; font-size: 17px; fill: #222222; }
+      .tiny { font-family: "Times New Roman", "SimSun", serif; font-size: 14px; fill: #222222; }
+      .mono { font-family: "Courier New", monospace; font-size: 17px; fill: #222222; }
+      .arrow { stroke: #333333; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .grid { stroke: #555555; stroke-width: 1.2; fill: #ffffff; }
+      .thin { stroke: #999999; stroke-width: 1.0; fill: none; }
+    </style>
+  </defs>
+
+  <rect width="100%" height="100%" fill="#ffffff"/>
+
+  <!-- Left: CSR lower triangular matrix and supernode columns -->
+  <text x="250" y="54" text-anchor="middle" class="title">CSR格式下三角因子 L</text>
+  <text x="250" y="86" text-anchor="middle" class="small">根据列结构识别连续列超节点</text>
+
+  <!-- Matrix grid -->
+  <g transform="translate(105,120)">
+    <text x="-28" y="-14" class="small">行</text>
+    <text x="142" y="-34" class="small">列</text>
+    <!-- column labels -->
+    <g class="tiny">
+      <text x="17" y="-10" text-anchor="middle">c0</text>
+      <text x="57" y="-10" text-anchor="middle">c1</text>
+      <text x="97" y="-10" text-anchor="middle">c2</text>
+      <text x="137" y="-10" text-anchor="middle">c3</text>
+      <text x="177" y="-10" text-anchor="middle">c4</text>
+      <text x="217" y="-10" text-anchor="middle">c5</text>
+    </g>
+    <!-- row labels -->
+    <g class="tiny">
+      <text x="-16" y="25" text-anchor="end">r0</text>
+      <text x="-16" y="65" text-anchor="end">r1</text>
+      <text x="-16" y="105" text-anchor="end">r2</text>
+      <text x="-16" y="145" text-anchor="end">r3</text>
+      <text x="-16" y="185" text-anchor="end">r4</text>
+      <text x="-16" y="225" text-anchor="end">r5</text>
+    </g>
+    <!-- grid cells -->
+    <g>
+      <rect x="0" y="0" width="40" height="40" class="grid"/>
+      <rect x="40" y="0" width="40" height="40" class="grid"/>
+      <rect x="80" y="0" width="40" height="40" class="grid"/>
+      <rect x="120" y="0" width="40" height="40" class="grid"/>
+      <rect x="160" y="0" width="40" height="40" class="grid"/>
+      <rect x="200" y="0" width="40" height="40" class="grid"/>
+      <rect x="0" y="40" width="40" height="40" class="grid"/>
+      <rect x="40" y="40" width="40" height="40" class="grid"/>
+      <rect x="80" y="40" width="40" height="40" class="grid"/>
+      <rect x="120" y="40" width="40" height="40" class="grid"/>
+      <rect x="160" y="40" width="40" height="40" class="grid"/>
+      <rect x="200" y="40" width="40" height="40" class="grid"/>
+      <rect x="0" y="80" width="40" height="40" class="grid"/>
+      <rect x="40" y="80" width="40" height="40" class="grid"/>
+      <rect x="80" y="80" width="40" height="40" class="grid"/>
+      <rect x="120" y="80" width="40" height="40" class="grid"/>
+      <rect x="160" y="80" width="40" height="40" class="grid"/>
+      <rect x="200" y="80" width="40" height="40" class="grid"/>
+      <rect x="0" y="120" width="40" height="40" class="grid"/>
+      <rect x="40" y="120" width="40" height="40" class="grid"/>
+      <rect x="80" y="120" width="40" height="40" class="grid"/>
+      <rect x="120" y="120" width="40" height="40" class="grid"/>
+      <rect x="160" y="120" width="40" height="40" class="grid"/>
+      <rect x="200" y="120" width="40" height="40" class="grid"/>
+      <rect x="0" y="160" width="40" height="40" class="grid"/>
+      <rect x="40" y="160" width="40" height="40" class="grid"/>
+      <rect x="80" y="160" width="40" height="40" class="grid"/>
+      <rect x="120" y="160" width="40" height="40" class="grid"/>
+      <rect x="160" y="160" width="40" height="40" class="grid"/>
+      <rect x="200" y="160" width="40" height="40" class="grid"/>
+      <rect x="0" y="200" width="40" height="40" class="grid"/>
+      <rect x="40" y="200" width="40" height="40" class="grid"/>
+      <rect x="80" y="200" width="40" height="40" class="grid"/>
+      <rect x="120" y="200" width="40" height="40" class="grid"/>
+      <rect x="160" y="200" width="40" height="40" class="grid"/>
+      <rect x="200" y="200" width="40" height="40" class="grid"/>
+    </g>
+
+    <!-- nonzeros -->
+    <g>
+      <circle cx="20" cy="20" r="13" fill="#4E78BE"/><text x="20" y="26" text-anchor="middle" class="tiny" fill="#fff">L00</text>
+      <circle cx="20" cy="60" r="13" fill="#4E78BE"/><text x="20" y="66" text-anchor="middle" class="tiny" fill="#fff">L10</text>
+      <circle cx="60" cy="60" r="13" fill="#4E78BE"/><text x="60" y="66" text-anchor="middle" class="tiny" fill="#fff">L11</text>
+      <circle cx="20" cy="140" r="13" fill="#4E78BE"/><text x="20" y="146" text-anchor="middle" class="tiny" fill="#fff">L30</text>
+      <circle cx="60" cy="140" r="13" fill="#4E78BE"/><text x="60" y="146" text-anchor="middle" class="tiny" fill="#fff">L31</text>
+      <circle cx="20" cy="220" r="13" fill="#4E78BE"/><text x="20" y="226" text-anchor="middle" class="tiny" fill="#fff">L50</text>
+
+      <circle cx="100" cy="100" r="13" fill="#EA793C"/><text x="100" y="106" text-anchor="middle" class="tiny" fill="#fff">L22</text>
+      <circle cx="100" cy="140" r="13" fill="#EA793C"/><text x="100" y="146" text-anchor="middle" class="tiny" fill="#fff">L32</text>
+      <circle cx="140" cy="140" r="13" fill="#EA793C"/><text x="140" y="146" text-anchor="middle" class="tiny" fill="#fff">L33</text>
+      <circle cx="100" cy="180" r="13" fill="#EA793C"/><text x="100" y="186" text-anchor="middle" class="tiny" fill="#fff">L42</text>
+      <circle cx="140" cy="220" r="13" fill="#EA793C"/><text x="140" y="226" text-anchor="middle" class="tiny" fill="#fff">L53</text>
+
+      <circle cx="180" cy="180" r="13" fill="#417D3D"/><text x="180" y="186" text-anchor="middle" class="tiny" fill="#fff">L44</text>
+      <circle cx="180" cy="220" r="13" fill="#417D3D"/><text x="180" y="226" text-anchor="middle" class="tiny" fill="#fff">L54</text>
+      <circle cx="220" cy="220" r="13" fill="#417D3D"/><text x="220" y="226" text-anchor="middle" class="tiny" fill="#fff">L55</text>
+    </g>
+
+    <!-- supernode column ranges -->
+    <rect x="0" y="-2" width="80" height="244" fill="none" stroke="#4E78BE" stroke-width="4"/>
+    <rect x="80" y="-2" width="80" height="244" fill="none" stroke="#EA793C" stroke-width="4"/>
+    <rect x="160" y="-2" width="80" height="244" fill="none" stroke="#417D3D" stroke-width="4"/>
+    <text x="40" y="272" text-anchor="middle" class="small" fill="#4E78BE">S0: c0-c1</text>
+    <text x="120" y="272" text-anchor="middle" class="small" fill="#EA793C">S1: c2-c3</text>
+    <text x="200" y="272" text-anchor="middle" class="small" fill="#417D3D">S2: c4-c5</text>
+  </g>
+
+  <!-- Arrow to SuperSym arrays -->
+  <path d="M 380 250 C 455 250 500 250 565 250" class="arrow"/>
+
+  <!-- Right top: SuperSym arrays -->
+  <text x="820" y="54" text-anchor="middle" class="title">SuperSym结构</text>
+  <text x="820" y="86" text-anchor="middle" class="small">super 定列边界，pi/s 定 rowlist，px 定数值偏移</text>
+
+  <g transform="translate(590,125)">
+    <text x="0" y="23" class="label">super</text>
+    <rect x="95" y="0" width="64" height="34" fill="#4E78BE"/><text x="127" y="23" text-anchor="middle" class="mono" fill="#fff">0</text>
+    <rect x="159" y="0" width="64" height="34" fill="#4E78BE"/><text x="191" y="23" text-anchor="middle" class="mono" fill="#fff">2</text>
+    <rect x="223" y="0" width="64" height="34" fill="#4E78BE"/><text x="255" y="23" text-anchor="middle" class="mono" fill="#fff">4</text>
+    <rect x="287" y="0" width="64" height="34" fill="#4E78BE"/><text x="319" y="23" text-anchor="middle" class="mono" fill="#fff">6</text>
+    <text x="372" y="23" class="small">超节点列边界</text>
+
+    <text x="0" y="82" class="label">pi</text>
+    <rect x="95" y="59" width="64" height="34" fill="#EA793C"/><text x="127" y="82" text-anchor="middle" class="mono" fill="#fff">0</text>
+    <rect x="159" y="59" width="64" height="34" fill="#EA793C"/><text x="191" y="82" text-anchor="middle" class="mono" fill="#fff">4</text>
+    <rect x="223" y="59" width="64" height="34" fill="#EA793C"/><text x="255" y="82" text-anchor="middle" class="mono" fill="#fff">8</text>
+    <rect x="287" y="59" width="64" height="34" fill="#EA793C"/><text x="319" y="82" text-anchor="middle" class="mono" fill="#fff">11</text>
+    <text x="372" y="82" class="small">rowlist 起止偏移</text>
+
+    <text x="0" y="141" class="label">s</text>
+    <rect x="95" y="118" width="40" height="34" fill="#4E78BE"/><text x="115" y="141" text-anchor="middle" class="mono" fill="#fff">0</text>
+    <rect x="135" y="118" width="40" height="34" fill="#4E78BE"/><text x="155" y="141" text-anchor="middle" class="mono" fill="#fff">1</text>
+    <rect x="175" y="118" width="40" height="34" fill="#4E78BE"/><text x="195" y="141" text-anchor="middle" class="mono" fill="#fff">3</text>
+    <rect x="215" y="118" width="40" height="34" fill="#4E78BE"/><text x="235" y="141" text-anchor="middle" class="mono" fill="#fff">5</text>
+    <rect x="255" y="118" width="40" height="34" fill="#EA793C"/><text x="275" y="141" text-anchor="middle" class="mono" fill="#fff">2</text>
+    <rect x="295" y="118" width="40" height="34" fill="#EA793C"/><text x="315" y="141" text-anchor="middle" class="mono" fill="#fff">3</text>
+    <rect x="335" y="118" width="40" height="34" fill="#EA793C"/><text x="355" y="141" text-anchor="middle" class="mono" fill="#fff">4</text>
+    <rect x="375" y="118" width="40" height="34" fill="#EA793C"/><text x="395" y="141" text-anchor="middle" class="mono" fill="#fff">5</text>
+    <rect x="415" y="118" width="40" height="34" fill="#417D3D"/><text x="435" y="141" text-anchor="middle" class="mono" fill="#fff">4</text>
+    <rect x="455" y="118" width="40" height="34" fill="#417D3D"/><text x="475" y="141" text-anchor="middle" class="mono" fill="#fff">5</text>
+    <rect x="495" y="118" width="40" height="34" fill="#417D3D"/><text x="515" y="141" text-anchor="middle" class="mono" fill="#fff">6</text>
+    <text x="95" y="177" class="tiny">S0 rowlist</text>
+    <text x="258" y="177" class="tiny">S1 rowlist</text>
+    <text x="419" y="177" class="tiny">S2 rowlist</text>
+
+    <text x="0" y="225" class="label">px</text>
+    <rect x="95" y="202" width="64" height="34" fill="#7B7B7B"/><text x="127" y="225" text-anchor="middle" class="mono" fill="#fff">0</text>
+    <rect x="159" y="202" width="64" height="34" fill="#7B7B7B"/><text x="191" y="225" text-anchor="middle" class="mono" fill="#fff">8</text>
+    <rect x="223" y="202" width="64" height="34" fill="#7B7B7B"/><text x="255" y="225" text-anchor="middle" class="mono" fill="#fff">16</text>
+    <rect x="287" y="202" width="64" height="34" fill="#7B7B7B"/><text x="319" y="225" text-anchor="middle" class="mono" fill="#fff">22</text>
+    <text x="372" y="225" class="small">packed_values 起始偏移</text>
+  </g>
+
+  <!-- Bottom: packed dense panels -->
+  <text x="600" y="443" text-anchor="middle" class="title">packed_values：按列排列的 dense panel</text>
+  <text x="600" y="475" text-anchor="middle" class="small">访问位置：px[k] + j × nsrow + local_row；灰色为宽松合并后补 0 的空洞</text>
+
+  <g transform="translate(125,515)">
+    <!-- S0 panel -->
+    <text x="70" y="-18" text-anchor="middle" class="label" fill="#4E78BE">S0 panel</text>
+    <text x="-52" y="24" class="tiny">rowlist</text>
+    <text x="20" y="-2" text-anchor="middle" class="tiny">c0</text>
+    <text x="68" y="-2" text-anchor="middle" class="tiny">c1</text>
+    <g class="tiny">
+      <text x="-8" y="27" text-anchor="end">r0</text>
+      <text x="-8" y="63" text-anchor="end">r1</text>
+      <text x="-8" y="99" text-anchor="end">r3</text>
+      <text x="-8" y="135" text-anchor="end">r5</text>
+    </g>
+    <rect x="0" y="8" width="44" height="32" fill="#4E78BE"/><text x="22" y="29" text-anchor="middle" class="tiny" fill="#fff">L00</text>
+    <rect x="44" y="8" width="44" height="32" fill="#7B7B7B"/><text x="66" y="29" text-anchor="middle" class="tiny" fill="#fff">--</text>
+    <rect x="0" y="40" width="44" height="32" fill="#4E78BE"/><text x="22" y="61" text-anchor="middle" class="tiny" fill="#fff">L10</text>
+    <rect x="44" y="40" width="44" height="32" fill="#4E78BE"/><text x="66" y="61" text-anchor="middle" class="tiny" fill="#fff">L11</text>
+    <rect x="0" y="72" width="44" height="32" fill="#4E78BE"/><text x="22" y="93" text-anchor="middle" class="tiny" fill="#fff">L30</text>
+    <rect x="44" y="72" width="44" height="32" fill="#4E78BE"/><text x="66" y="93" text-anchor="middle" class="tiny" fill="#fff">L31</text>
+    <rect x="0" y="104" width="44" height="32" fill="#4E78BE"/><text x="22" y="125" text-anchor="middle" class="tiny" fill="#fff">L50</text>
+    <rect x="44" y="104" width="44" height="32" fill="#7B7B7B"/><text x="66" y="125" text-anchor="middle" class="tiny" fill="#fff">0</text>
+    <rect x="0" y="8" width="88" height="128" fill="none" stroke="#4E78BE" stroke-width="2"/>
+  </g>
+
+  <g transform="translate(430,515)">
+    <!-- S1 panel -->
+    <text x="70" y="-18" text-anchor="middle" class="label" fill="#EA793C">S1 panel</text>
+    <text x="-52" y="24" class="tiny">rowlist</text>
+    <text x="20" y="-2" text-anchor="middle" class="tiny">c2</text>
+    <text x="68" y="-2" text-anchor="middle" class="tiny">c3</text>
+    <g class="tiny">
+      <text x="-8" y="27" text-anchor="end">r2</text>
+      <text x="-8" y="63" text-anchor="end">r3</text>
+      <text x="-8" y="99" text-anchor="end">r4</text>
+      <text x="-8" y="135" text-anchor="end">r5</text>
+    </g>
+    <rect x="0" y="8" width="44" height="32" fill="#EA793C"/><text x="22" y="29" text-anchor="middle" class="tiny" fill="#fff">L22</text>
+    <rect x="44" y="8" width="44" height="32" fill="#7B7B7B"/><text x="66" y="29" text-anchor="middle" class="tiny" fill="#fff">--</text>
+    <rect x="0" y="40" width="44" height="32" fill="#EA793C"/><text x="22" y="61" text-anchor="middle" class="tiny" fill="#fff">L32</text>
+    <rect x="44" y="40" width="44" height="32" fill="#EA793C"/><text x="66" y="61" text-anchor="middle" class="tiny" fill="#fff">L33</text>
+    <rect x="0" y="72" width="44" height="32" fill="#EA793C"/><text x="22" y="93" text-anchor="middle" class="tiny" fill="#fff">L42</text>
+    <rect x="44" y="72" width="44" height="32" fill="#7B7B7B"/><text x="66" y="93" text-anchor="middle" class="tiny" fill="#fff">0</text>
+    <rect x="0" y="104" width="44" height="32" fill="#7B7B7B"/><text x="22" y="125" text-anchor="middle" class="tiny" fill="#fff">0</text>
+    <rect x="44" y="104" width="44" height="32" fill="#EA793C"/><text x="66" y="125" text-anchor="middle" class="tiny" fill="#fff">L53</text>
+    <rect x="0" y="8" width="88" height="128" fill="none" stroke="#EA793C" stroke-width="2"/>
+  </g>
+
+  <g transform="translate(735,515)">
+    <!-- S2 panel -->
+    <text x="70" y="-18" text-anchor="middle" class="label" fill="#417D3D">S2 panel</text>
+    <text x="-52" y="24" class="tiny">rowlist</text>
+    <text x="20" y="-2" text-anchor="middle" class="tiny">c4</text>
+    <text x="68" y="-2" text-anchor="middle" class="tiny">c5</text>
+    <g class="tiny">
+      <text x="-8" y="27" text-anchor="end">r4</text>
+      <text x="-8" y="63" text-anchor="end">r5</text>
+      <text x="-8" y="99" text-anchor="end">r6</text>
+    </g>
+    <rect x="0" y="8" width="44" height="32" fill="#417D3D"/><text x="22" y="29" text-anchor="middle" class="tiny" fill="#fff">L44</text>
+    <rect x="44" y="8" width="44" height="32" fill="#7B7B7B"/><text x="66" y="29" text-anchor="middle" class="tiny" fill="#fff">--</text>
+    <rect x="0" y="40" width="44" height="32" fill="#417D3D"/><text x="22" y="61" text-anchor="middle" class="tiny" fill="#fff">L54</text>
+    <rect x="44" y="40" width="44" height="32" fill="#417D3D"/><text x="66" y="61" text-anchor="middle" class="tiny" fill="#fff">L55</text>
+    <rect x="0" y="72" width="44" height="32" fill="#7B7B7B"/><text x="22" y="93" text-anchor="middle" class="tiny" fill="#fff">0</text>
+    <rect x="44" y="72" width="44" height="32" fill="#7B7B7B"/><text x="66" y="93" text-anchor="middle" class="tiny" fill="#fff">0</text>
+    <rect x="0" y="8" width="88" height="96" fill="none" stroke="#417D3D" stroke-width="2"/>
+  </g>
+
+  <!-- Packed memory strip -->
+  <g transform="translate(980,525)">
+    <text x="60" y="-22" text-anchor="middle" class="label">一维连续数组</text>
+    <rect x="0" y="0" width="120" height="38" fill="#4E78BE"/>
+    <rect x="0" y="38" width="120" height="38" fill="#EA793C"/>
+    <rect x="0" y="76" width="120" height="38" fill="#417D3D"/>
+    <text x="60" y="25" text-anchor="middle" class="small" fill="#fff">px[0] = 0</text>
+    <text x="60" y="63" text-anchor="middle" class="small" fill="#fff">px[1] = 8</text>
+    <text x="60" y="101" text-anchor="middle" class="small" fill="#fff">px[2] = 16</text>
+    <text x="60" y="142" text-anchor="middle" class="tiny">packed_values</text>
+  </g>
+
+  <!-- Legend -->
+  <g transform="translate(90,700)">
+    <rect x="0" y="0" width="26" height="18" fill="#4E78BE"/><text x="34" y="15" class="tiny">S0</text>
+    <rect x="95" y="0" width="26" height="18" fill="#EA793C"/><text x="129" y="15" class="tiny">S1</text>
+    <rect x="190" y="0" width="26" height="18" fill="#417D3D"/><text x="224" y="15" class="tiny">S2</text>
+    <rect x="285" y="0" width="26" height="18" fill="#7B7B7B"/><text x="319" y="15" class="tiny">空洞/补0位置</text>
+  </g>
+</svg>

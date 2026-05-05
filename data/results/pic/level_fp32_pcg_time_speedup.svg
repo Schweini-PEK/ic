@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="520" viewBox="0 0 900 520">
+<rect width="100%" height="100%" fill="white"/>
+<text x="450.0" y="32" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" font-weight="600">单精度分层调度 PCG 总时间加速比</text>
+<line x1="80" y1="440.0" x2="865" y2="440.0" stroke="#d9d9d9" stroke-dasharray="4,4" stroke-width="1"/>
+<text x="70" y="445.0" text-anchor="end" font-family="Arial, sans-serif" font-size="13">0.0</text>
+<line x1="80" y1="364.0" x2="865" y2="364.0" stroke="#d9d9d9" stroke-dasharray="4,4" stroke-width="1"/>
+<text x="70" y="369.0" text-anchor="end" font-family="Arial, sans-serif" font-size="13">0.6</text>
+<line x1="80" y1="288.0" x2="865" y2="288.0" stroke="#d9d9d9" stroke-dasharray="4,4" stroke-width="1"/>
+<text x="70" y="293.0" text-anchor="end" font-family="Arial, sans-serif" font-size="13">1.2</text>
+<line x1="80" y1="212.0" x2="865" y2="212.0" stroke="#d9d9d9" stroke-dasharray="4,4" stroke-width="1"/>
+<text x="70" y="217.0" text-anchor="end" font-family="Arial, sans-serif" font-size="13">1.8</text>
+<line x1="80" y1="136.0" x2="865" y2="136.0" stroke="#d9d9d9" stroke-dasharray="4,4" stroke-width="1"/>
+<text x="70" y="141.0" text-anchor="end" font-family="Arial, sans-serif" font-size="13">2.3</text>
+<line x1="80" y1="60.0" x2="865" y2="60.0" stroke="#d9d9d9" stroke-dasharray="4,4" stroke-width="1"/>
+<text x="70" y="65.0" text-anchor="end" font-family="Arial, sans-serif" font-size="13">2.9</text>
+<line x1="80" y1="60" x2="80" y2="440" stroke="black" stroke-width="1.4"/>
+<line x1="80" y1="440" x2="865" y2="440" stroke="black" stroke-width="1.4"/>
+<rect x="103.5" y="243.1" width="65.0" height="196.9" fill="#4C78A8"/>
+<text x="136.1" y="235.1" text-anchor="middle" font-family="Arial, sans-serif" font-size="14">1.52x</text>
+<text x="136.1" y="468" text-anchor="middle" font-family="Arial, sans-serif" font-size="15">1</text>
+<rect x="215.7" y="258.1" width="65.0" height="181.9" fill="#4C78A8"/>
+<text x="248.2" y="250.1" text-anchor="middle" font-family="Arial, sans-serif" font-size="14">1.40x</text>
+<text x="248.2" y="468" text-anchor="middle" font-family="Arial, sans-serif" font-size="15">2</text>
+<rect x="327.8" y="146.2" width="65.0" height="293.8" fill="#4C78A8"/>
+<text x="360.4" y="138.2" text-anchor="middle" font-family="Arial, sans-serif" font-size="14">2.27x</text>
+<text x="360.4" y="468" text-anchor="middle" font-family="Arial, sans-serif" font-size="15">3</text>
+<rect x="440.0" y="191.5" width="65.0" height="248.5" fill="#4C78A8"/>
+<text x="472.5" y="183.5" text-anchor="middle" font-family="Arial, sans-serif" font-size="14">1.92x</text>
+<text x="472.5" y="468" text-anchor="middle" font-family="Arial, sans-serif" font-size="15">4</text>
+<rect x="552.1" y="118.0" width="65.0" height="322.0" fill="#4C78A8"/>
+<text x="584.6" y="110.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="14">2.48x</text>
+<text x="584.6" y="468" text-anchor="middle" font-family="Arial, sans-serif" font-size="15">5</text>
+<rect x="664.3" y="187.0" width="65.0" height="253.0" fill="#4C78A8"/>
+<text x="696.8" y="179.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="14">1.95x</text>
+<text x="696.8" y="468" text-anchor="middle" font-family="Arial, sans-serif" font-size="15">6</text>
+<rect x="776.4" y="293.7" width="65.0" height="146.3" fill="#4C78A8"/>
+<text x="808.9" y="285.7" text-anchor="middle" font-family="Arial, sans-serif" font-size="14">1.13x</text>
+<text x="808.9" y="468" text-anchor="middle" font-family="Arial, sans-serif" font-size="15">7</text>
+<text x="450.0" y="498" text-anchor="middle" font-family="Arial, sans-serif" font-size="16">矩阵编号</text>
+<text transform="translate(24 260.0) rotate(-90)" text-anchor="middle" font-family="Arial, sans-serif" font-size="16">Speedup</text>
+</svg>

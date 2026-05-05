@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="1050" viewBox="0 0 760 1050">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#111111"/>
+    </marker>
+    <style>
+      .label { font-family: "Times New Roman", "SimSun", serif; font-size: 32px; fill: #111111; }
+      .small { font-family: "Times New Roman", "SimSun", serif; font-size: 22px; fill: #111111; }
+      .fp { font-family: "Times New Roman", serif; font-size: 31px; font-weight: 700; fill: #3f6fcb; }
+      .white { fill: #ffffff; font-weight: 700; }
+      .block-text { font-family: "Times New Roman", "SimSun", serif; font-size: 34px; fill: #111111; }
+      .block-text-white { font-family: "Times New Roman", "SimSun", serif; font-size: 34px; fill: #ffffff; font-weight: 700; }
+      .sub-text { font-family: "Times New Roman", "SimSun", serif; font-size: 30px; fill: #111111; }
+      .arrow { stroke: #111111; stroke-width: 3.2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #111111; stroke-width: 2.5; stroke-dasharray: 12 8; }
+      .return { stroke: #111111; stroke-width: 2.8; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="100%" height="100%" fill="#ffffff"/>
+
+  <!-- FP64 top region -->
+  <text x="108" y="102" class="fp">FP64</text>
+  <ellipse cx="380" cy="88" rx="108" ry="50" fill="#4E78BE"/>
+  <text x="380" y="99" text-anchor="middle" class="label white">输入矩阵</text>
+
+  <line x1="88" y1="145" x2="672" y2="145" class="dash"/>
+
+  <!-- Main pipeline -->
+  <line x1="380" y1="138" x2="380" y2="206" class="arrow"/>
+
+  <!-- FP64 main-process brace -->
+  <path d="M 222 220 L 188 220 L 158 407 L 188 594 L 222 594" stroke="#8FB4E8" stroke-width="2.8" fill="none"/>
+  <text x="112" y="418" text-anchor="middle" class="fp">FP64</text>
+
+  <rect x="264" y="206" width="232" height="92" rx="14" fill="#B3C6E5"/>
+  <text x="380" y="263" text-anchor="middle" class="block-text">符号分析</text>
+
+  <line x1="380" y1="298" x2="380" y2="358" class="arrow"/>
+
+  <rect x="264" y="358" width="232" height="92" rx="14" fill="#F6C8AA"/>
+  <text x="380" y="415" text-anchor="middle" class="block-text">数值分解</text>
+
+  <line x1="380" y1="450" x2="380" y2="510" class="arrow"/>
+
+  <rect x="242" y="510" width="276" height="98" rx="14" fill="#417D3D"/>
+  <text x="380" y="569" text-anchor="middle" class="block-text-white">PCG迭代求解</text>
+
+  <!-- FP32 SpTRSV branch -->
+  <line x1="380" y1="608" x2="380" y2="664" class="arrow"/>
+  <text x="319" y="646" text-anchor="end" class="small">降低精度</text>
+  <text x="238" y="716" text-anchor="middle" class="fp">FP32</text>
+  <rect x="295" y="664" width="170" height="72" rx="12" fill="#B8DDB2"/>
+  <text x="380" y="710" text-anchor="middle" class="sub-text">SpTRSV</text>
+  <path d="M 465 700 L 546 700 L 546 559 L 518 559" class="return"/>
+
+  <!-- Output path -->
+  <line x1="380" y1="736" x2="380" y2="835" class="arrow"/>
+  <text x="405" y="790" class="small">收敛输出</text>
+
+  <line x1="88" y1="858" x2="672" y2="858" class="dash"/>
+
+  <!-- FP64 bottom region -->
+  <text x="108" y="930" class="fp">FP64</text>
+  <ellipse cx="380" cy="935" rx="108" ry="50" fill="#4E78BE"/>
+  <text x="380" y="946" text-anchor="middle" class="label white">输出</text>
+</svg>
