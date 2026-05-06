@@ -6,8 +6,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from config import FIXED_OPTIONS, FRONTEND_DIR, MATRICES, PRECISIONS, ROUTES
-from runner import create_run, list_runs, read_run
+from config import FIXED_OPTIONS, FRONTEND_DIR, MATRICES, PRECISIONS, ROUTES, RUN_GROUPS
+from runner import compare_runs, create_run, list_runs, read_run
 
 
 class DemoHandler(SimpleHTTPRequestHandler):
@@ -39,6 +39,7 @@ class DemoHandler(SimpleHTTPRequestHandler):
                 {
                     "routes": ROUTES,
                     "precisions": PRECISIONS,
+                    "run_groups": RUN_GROUPS,
                     "fixed": FIXED_OPTIONS,
                     "matrices": [item.__dict__ for item in MATRICES],
                 }
@@ -59,11 +60,21 @@ class DemoHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        if path != "/api/runs":
+        if path not in {"/api/runs", "/api/compare"}:
             self._send_json({"detail": "Not found"}, HTTPStatus.NOT_FOUND)
             return
         try:
             request = self._read_json()
+            if path == "/api/compare":
+                base_group = str(request.get("base_group", ""))
+                target_group = str(request.get("target_group", ""))
+                valid_groups = {item["value"] for item in RUN_GROUPS}
+                if base_group not in valid_groups or target_group not in valid_groups:
+                    self._send_json({"detail": "Invalid request"}, HTTPStatus.BAD_REQUEST)
+                    return
+                self._send_json(compare_runs(base_group, target_group))
+                return
+
             route = str(request.get("route", ""))
             precision = str(request.get("precision", ""))
             valid_routes = {item["value"] for item in ROUTES}

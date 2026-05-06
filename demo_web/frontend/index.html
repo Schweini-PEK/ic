@@ -16,6 +16,10 @@
         <div class="status-pill" id="serverStatus">后端检测中</div>
       </header>
 
+      <div class="section-title">
+        <span>第一部分</span>
+        <h2>运行算法并生成实验结果</h2>
+      </div>
       <section class="control-panel">
         <div class="field">
           <label for="routeSelect">SpTRSV 路线</label>
@@ -93,6 +97,43 @@
           </thead>
           <tbody id="resultTable"></tbody>
         </table>
+      </section>
+
+      <div class="section-title">
+        <span>第二部分</span>
+        <h2>选择两组结果并生成对比图表</h2>
+      </div>
+      <section class="control-panel compare-panel">
+        <div class="field">
+          <label for="compareBaseSelect">对比对象 A</label>
+          <select id="compareBaseSelect"></select>
+        </div>
+        <div class="field">
+          <label for="compareTargetSelect">对比对象 B</label>
+          <select id="compareTargetSelect"></select>
+        </div>
+        <div class="fixed-options">
+          <span>加速比：<strong>A时间 / B时间</strong></span>
+          <span>指标：<strong>SpTRSV平均时间、PCG总时间</strong></span>
+        </div>
+        <button class="secondary-button" id="compareButton">生成对比图表</button>
+      </section>
+
+      <section class="chart-grid">
+        <article class="panel">
+          <div class="panel-header">
+            <h2>SpTRSV平均时间加速比</h2>
+            <span id="sptrsvChartLabel">等待选择对比对象</span>
+          </div>
+          <div class="chart-box" id="sptrsvChart"></div>
+        </article>
+        <article class="panel">
+          <div class="panel-header">
+            <h2>PCG总时间加速比</h2>
+            <span id="pcgChartLabel">等待选择对比对象</span>
+          </div>
+          <div class="chart-box" id="pcgChart"></div>
+        </article>
       </section>
     </main>
     <script src="./app.js"></script>

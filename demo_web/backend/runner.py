@@ -1,16 +1,27 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from config import EXECUTABLE, FIXED_OPTIONS, MATRICES, PROJECT_ROOT, RUNS_DIR, MatrixInfo
+from config import EXECUTABLE, FIXED_OPTIONS, MATRICES, PROJECT_ROOT, RUNS_DIR, RUN_GROUPS, MatrixInfo
 from parser import parse_result_file
 
 
 RUN_TIMEOUT_SECONDS = 30 * 60
+MAX_PARALLEL_JOBS = len(MATRICES)
+RUN_GROUP_BY_CONFIG = {
+    (str(item["route"]), str(item["precision"])): str(item["value"])
+    for item in RUN_GROUPS
+}
+RUN_GROUP_LABELS = {
+    str(item["value"]): str(item["label"])
+    for item in RUN_GROUPS
+}
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -45,6 +56,10 @@ def _create_matrix_config(config_dir: Path, matrix: MatrixInfo, route: str, prec
     return config_path
 
 
+def _matrix_output_name(matrix: MatrixInfo) -> str:
+    return f"{Path(matrix.matrix_path).stem}.txt"
+
+
 def _initial_matrix_row(matrix: MatrixInfo) -> dict[str, Any]:
     return {
         "index": matrix.index,
@@ -76,12 +91,12 @@ def _run_one_matrix(
     matrix: MatrixInfo,
     route: str,
     precision: str,
-    raw_dir: Path,
+    output_dir: Path,
     config_dir: Path,
 ) -> dict[str, Any]:
     row = _initial_matrix_row(matrix)
     config_path = _create_matrix_config(config_dir, matrix, route, precision)
-    raw_path = raw_dir / f"results_{matrix.name}.txt"
+    raw_path = output_dir / _matrix_output_name(matrix)
     row["config_path"] = str(config_path)
     row["raw_path"] = str(raw_path)
 
@@ -127,21 +142,33 @@ def _run_one_matrix(
     return row
 
 
+def _group_id(route: str, precision: str) -> str:
+    group_id = RUN_GROUP_BY_CONFIG.get((route, precision))
+    if group_id is None:
+        raise ValueError(f"unsupported run group: route={route}, precision={precision}")
+    return group_id
+
+
+def _summary_path(group_id: str) -> Path:
+    return RUNS_DIR / group_id / "summary.json"
+
+
 def create_run(route: str, precision: str) -> dict[str, Any]:
-    """Run ict_pcg for all demo matrices and write outputs under demo_web/runs."""
+    """Run ict_pcg for all demo matrices and write outputs under a fixed group directory."""
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_id = f"run_{timestamp}"
-    run_dir = RUNS_DIR / run_id
-    raw_dir = run_dir / "raw"
+    group_id = _group_id(route, precision)
+    run_dir = RUNS_DIR / group_id
     config_dir = run_dir / "configs"
-    charts_dir = run_dir / "charts"
-    raw_dir.mkdir(parents=True, exist_ok=True)
+    if run_dir.exists():
+        shutil.rmtree(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
     config_dir.mkdir(parents=True, exist_ok=True)
-    charts_dir.mkdir(parents=True, exist_ok=True)
 
     summary = {
-        "run_id": run_id,
+        "run_id": group_id,
+        "group_id": group_id,
+        "group_label": RUN_GROUP_LABELS[group_id],
         "status": "running",
         "message": "实验运行中。",
         "config": {
@@ -151,17 +178,19 @@ def create_run(route: str, precision: str) -> dict[str, Any]:
         },
         "matrices": [_initial_matrix_row(item) for item in MATRICES],
         "created_at": timestamp,
+        "updated_at": timestamp,
         "finished_at": None,
         "log": [
-            f"run_id: {run_id}",
+            f"group_id: {group_id}",
             f"route: {route}",
             f"precision_pcg: {precision}",
             "ordering: RCM",
             "scaling: UnitSqrtDiag",
+            f"parallel_jobs: {MAX_PARALLEL_JOBS}",
         ],
     }
 
-    summary_path = run_dir / "summary.json"
+    summary_path = _summary_path(group_id)
     _write_json(summary_path, summary)
 
     if not EXECUTABLE.exists():
@@ -174,27 +203,45 @@ def create_run(route: str, precision: str) -> dict[str, Any]:
         _write_json(summary_path, summary)
         return summary
 
-    results: list[dict[str, Any]] = []
-    for matrix in MATRICES:
-        summary["log"].append(f"开始运行 {matrix.index}. {matrix.name}")
-        _write_json(summary_path, summary)
-        result = _run_one_matrix(matrix, route, precision, raw_dir, config_dir)
-        results.append(result)
-        summary["matrices"] = results + [_initial_matrix_row(item) for item in MATRICES[len(results) :]]
-        if result["status"] == "success":
-            summary["log"].append(
-                f"完成 {matrix.name}: iter={result.get('pcg_iterations')}, "
-                f"SpTRSV={result.get('sptrsv_avg_time_ms')} ms, PCG={result.get('pcg_time_ms')} ms"
-            )
-        else:
-            summary["log"].append(f"{matrix.name} 运行失败：{result.get('exception')}")
+    results: list[dict[str, Any] | None] = [None] * len(MATRICES)
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_JOBS) as executor:
+        future_to_matrix = {}
+        for matrix in MATRICES:
+            summary["log"].append(f"提交运行 {matrix.index}. {matrix.name}")
+            future = executor.submit(_run_one_matrix, matrix, route, precision, run_dir, config_dir)
+            future_to_matrix[future] = matrix
         _write_json(summary_path, summary)
 
-    success_count = sum(1 for item in results if item["status"] == "success")
+        for future in as_completed(future_to_matrix):
+            matrix = future_to_matrix[future]
+            try:
+                result = future.result()
+            except Exception as exc:  # noqa: BLE001 - keep demo run alive if one matrix crashes
+                result = _failed_matrix_row(matrix, str(exc))
+            results[matrix.index - 1] = result
+            summary["matrices"] = [
+                item if item is not None else _initial_matrix_row(MATRICES[idx])
+                for idx, item in enumerate(results)
+            ]
+            if result["status"] == "success":
+                summary["log"].append(
+                    f"完成 {matrix.name}: iter={result.get('pcg_iterations')}, "
+                    f"SpTRSV={result.get('sptrsv_avg_time_ms')} ms, PCG={result.get('pcg_time_ms')} ms"
+                )
+            else:
+                summary["log"].append(f"{matrix.name} 运行失败：{result.get('exception')}")
+            _write_json(summary_path, summary)
+
+    final_results = [
+        item if item is not None else _failed_matrix_row(MATRICES[idx], "任务未返回结果")
+        for idx, item in enumerate(results)
+    ]
+    success_count = sum(1 for item in final_results if item["status"] == "success")
     summary["status"] = "success" if success_count == len(MATRICES) else "partial_failed"
     summary["message"] = f"实验完成：{success_count}/{len(MATRICES)} 个矩阵运行成功。"
     summary["finished_at"] = datetime.now().strftime("%Y%m%d_%H%M%S")
-    summary["matrices"] = results
+    summary["updated_at"] = summary["finished_at"]
+    summary["matrices"] = final_results
     summary["log"].append(summary["message"])
     _write_json(summary_path, summary)
     return summary
@@ -202,18 +249,85 @@ def create_run(route: str, precision: str) -> dict[str, Any]:
 
 def list_runs() -> list[dict[str, Any]]:
     runs: list[dict[str, Any]] = []
-    if not RUNS_DIR.exists():
-        return runs
-    for summary_path in sorted(RUNS_DIR.glob("run_*/summary.json"), reverse=True):
+    for group in RUN_GROUPS:
+        group_id = str(group["value"])
+        summary_path = _summary_path(group_id)
         try:
-            runs.append(json.loads(summary_path.read_text(encoding="utf-8")))
-        except json.JSONDecodeError:
-            continue
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            summary = {
+                "run_id": group_id,
+                "group_id": group_id,
+                "group_label": group["label"],
+                "status": "not_run",
+                "message": "尚未运行。",
+                "config": {
+                    "route": group["route"],
+                    "precision": group["precision"],
+                    **FIXED_OPTIONS,
+                },
+                "matrices": [_initial_matrix_row(item) for item in MATRICES],
+                "created_at": None,
+                "updated_at": None,
+                "finished_at": None,
+                "log": [f"{group['label']} 尚未运行。"],
+            }
+        runs.append(summary)
     return runs
 
 
 def read_run(run_id: str) -> dict[str, Any] | None:
-    summary_path = RUNS_DIR / run_id / "summary.json"
+    summary_path = _summary_path(run_id)
     if not summary_path.exists():
         return None
     return json.loads(summary_path.read_text(encoding="utf-8"))
+
+
+def compare_runs(base_group: str, target_group: str) -> dict[str, Any]:
+    base = read_run(base_group)
+    target = read_run(target_group)
+    if base is None or target is None:
+        raise FileNotFoundError("请选择已经运行过的两组实验结果。")
+
+    base_rows = {int(item["index"]): item for item in base.get("matrices", [])}
+    target_rows = {int(item["index"]): item for item in target.get("matrices", [])}
+    comparisons: list[dict[str, Any]] = []
+    for matrix in MATRICES:
+        base_row = base_rows.get(matrix.index, {})
+        target_row = target_rows.get(matrix.index, {})
+        base_sptrsv = base_row.get("sptrsv_avg_time_ms")
+        target_sptrsv = target_row.get("sptrsv_avg_time_ms")
+        base_pcg = base_row.get("pcg_time_ms")
+        target_pcg = target_row.get("pcg_time_ms")
+        comparisons.append(
+            {
+                "index": matrix.index,
+                "name": matrix.name,
+                "base_sptrsv_avg_time_ms": base_sptrsv,
+                "target_sptrsv_avg_time_ms": target_sptrsv,
+                "sptrsv_speedup": _speedup(base_sptrsv, target_sptrsv),
+                "base_pcg_time_ms": base_pcg,
+                "target_pcg_time_ms": target_pcg,
+                "pcg_speedup": _speedup(base_pcg, target_pcg),
+            }
+        )
+
+    return {
+        "base_group": base_group,
+        "base_label": base.get("group_label", base_group),
+        "target_group": target_group,
+        "target_label": target.get("group_label", target_group),
+        "definition": "speedup = 对比对象A时间 / 对比对象B时间",
+        "matrices": comparisons,
+    }
+
+
+def _speedup(base_value: object, target_value: object) -> float | None:
+    try:
+        base_float = float(base_value)
+        target_float = float(target_value)
+    except (TypeError, ValueError):
+        return None
+    if target_float <= 0:
+        return None
+    return base_float / target_float

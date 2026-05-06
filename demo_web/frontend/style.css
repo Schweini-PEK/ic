@@ -99,6 +99,27 @@ h2 {
   margin-bottom: 18px;
 }
 
+.section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 22px 0 10px;
+}
+
+.section-title span {
+  color: var(--blue);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.section-title h2 {
+  font-size: 20px;
+}
+
+.compare-panel {
+  grid-template-columns: 220px 220px 1fr auto;
+}
+
 .field {
   display: grid;
   gap: 7px;
@@ -146,7 +167,20 @@ select {
   cursor: pointer;
 }
 
-.primary-button:disabled {
+.secondary-button {
+  height: 40px;
+  border: 1px solid var(--blue);
+  border-radius: 6px;
+  background: var(--blue);
+  color: var(--white);
+  font-size: 15px;
+  font-weight: 700;
+  padding: 0 18px;
+  cursor: pointer;
+}
+
+.primary-button:disabled,
+.secondary-button:disabled {
   cursor: not-allowed;
   opacity: .58;
 }
@@ -176,6 +210,13 @@ select {
 .content-grid {
   display: grid;
   grid-template-columns: 1.18fr .82fr;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 16px;
   margin-bottom: 18px;
 }
@@ -230,10 +271,22 @@ pre {
   line-height: 1.55;
 }
 
+.chart-box {
+  min-height: 280px;
+  overflow: hidden;
+}
+
+.chart-box svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 @media (max-width: 900px) {
   .topbar,
   .control-panel,
   .content-grid,
+  .chart-grid,
   .summary-grid {
     grid-template-columns: 1fr;
   }
@@ -242,4 +295,3 @@ pre {
     display: grid;
   }
 }
-

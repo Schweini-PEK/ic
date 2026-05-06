@@ -5,13 +5,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from config import FIXED_OPTIONS, FRONTEND_DIR, MATRICES, PRECISIONS, ROUTES
-from runner import create_run, list_runs, read_run
+from config import FIXED_OPTIONS, FRONTEND_DIR, MATRICES, PRECISIONS, ROUTES, RUN_GROUPS
+from runner import compare_runs, create_run, list_runs, read_run
 
 
 class RunRequest(BaseModel):
     route: str
     precision: str
+
+
+class CompareRequest(BaseModel):
+    base_group: str
+    target_group: str
 
 
 app = FastAPI(title="IC-PCG SpTRSV Demo System")
@@ -35,6 +40,7 @@ def options() -> dict[str, object]:
     return {
         "routes": ROUTES,
         "precisions": PRECISIONS,
+        "run_groups": RUN_GROUPS,
         "fixed": FIXED_OPTIONS,
         "matrices": [item.__dict__ for item in MATRICES],
     }
@@ -64,5 +70,17 @@ def start_run(request: RunRequest) -> dict[str, object]:
     return create_run(request.route, request.precision)
 
 
-app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+@app.post("/api/compare")
+def compare(request: CompareRequest) -> dict[str, object]:
+    valid_groups = {item["value"] for item in RUN_GROUPS}
+    if request.base_group not in valid_groups:
+        raise HTTPException(status_code=400, detail="Invalid base group")
+    if request.target_group not in valid_groups:
+        raise HTTPException(status_code=400, detail="Invalid target group")
+    try:
+        return compare_runs(request.base_group, request.target_group)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+
+app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

@@ -9,3 +9,4 @@ cmake-build-*/
 .idea/
 
 demo_web/runs/
+data/matrices/

@@ -39,6 +39,13 @@ PRECISIONS = [
     {"value": "float", "label": "FP32"},
 ]
 
+RUN_GROUPS = [
+    {"value": "level_double", "label": "Level + FP64", "route": "level", "precision": "double"},
+    {"value": "level_float", "label": "Level + FP32", "route": "level", "precision": "float"},
+    {"value": "super_double", "label": "Supernode + FP64", "route": "supernode", "precision": "double"},
+    {"value": "super_float", "label": "Supernode + FP32", "route": "supernode", "precision": "float"},
+]
+
 FIXED_OPTIONS = {
     "ordering": "RCM",
     "scaling": "UnitSqrtDiag",
