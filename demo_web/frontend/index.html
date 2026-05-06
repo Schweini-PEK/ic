@@ -3,139 +3,170 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>IC-PCG SpTRSV 展示系统</title>
+    <title>SpTRSV 展示系统</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <main class="app-shell">
+    <div class="layout-shell">
       <header class="topbar">
-        <div>
-          <p class="eyebrow">GPU IC-PCG</p>
-          <h1>融合低精度计算与超节点调度的 SpTRSV 展示系统</h1>
-        </div>
-        <div class="status-pill" id="serverStatus">后端检测中</div>
+        <h1>融合低精度计算与超节点调度的 SpTRSV 展示系统</h1>
       </header>
 
-      <div class="section-title">
-        <span>第一部分</span>
-        <h2>运行算法并生成实验结果</h2>
-      </div>
-      <section class="control-panel">
-        <div class="field">
-          <label for="routeSelect">SpTRSV 路线</label>
-          <select id="routeSelect"></select>
-        </div>
-        <div class="field">
-          <label for="precisionSelect">计算精度</label>
-          <select id="precisionSelect"></select>
-        </div>
-        <div class="fixed-options">
-          <span>重排序：<strong id="fixedOrdering">RCM</strong></span>
-          <span>预缩放：<strong id="fixedScaling">UnitSqrtDiag</strong></span>
-          <span>矩阵：<strong>全部 7 个</strong></span>
-        </div>
-        <button class="primary-button" id="runButton">一键运行全部矩阵</button>
-      </section>
+      <aside class="sidebar">
+        <nav class="side-nav">
+          <button class="nav-item active" data-page="configPage">实验配置</button>
+          <button class="nav-item" data-page="runPage">运行展示</button>
+          <button class="nav-item" data-page="comparePage">结果对比</button>
+        </nav>
+      </aside>
 
-      <section class="summary-grid">
-        <article class="metric-card">
-          <span>当前路线</span>
-          <strong id="routeMetric">-</strong>
-        </article>
-        <article class="metric-card">
-          <span>当前精度</span>
-          <strong id="precisionMetric">-</strong>
-        </article>
-        <article class="metric-card">
-          <span>运行状态</span>
-          <strong id="runStatus">未运行</strong>
-        </article>
-      </section>
-
-      <section class="content-grid">
-        <article class="panel">
-          <div class="panel-header">
-            <h2>测试矩阵</h2>
+      <main class="main-content">
+        <section class="page active" id="configPage">
+          <div class="page-header">
+            <h2>实验配置</h2>
+            <p>展示系统固定采用 RCM 重排序和 UnitSqrtDiag 预缩放，并对全部 7 个测试矩阵运行实验。</p>
           </div>
-          <table>
-            <thead>
-              <tr>
-                <th>编号</th>
-                <th>名称</th>
-                <th>阶数</th>
-                <th>非零元数</th>
-              </tr>
-            </thead>
-            <tbody id="matrixTable"></tbody>
-          </table>
-        </article>
 
-        <article class="panel">
-          <div class="panel-header">
-            <h2>运行日志</h2>
+          <section class="config-cards">
+            <article class="metric-card">
+              <span>重排序</span>
+              <strong id="fixedOrdering">RCM</strong>
+            </article>
+            <article class="metric-card">
+              <span>预缩放</span>
+              <strong id="fixedScaling">UnitSqrtDiag</strong>
+            </article>
+            <article class="metric-card">
+              <span>矩阵范围</span>
+              <strong>全部 7 个</strong>
+            </article>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h3>测试矩阵详细信息</h3>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>编号</th>
+                  <th>名称</th>
+                  <th>阶数</th>
+                  <th>非零元数</th>
+                  <th>所属方向</th>
+                </tr>
+              </thead>
+              <tbody id="matrixTable"></tbody>
+            </table>
+          </section>
+        </section>
+
+        <section class="page" id="runPage">
+          <div class="page-header page-header-row">
+            <div>
+              <h2>运行展示</h2>
+              <p>选择 SpTRSV 路线和计算精度后，系统会运行全部 7 个矩阵，并将结果保存到固定组合目录。</p>
+            </div>
+            <div class="status-pill" id="serverStatus">后端检测中</div>
           </div>
-          <pre id="logOutput">等待创建实验任务。</pre>
-        </article>
-      </section>
 
-      <section class="panel">
-        <div class="panel-header">
-          <h2>实验结果预览</h2>
-          <span id="runIdLabel">尚未生成 run_id</span>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>编号</th>
-              <th>矩阵</th>
-              <th>状态</th>
-              <th>PCG迭代次数</th>
-              <th>SpTRSV平均时间/ms</th>
-              <th>PCG总时间/ms</th>
-              <th>最终相对残差</th>
-            </tr>
-          </thead>
-          <tbody id="resultTable"></tbody>
-        </table>
-      </section>
+          <section class="control-panel">
+            <div class="field">
+              <label for="routeSelect">SpTRSV 路线</label>
+              <select id="routeSelect"></select>
+            </div>
+            <div class="field">
+              <label for="precisionSelect">计算精度</label>
+              <select id="precisionSelect"></select>
+            </div>
+            <button class="primary-button" id="runButton">运行</button>
+          </section>
 
-      <div class="section-title">
-        <span>第二部分</span>
-        <h2>选择两组结果并生成对比图表</h2>
-      </div>
-      <section class="control-panel compare-panel">
-        <div class="field">
-          <label for="compareBaseSelect">对比对象 A</label>
-          <select id="compareBaseSelect"></select>
-        </div>
-        <div class="field">
-          <label for="compareTargetSelect">对比对象 B</label>
-          <select id="compareTargetSelect"></select>
-        </div>
-        <div class="fixed-options">
-          <span>加速比：<strong>A时间 / B时间</strong></span>
-          <span>指标：<strong>SpTRSV平均时间、PCG总时间</strong></span>
-        </div>
-        <button class="secondary-button" id="compareButton">生成对比图表</button>
-      </section>
+          <section class="summary-grid">
+            <article class="metric-card">
+              <span>当前路线</span>
+              <strong id="routeMetric">-</strong>
+            </article>
+            <article class="metric-card">
+              <span>当前精度</span>
+              <strong id="precisionMetric">-</strong>
+            </article>
+            <article class="metric-card">
+              <span>运行状态</span>
+              <strong id="runStatus">未运行</strong>
+            </article>
+          </section>
 
-      <section class="chart-grid">
-        <article class="panel">
-          <div class="panel-header">
-            <h2>SpTRSV平均时间加速比</h2>
-            <span id="sptrsvChartLabel">等待选择对比对象</span>
+          <section class="panel">
+            <div class="panel-header">
+              <h3>运行日志</h3>
+              <span id="runIdLabel">尚未生成结果目录</span>
+            </div>
+            <pre id="logOutput">等待创建实验任务。</pre>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h3>实验结果预览</h3>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>编号</th>
+                  <th>矩阵</th>
+                  <th>状态</th>
+                  <th>PCG迭代次数</th>
+                  <th>SpTRSV平均时间/ms</th>
+                  <th>PCG总时间/ms</th>
+                  <th>最终相对残差</th>
+                </tr>
+              </thead>
+              <tbody id="resultTable"></tbody>
+            </table>
+          </section>
+        </section>
+
+        <section class="page" id="comparePage">
+          <div class="page-header">
+            <h2>结果对比</h2>
+            <p>选择两组已运行的实验结果，系统根据时间指标绘制 speedup 条形图。</p>
           </div>
-          <div class="chart-box" id="sptrsvChart"></div>
-        </article>
-        <article class="panel">
-          <div class="panel-header">
-            <h2>PCG总时间加速比</h2>
-            <span id="pcgChartLabel">等待选择对比对象</span>
-          </div>
-          <div class="chart-box" id="pcgChart"></div>
-        </article>
-      </section>
-    </main>
+
+          <section class="control-panel compare-panel">
+            <div class="field">
+              <label for="compareBaseSelect">对比对象 A</label>
+              <select id="compareBaseSelect"></select>
+            </div>
+            <div class="field">
+              <label for="compareTargetSelect">对比对象 B</label>
+              <select id="compareTargetSelect"></select>
+            </div>
+            <div class="fixed-options">
+              <span>加速比：<strong>A时间 / B时间</strong></span>
+              <span>指标：<strong>SpTRSV平均时间、PCG总时间</strong></span>
+            </div>
+            <button class="secondary-button" id="compareButton">生成对比图表</button>
+          </section>
+
+          <section class="chart-grid">
+            <article class="panel">
+              <div class="panel-header">
+                <h3>SpTRSV平均时间加速比</h3>
+                <span id="sptrsvChartLabel">等待选择对比对象</span>
+              </div>
+              <div class="chart-box" id="sptrsvChart"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-header">
+                <h3>PCG总时间加速比</h3>
+                <span id="pcgChartLabel">等待选择对比对象</span>
+              </div>
+              <div class="chart-box" id="pcgChart"></div>
+            </article>
+          </section>
+        </section>
+      </main>
+    </div>
     <script src="./app.js"></script>
   </body>
 </html>
