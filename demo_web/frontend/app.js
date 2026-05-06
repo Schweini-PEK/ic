@@ -45,6 +45,15 @@ function formatMetric(value, digits = 4) {
   return number.toExponential(digits);
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function formatStatus(status) {
   const labels = {
     pending: "等待",
@@ -234,10 +243,14 @@ function renderBarChart(container, items, metricKey, color) {
       const y = margin.top + plotHeight - h;
       const label = valid ? `${value.toFixed(2)}x` : "-";
       const fill = valid ? color : "#b8b8b8";
+      const tooltip = `编号 ${escapeHtml(item.index)}：${escapeHtml(item.name ?? "-")}`;
       return `
-        <rect x="${x}" y="${y}" width="${barWidth}" height="${h}" rx="3" fill="${fill}"></rect>
-        <text x="${x + barWidth / 2}" y="${y - 8}" text-anchor="middle" font-size="13" fill="#1d2630">${label}</text>
-        <text x="${x + barWidth / 2}" y="${height - 16}" text-anchor="middle" font-size="13" fill="#1d2630">${item.index}</text>
+        <g class="chart-item">
+          <title>${tooltip}</title>
+          <rect x="${x}" y="${y}" width="${barWidth}" height="${h}" rx="3" fill="${fill}"></rect>
+          <text x="${x + barWidth / 2}" y="${y - 8}" text-anchor="middle" font-size="13" fill="#1d2630">${label}</text>
+          <text x="${x + barWidth / 2}" y="${height - 16}" text-anchor="middle" font-size="13" fill="#1d2630">${item.index}</text>
+        </g>
       `;
     })
     .join("");

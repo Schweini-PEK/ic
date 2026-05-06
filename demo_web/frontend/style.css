@@ -358,6 +358,10 @@ pre {
   height: auto;
 }
 
+.chart-item {
+  cursor: help;
+}
+
 @media (max-width: 980px) {
   .layout-shell {
     padding-left: 0;
