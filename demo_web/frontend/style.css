@@ -48,7 +48,7 @@ body {
 
 .topbar h1 {
   margin: 0;
-  font-size: 20px;
+  font-size: 23px;
   font-weight: 700;
   letter-spacing: 0;
 }
@@ -119,7 +119,7 @@ body {
 
 .page-header h2 {
   margin: 0 0 6px;
-  font-size: 24px;
+  font-size: 21px;
 }
 
 .page-header p {
@@ -185,6 +185,10 @@ h3 {
   margin-bottom: 18px;
 }
 
+.config-cards {
+  grid-template-columns: repeat(2, 1fr);
+}
+
 .field {
   display: grid;
   gap: 7px;
@@ -214,10 +218,29 @@ select {
   font-size: 14px;
 }
 
-.fixed-options span {
+.fixed-options > span {
   padding: 8px 10px;
   background: #f5f7fb;
   border-radius: 6px;
+}
+
+.formula {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fraction {
+  display: inline-grid;
+  grid-template-rows: auto 1px auto;
+  justify-items: center;
+  line-height: 1;
+  min-width: 34px;
+}
+
+.fraction b {
+  width: 100%;
+  border-top: 1px solid currentColor;
 }
 
 .primary-button,
@@ -260,6 +283,10 @@ select {
 
 .metric-card strong {
   font-size: 24px;
+}
+
+.config-cards .metric-card strong {
+  font-size: 21px;
 }
 
 .chart-grid {

@@ -36,15 +36,11 @@
               <span>预缩放</span>
               <strong id="fixedScaling">UnitSqrtDiag</strong>
             </article>
-            <article class="metric-card">
-              <span>矩阵范围</span>
-              <strong>全部 7 个</strong>
-            </article>
           </section>
 
           <section class="panel">
             <div class="panel-header">
-              <h3>测试矩阵详细信息</h3>
+              <h3>矩阵信息</h3>
             </div>
             <table>
               <thead>
@@ -107,7 +103,7 @@
 
           <section class="panel">
             <div class="panel-header">
-              <h3>实验结果预览</h3>
+              <h3>实验结果</h3>
             </div>
             <table>
               <thead>
@@ -116,7 +112,7 @@
                   <th>矩阵</th>
                   <th>状态</th>
                   <th>PCG迭代次数</th>
-                  <th>SpTRSV平均时间/ms</th>
+                  <th>单次SpTRSV平均时间/ms</th>
                   <th>PCG总时间/ms</th>
                   <th>最终相对残差</th>
                 </tr>
@@ -142,16 +138,42 @@
               <select id="compareTargetSelect"></select>
             </div>
             <div class="fixed-options">
-              <span>加速比：<strong>A时间 / B时间</strong></span>
-              <span>指标：<strong>SpTRSV平均时间、PCG总时间</strong></span>
+              <span class="formula">加速比 Speedup = <span class="fraction"><span><i>T</i><sub>A</sub></span><b></b><span><i>T</i><sub>B</sub></span></span></span>
             </div>
             <button class="secondary-button" id="compareButton">生成对比图表</button>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h3>评价指标</h3>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>观测指标</th>
+                  <th>含义</th>
+                  <th>说明</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>SpTRSV_avg_time</td>
+                  <td>单次 SpTRSV 平均耗时</td>
+                  <td>表征单次 SpTRSV 算子的平均执行时间。</td>
+                </tr>
+                <tr>
+                  <td>PCG_time</td>
+                  <td>PCG 总耗时</td>
+                  <td>表征整个预条件共轭梯度求解过程的总执行时间。</td>
+                </tr>
+              </tbody>
+            </table>
           </section>
 
           <section class="chart-grid">
             <article class="panel">
               <div class="panel-header">
-                <h3>SpTRSV平均时间加速比</h3>
+                <h3>单次SpTRSV平均时间加速比</h3>
                 <span id="sptrsvChartLabel">等待选择对比对象</span>
               </div>
               <div class="chart-box" id="sptrsvChart"></div>

@@ -27,6 +27,11 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 http://100.112.194.52:8000
 ```
 
+mac测试前端：
+```bash
+python3 demo_web/backend/dev_server.py
+```
+
 ## 运行前提
 
 展示系统依赖 7 个 SuiteSparse 测试矩阵。矩阵文件较大，不建议提交到 Git。首次在 Dell WSL 上运行时，请先在项目根目录执行：

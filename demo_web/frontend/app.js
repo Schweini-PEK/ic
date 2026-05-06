@@ -299,8 +299,8 @@ async function compareRuns() {
     renderBarChart(pcgChart, comparison.matrices, "pcg_speedup", "#EA793C");
     setLog([
       `生成对比图表：${title}`,
-      comparison.definition,
-      "SpTRSV平均时间/ms 与 PCG总时间/ms 的 speedup 图表已更新。",
+      "加速比 speedup 的计算公式已在页面上方显示。",
+      "单次SpTRSV平均时间/ms 与 PCG总时间/ms 的 speedup 图表已更新。",
     ]);
   } catch (error) {
     setLog(`生成对比图表失败：${error.message}`);

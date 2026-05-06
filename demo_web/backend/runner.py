@@ -288,12 +288,12 @@ def compare_runs(base_group: str, target_group: str) -> dict[str, Any]:
     if base is None or target is None:
         raise FileNotFoundError("请选择已经运行过的两组实验结果。")
 
-    base_rows = {int(item["index"]): item for item in base.get("matrices", [])}
-    target_rows = {int(item["index"]): item for item in target.get("matrices", [])}
+    base_rows = {str(item.get("name")): item for item in base.get("matrices", [])}
+    target_rows = {str(item.get("name")): item for item in target.get("matrices", [])}
     comparisons: list[dict[str, Any]] = []
     for matrix in MATRICES:
-        base_row = base_rows.get(matrix.index, {})
-        target_row = target_rows.get(matrix.index, {})
+        base_row = base_rows.get(matrix.name, {})
+        target_row = target_rows.get(matrix.name, {})
         base_sptrsv = base_row.get("sptrsv_avg_time_ms")
         target_sptrsv = target_row.get("sptrsv_avg_time_ms")
         base_pcg = base_row.get("pcg_time_ms")
@@ -316,7 +316,7 @@ def compare_runs(base_group: str, target_group: str) -> dict[str, Any]:
         "base_label": base.get("group_label", base_group),
         "target_group": target_group,
         "target_label": target.get("group_label", target_group),
-        "definition": "speedup = 对比对象A时间 / 对比对象B时间",
+        "definition": "Speedup = T_A / T_B",
         "matrices": comparisons,
     }
 
