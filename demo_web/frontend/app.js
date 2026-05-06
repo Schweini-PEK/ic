@@ -18,6 +18,8 @@ const sptrsvChart = document.getElementById("sptrsvChart");
 const pcgChart = document.getElementById("pcgChart");
 const sptrsvChartLabel = document.getElementById("sptrsvChartLabel");
 const pcgChartLabel = document.getElementById("pcgChartLabel");
+const navItems = document.querySelectorAll(".nav-item");
+const pages = document.querySelectorAll(".page");
 
 let options = null;
 let runGroups = [];
@@ -51,6 +53,7 @@ function formatStatus(status) {
     failed: "失败",
     partial_failed: "部分失败",
     created: "已创建",
+    not_run: "未运行",
   };
   return labels[status] ?? status ?? "等待";
 }
@@ -92,6 +95,7 @@ function renderMatrices(matrices) {
           <td>${item.name}</td>
           <td>${formatNumber(item.order)}</td>
           <td>${formatNumber(item.nnz)}</td>
+          <td>${item.domain ?? "-"}</td>
         </tr>
       `,
     )
@@ -144,6 +148,15 @@ async function loadOptions() {
     serverStatus.textContent = "后端未连接";
     serverStatus.className = "status-pill bad";
     setLog(`无法连接后端：${error.message}`);
+  }
+}
+
+function showPage(pageId) {
+  for (const page of pages) {
+    page.classList.toggle("active", page.id === pageId);
+  }
+  for (const item of navItems) {
+    item.classList.toggle("active", item.dataset.page === pageId);
   }
 }
 
@@ -300,5 +313,8 @@ routeSelect.addEventListener("change", refreshMetrics);
 precisionSelect.addEventListener("change", refreshMetrics);
 runButton.addEventListener("click", createRun);
 compareButton.addEventListener("click", compareRuns);
+for (const item of navItems) {
+  item.addEventListener("click", () => showPage(item.dataset.page));
+}
 
 loadOptions();

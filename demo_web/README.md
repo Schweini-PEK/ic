@@ -15,23 +15,16 @@ demo_web/
 
 ## 启动方式
 
-在具备 Python 环境的机器上安装依赖：
-
+在WSL上启动：
 ```bash
-cd demo_web/backend
-python3 -m pip install -r requirements.txt
-```
+cd ~/workspace/dev_lexie/demo_web/backend
 
-启动后端：
-
-```bash
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 浏览器访问：
-
 ```text
-http://localhost:8000
+http://100.112.194.52:8000
 ```
 
 ## 运行前提

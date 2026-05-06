@@ -16,17 +16,18 @@ class MatrixInfo:
     name: str
     order: int
     nnz: int
+    domain: str
     matrix_path: str
 
 
 MATRICES: list[MatrixInfo] = [
-    MatrixInfo(1, "bcsstk21", 3600, 26600, "./data/matrices/bcsstk21/bcsstk21.mtx"),
-    MatrixInfo(2, "Dubcova1", 16129, 253009, "./data/matrices/Dubcova1/Dubcova1.mtx"),
-    MatrixInfo(3, "Dubcova2", 65025, 1030225, "./data/matrices/Dubcova2/Dubcova2.mtx"),
-    MatrixInfo(4, "fv1", 9604, 85264, "./data/matrices/fv1/fv1.mtx"),
-    MatrixInfo(5, "Kuu", 7102, 340200, "./data/matrices/kuu/kuu.mtx"),
-    MatrixInfo(6, "nasa2146", 2146, 72250, "./data/matrices/nasa2146/nasa2146.mtx"),
-    MatrixInfo(7, "Pres_Poisson", 14822, 715804, "./data/matrices/Pres_Poisson/Pres_Poisson.mtx"),
+    MatrixInfo(1, "bcsstk21", 3600, 26600, "结构力学", "./data/matrices/bcsstk21/bcsstk21.mtx"),
+    MatrixInfo(2, "Dubcova1", 16129, 253009, "偏微分方程", "./data/matrices/Dubcova1/Dubcova1.mtx"),
+    MatrixInfo(3, "Dubcova2", 65025, 1030225, "偏微分方程", "./data/matrices/Dubcova2/Dubcova2.mtx"),
+    MatrixInfo(4, "fv1", 9604, 85264, "生物工程有限元", "./data/matrices/fv1/fv1.mtx"),
+    MatrixInfo(5, "Kuu", 7102, 340200, "结构力学", "./data/matrices/kuu/kuu.mtx"),
+    MatrixInfo(6, "nasa2146", 2146, 72250, "结构力学", "./data/matrices/nasa2146/nasa2146.mtx"),
+    MatrixInfo(7, "Pres_Poisson", 14822, 715804, "计算流体力学", "./data/matrices/Pres_Poisson/Pres_Poisson.mtx"),
 ]
 
 ROUTES = [

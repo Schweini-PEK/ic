@@ -186,7 +186,6 @@ def create_run(route: str, precision: str) -> dict[str, Any]:
             f"precision_pcg: {precision}",
             "ordering: RCM",
             "scaling: UnitSqrtDiag",
-            f"parallel_jobs: {MAX_PARALLEL_JOBS}",
         ],
     }
 
