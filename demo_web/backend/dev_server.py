@@ -7,7 +7,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from config import FIXED_OPTIONS, FRONTEND_DIR, MATRICES, PRECISIONS, ROUTES, RUN_GROUPS
-from runner import compare_runs, create_run, list_runs, read_run
+from runner import create_run, list_runs, read_run
+from static_results import compare_version2_runs, list_version2_compare_runs
 
 
 class DemoHandler(SimpleHTTPRequestHandler):
@@ -48,6 +49,9 @@ class DemoHandler(SimpleHTTPRequestHandler):
         if path == "/api/runs":
             self._send_json({"runs": list_runs()})
             return
+        if path == "/api/compare-runs":
+            self._send_json({"runs": list_version2_compare_runs()})
+            return
         if path.startswith("/api/runs/"):
             run_id = Path(path).name
             summary = read_run(run_id)
@@ -72,7 +76,7 @@ class DemoHandler(SimpleHTTPRequestHandler):
                 if base_group not in valid_groups or target_group not in valid_groups:
                     self._send_json({"detail": "Invalid request"}, HTTPStatus.BAD_REQUEST)
                     return
-                self._send_json(compare_runs(base_group, target_group))
+                self._send_json(compare_version2_runs(base_group, target_group))
                 return
 
             route = str(request.get("route", ""))

@@ -170,7 +170,7 @@ function showPage(pageId) {
 }
 
 async function loadRunGroups() {
-  const response = await fetch("/api/runs");
+  const response = await fetch("/api/compare-runs");
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }

@@ -1,6 +1,6 @@
 # IC-PCG SpTRSV 展示系统
 
-该目录用于搭建毕设展示系统。展示系统不重新实现算法，只负责选择实验配置、调用项目可执行程序、保存本次运行结果并进行前端可视化。
+该目录用于搭建毕设展示系统。展示系统不重新实现算法，只负责选择实验配置、调用项目可执行程序、保存本次运行结果并进行前端可视化。结果对比页读取 `data/results/version2/` 下的既有实验结果，不依赖展示系统现场运行产生的数据。
 
 ## 目录结构
 
@@ -8,14 +8,20 @@
 demo_web/
 ├── backend/
 ├── frontend/
+├── data/
 └── runs/
 ```
 
 `runs/` 用于保存展示系统产生的新实验结果，不覆盖项目原有的 `data/results/`。
+`data/` 用于保存由 `data/results/version2/` 解析得到的展示用结果缓存。
 
 ## 启动方式
+mac连接WSL：
+```bash
+ssh lexie@100.112.194.52
+```
 
-在WSL上启动：
+WSL上启动：
 ```bash
 cd ~/workspace/dev_lexie/demo_web/backend
 
@@ -65,7 +71,7 @@ cmake -S . -B build
 cmake --build build --target ict_pcg -j
 ```
 
-点击页面中的“一键运行全部矩阵”后，后端会为 7 个矩阵生成临时配置文件，固定使用 `ordering=RCM`、`scaling=UnitSqrtDiag`，并根据页面选择切换 `factorized_precond_policy` 和 `precision_pcg`。运行结果按实验组合固定保存在：
+点击运行展示页中的“运行”按钮后，后端会为 7 个矩阵生成临时配置文件，固定使用 `ordering=RCM`、`scaling=UnitSqrtDiag`，并根据页面选择切换 `factorized_precond_policy` 和 `precision_pcg`。运行结果按实验组合固定保存在：
 
 ```text
 demo_web/runs/
@@ -82,7 +88,14 @@ demo_web/runs/
 
 同一组合再次运行时会覆盖该组合目录下的上一次展示结果，但不会覆盖 `data/results/` 下原有实验结果。
 
-页面分为两部分：
+页面主要包含三部分：
 
-1. 运行算法并生成实验结果。
-2. 选择 `demo_web/runs/` 下两组实验结果，按 `A时间 / B时间` 计算 speedup，并绘制 SpTRSV 平均时间和 PCG 总时间两类对比图。
+1. 实验配置展示。
+2. 运行算法并生成实验结果。
+3. 选择 `data/results/version2/super/` 中解析出的两组实验结果，按 `A时间 / B时间` 计算 speedup，并绘制单次 SpTRSV 平均时间和 PCG 总时间两类对比图。
+
+结果对比页不会修改 `data/results/version2/` 下的原始实验文件。后端会将解析后的展示用数据缓存到：
+
+```text
+demo_web/data/version2_compare_results.json
+```

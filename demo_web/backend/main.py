@@ -6,7 +6,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from config import FIXED_OPTIONS, FRONTEND_DIR, MATRICES, PRECISIONS, ROUTES, RUN_GROUPS
-from runner import compare_runs, create_run, list_runs, read_run
+from runner import create_run, list_runs, read_run
+from static_results import compare_version2_runs, list_version2_compare_runs
 
 
 class RunRequest(BaseModel):
@@ -51,6 +52,11 @@ def runs() -> dict[str, object]:
     return {"runs": list_runs()}
 
 
+@app.get("/api/compare-runs")
+def compare_runs() -> dict[str, object]:
+    return {"runs": list_version2_compare_runs()}
+
+
 @app.get("/api/runs/{run_id}")
 def run_detail(run_id: str) -> dict[str, object]:
     summary = read_run(run_id)
@@ -78,7 +84,7 @@ def compare(request: CompareRequest) -> dict[str, object]:
     if request.target_group not in valid_groups:
         raise HTTPException(status_code=400, detail="Invalid target group")
     try:
-        return compare_runs(request.base_group, request.target_group)
+        return compare_version2_runs(request.base_group, request.target_group)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

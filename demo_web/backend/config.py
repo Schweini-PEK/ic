@@ -8,6 +8,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEMO_ROOT = PROJECT_ROOT / "demo_web"
 FRONTEND_DIR = DEMO_ROOT / "frontend"
 RUNS_DIR = DEMO_ROOT / "runs"
+DEMO_DATA_DIR = DEMO_ROOT / "data"
+VERSION2_RESULTS_DIR = PROJECT_ROOT / "data" / "results" / "version2"
+VERSION2_COMPARE_SOURCE_DIR = VERSION2_RESULTS_DIR / "super"
+VERSION2_COMPARE_DATA_PATH = DEMO_DATA_DIR / "version2_compare_results.json"
 
 
 @dataclass(frozen=True)
